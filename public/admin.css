@@ -1,0 +1,36 @@
+.nav .nav-est + .btn { margin-left: 0; }
+.admin { padding-bottom: 80px; }
+.login { max-width: 520px; margin: 10vh auto 0; }
+.login h1 { font-size: clamp(2.2rem, 5vw, 3rem); }
+.login .join-row { margin-top: 24px; }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-top: 8px; }
+.kpi { padding: 18px 20px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); }
+.kpi span { display: block; font: 400 .72rem/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+.kpi strong { display: block; margin-top: 10px; font: 400 2.4rem/1 var(--serif); color: var(--cream); }
+.kpi small { display: block; margin-top: 6px; color: var(--faint); font-size: .8rem; }
+
+.panel { margin-top: 16px; padding: 22px 24px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); }
+.panel h2 { font: 600 .95rem/1.3 var(--sans); color: var(--cream); margin-bottom: 16px; }
+.panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.panels .panel { margin-top: 16px; }
+
+.bars { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.bars li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; font-size: .88rem; }
+.bars .label { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bars .val { color: var(--muted); font: 400 .8rem/1.6 var(--mono); }
+.bars .track { grid-column: 1 / -1; height: 6px; border-radius: 999px; background: var(--ink-2); overflow: hidden; }
+.bars .fill { display: block; height: 100%; border-radius: 999px; background: var(--brass); }
+.empty { color: var(--faint); font-size: .88rem; }
+
+.days { display: flex; align-items: flex-end; gap: 3px; height: 140px; overflow-x: auto; padding-bottom: 22px; position: relative; }
+.day { flex: 1 0 10px; max-width: 34px; min-height: 2px; border-radius: 3px 3px 0 0; background: var(--brass); position: relative; }
+.day:hover { background: var(--brass-hi); }
+.day-label { position: absolute; bottom: 0; font: 400 .68rem/1 var(--mono); color: var(--faint); }
+.day-label.end { right: 0; }
+
+.notes { list-style: none; margin: 0; padding: 0; }
+.notes li { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.notes li:last-child { border-bottom: 0; }
+.notes p { color: var(--cream); white-space: pre-wrap; }
+.notes small { display: block; margin-top: 6px; color: var(--faint); font: 400 .74rem/1.4 var(--mono); }

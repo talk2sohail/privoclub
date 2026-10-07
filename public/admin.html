@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Waitlist — Privo Club</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/admin.css">
+  <script src="/admin.js" defer></script>
+</head>
+<body>
+  <header class="nav wrap">
+    <a class="brand" href="/"><img src="/favicon.svg" alt="" width="28" height="28"><span class="brand-name">Privo<span class="brand-dot">.</span>club</span></a>
+    <span class="nav-est">Waitlist dashboard</span>
+    <button class="btn btn-ghost btn-sm" type="button" data-export hidden>Export CSV</button>
+    <button class="btn btn-ghost btn-sm" type="button" data-logout hidden>Sign out</button>
+  </header>
+
+  <main class="wrap admin">
+    <form class="login" data-login>
+      <h1>Waitlist dashboard</h1>
+      <p class="sub">Enter the <code>ADMIN_TOKEN</code> you set on the server.</p>
+      <div class="join-row">
+        <label class="sr-only" for="token">Admin token</label>
+        <input id="token" name="token" type="password" autocomplete="current-password" placeholder="Admin token" required>
+        <button class="btn btn-brass" type="submit">Open</button>
+      </div>
+      <p class="join-msg" role="status" aria-live="polite"></p>
+    </form>
+
+    <div class="dash" data-dash hidden>
+      <section class="kpis" data-kpis></section>
+      <section class="panel">
+        <h2>Signups per day</h2>
+        <div class="days" data-days></div>
+      </section>
+      <section class="panels" data-panels></section>
+      <section class="panel">
+        <h2>What people told you</h2>
+        <ul class="notes" data-notes></ul>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
