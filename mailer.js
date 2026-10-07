@@ -1,20 +1,54 @@
-// Welcome email for new waitlist members, sent through Resend's HTTP API.
-// Without RESEND_API_KEY set, emails are skipped and logged instead.
+// Welcome email for new waitlist members, sent over SMTP from the support@privo.club
+// mailbox (Spacemail). Without SMTP_PASS set, emails are skipped and logged instead.
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
-const MAIL_FROM = process.env.MAIL_FROM || "Privo Club <support@privo.club>";
-const MAIL_REPLY_TO = process.env.MAIL_REPLY_TO || "support@privo.club";
+import nodemailer from "nodemailer";
+
+const SMTP_HOST = process.env.SMTP_HOST || "mail.spacemail.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_USER = process.env.SMTP_USER || "support@privo.club";
+const SMTP_PASS = process.env.SMTP_PASS || "";
+// Mailbox providers cap how fast one mailbox can send; stay well under it.
+const SMTP_MAX_PER_MINUTE = Number(process.env.SMTP_MAX_PER_MINUTE || 20);
+const MAIL_FROM = process.env.MAIL_FROM || `Privo Club <${SMTP_USER}>`;
+const MAIL_REPLY_TO = process.env.MAIL_REPLY_TO || SMTP_USER;
 // Links in emails always use this, never the request's Host header.
 const PUBLIC_URL = (process.env.PUBLIC_URL || "https://privo.club").replace(/\/$/, "");
 
-export const mailEnabled = Boolean(RESEND_API_KEY);
+export const mailEnabled = Boolean(SMTP_PASS);
+
+const transport = mailEnabled
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_PORT === 465, // 465 = TLS from the start; 587 = STARTTLS
+      requireTLS: SMTP_PORT !== 465,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+      pool: true,
+      maxConnections: 1,
+      rateDelta: 60_000,
+      rateLimit: SMTP_MAX_PER_MINUTE,
+      connectionTimeout: 15_000,
+      socketTimeout: 30_000,
+    })
+  : null;
+
+// Checks the SMTP login once at startup so a bad password shows up in the logs immediately.
+export async function verifyMail() {
+  if (!transport) return console.warn("[mail] SMTP_PASS is not set; welcome emails are disabled.");
+  try {
+    await transport.verify();
+    console.log(`[mail] SMTP ready: ${SMTP_USER} via ${SMTP_HOST}:${SMTP_PORT}`);
+  } catch (err) {
+    console.error(`[mail] SMTP login failed (${SMTP_HOST}:${SMTP_PORT} as ${SMTP_USER}): ${err.message}`);
+  }
+}
 
 // The useful part: something a member can act on today, before we launch.
 const CHECKS = [
   ["Read the tool descriptions, not just the README.",
     "Your AI sees each tool’s description as instructions. Skim them for anything like “ignore previous instructions”, “don’t tell the user” or requests to read unrelated files."],
   ["Pin the version.",
-    "Install a specific release (for example <code style="white-space:nowrap;">npx -y some-server@1.4.2</code>) rather than whatever is latest, so the server can’t change underneath you."],
+    "Install a specific release (for example <code style='white-space:nowrap;'>npx -y some-server@1.4.2</code>) rather than whatever is latest, so the server can’t change underneath you."],
   ["Give it the narrowest token you can.",
     "Use fine-grained, read-only tokens scoped to just the repos, folders or workspaces it needs. You can widen access later; you can’t un-leak a token."],
   ["Keep secrets out of shared config.",
@@ -118,39 +152,30 @@ export function renderWelcome({ position, refCode }) {
 
 // Resolves true when sent, false when skipped or failed. Never throws.
 export async function sendWelcome({ email, position, refCode }) {
-  if (!mailEnabled) {
-    console.log(`[mail] RESEND_API_KEY not set; skipped welcome email for signup No. ${position}`);
+  if (!transport) {
+    console.log(`[mail] SMTP not configured; skipped welcome email for signup No. ${position}`);
     return false;
   }
   const { subject, html, text } = renderWelcome({ position, refCode });
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const res = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          from: MAIL_FROM,
-          to: [email],
-          reply_to: MAIL_REPLY_TO,
-          subject,
-          html,
-          text,
-          headers: { "List-Unsubscribe": `<mailto:${MAIL_REPLY_TO}?subject=remove>` },
-        }),
-        signal: AbortSignal.timeout(10_000),
+      await transport.sendMail({
+        from: MAIL_FROM,
+        to: email,
+        replyTo: MAIL_REPLY_TO,
+        subject,
+        html,
+        text,
+        headers: { "List-Unsubscribe": `<mailto:${MAIL_REPLY_TO}?subject=remove>` },
       });
-      if (res.ok) return true;
-      const detail = (await res.text()).slice(0, 300);
-      // 4xx other than rate limiting won't succeed on retry (bad key, unverified domain, invalid address).
-      if (res.status < 500 && res.status !== 429) {
-        console.error(`[mail] Resend rejected welcome email (${res.status}): ${detail}`);
-        return false;
-      }
-      console.error(`[mail] Resend error ${res.status} on attempt ${attempt}: ${detail}`);
+      return true;
     } catch (err) {
-      console.error(`[mail] Welcome email attempt ${attempt} failed: ${err.message}`);
+      // 5xx replies are permanent (bad password, rejected address); retrying won't help.
+      const permanent = err.responseCode >= 500 || err.code === "EAUTH" || err.code === "EENVELOPE";
+      console.error(`[mail] Welcome email for No. ${position} failed (attempt ${attempt}${permanent ? ", permanent" : ""}): ${err.message}`);
+      if (permanent) return false;
     }
-    await new Promise((r) => setTimeout(r, attempt * 2000));
+    await new Promise((r) => setTimeout(r, attempt * 5000));
   }
   return false;
 }

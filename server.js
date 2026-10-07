@@ -7,7 +7,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, stat, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mailEnabled, sendWelcome } from "./mailer.js";
+import { mailEnabled, sendWelcome, verifyMail } from "./mailer.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, "public");
@@ -130,12 +130,14 @@ async function readJson(req, limit = 8 * 1024) {
 }
 
 // In-memory rate limit. IPs are never written to disk.
-// Behind Coolify's proxy the real client IP is the last X-Forwarded-For entry
+// Behind Cloudflare, CF-Connecting-IP is the visitor (Cloudflare overwrites any client-sent value).
+// Otherwise the real client IP is the last X-Forwarded-For entry, added by Coolify's proxy
 // (earlier entries are whatever the client sent).
 const hits = new Map();
 function rateLimited(req, bucket, max, windowMs = 10 * 60 * 1000) {
   const forwarded = (req.headers["x-forwarded-for"] || "").split(",").map((s) => s.trim()).filter(Boolean);
-  const key = `${bucket}:${forwarded.at(-1) || req.socket.remoteAddress}`;
+  const ip = req.headers["cf-connecting-ip"] || forwarded.at(-1) || req.socket.remoteAddress;
+  const key = `${bucket}:${ip}`;
   const now = Date.now();
   const recent = (hits.get(key) || []).filter((t) => now - t < windowMs);
   recent.push(now);
@@ -262,6 +264,22 @@ function adminStats(req, res) {
   });
 }
 
+// Sends the welcome email to everyone who doesn't have one yet (e.g. signed up while SMTP was off).
+const pendingWelcome = db.prepare("SELECT * FROM signups WHERE welcome_sent_at IS NULL ORDER BY id");
+const inFlight = new Set();
+function adminSendPending(req, res) {
+  if (!isAdmin(req)) return send(res, 401, { error: "Unauthorized" });
+  if (!mailEnabled) return send(res, 409, { error: "Email is off: set SMTP_PASS first." });
+  const rows = pendingWelcome.all().filter((r) => !inFlight.has(r.id));
+  for (const row of rows) {
+    inFlight.add(row.id);
+    sendWelcome({ email: row.email, position: standing(row).position, refCode: row.ref_code })
+      .then((sent) => { if (sent) q.markWelcomed.run(row.id); })
+      .finally(() => inFlight.delete(row.id));
+  }
+  send(res, 202, { queued: rows.length });
+}
+
 function adminExport(req, res) {
   if (!isAdmin(req)) return send(res, 401, { error: "Unauthorized" });
   const cols = ["id", "email", "created_at", "ref_code", "referred_by", "role", "clients", "tools",
@@ -333,6 +351,7 @@ const routes = {
   "GET /api/waitlist/count": publicCount,
   "GET /api/admin/stats": adminStats,
   "GET /api/admin/export.csv": adminExport,
+  "POST /api/admin/send-pending": adminSendPending,
   "GET /healthz": (_req, res) => send(res, 200, "ok"),
 };
 
@@ -356,7 +375,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Privo Club listening on http://localhost:${PORT}`);
   if (!ADMIN_TOKEN) console.warn("ADMIN_TOKEN is not set — the admin dashboard is disabled.");
-  if (!mailEnabled) console.warn("RESEND_API_KEY is not set — welcome emails are disabled.");
+  verifyMail();
 });
 
 for (const sig of ["SIGINT", "SIGTERM"]) {

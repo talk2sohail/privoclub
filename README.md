@@ -28,8 +28,8 @@ npm start                     # http://localhost:3000 (or the PORT in .env)
 5. **Environment variables:**
    - `ADMIN_TOKEN`: long random string (`openssl rand -hex 32`)
    - `PUBLIC_COUNT_MIN` (optional, default `50`): the page only shows "N people have asked for a seat" once the list reaches this size
-   - `RESEND_API_KEY`: turns on welcome emails (see below)
-   - `MAIL_FROM` (optional, default `Privo Club <support@privo.club>`), `MAIL_REPLY_TO` (default `support@privo.club`), `PUBLIC_URL` (default `https://privo.club`)
+   - `SMTP_PASS`: the support@privo.club mailbox password; turns on welcome emails (see below)
+   - Optional: `SMTP_HOST` (default `mail.spacemail.com`), `SMTP_PORT` (default `465`; use `587` if your host blocks 465), `SMTP_USER` (default `support@privo.club`), `SMTP_MAX_PER_MINUTE` (default `20`), `MAIL_FROM`, `PUBLIC_URL` (default `https://privo.club`)
 6. **Persistent storage:** add a volume mounted at **`/data`**. This is where `waitlist.db` lives. Without it, every redeploy wipes your signups.
 7. Point the domain's DNS `A` record at your Coolify server, then deploy.
 
@@ -37,14 +37,28 @@ Health check: `GET /healthz` (already configured in the Dockerfile).
 
 ## Welcome emails
 
-Sent through [Resend](https://resend.com) to each **new** signup (never to a repeat signup, so the form can't be used to spam an address).
+Sent from the **support@privo.club** Spacemail mailbox over SMTP to each **new** signup (never to a repeat signup, so the form can't be used to spam an address). Sent copies appear in the mailbox's Sent folder and replies land in its inbox.
 
-1. Create a Resend account and add the domain `privo.club`.
-2. Add the DNS records Resend shows you (SPF, DKIM and optionally DMARC) at your domain registrar, and wait for it to verify.
-3. Create an API key with "sending access" and set it as `RESEND_API_KEY` in Coolify.
-4. Make sure `support@privo.club` can **receive** mail (for example with your registrar's email forwarding or Cloudflare Email Routing). The email invites people to reply.
+- Set `SMTP_PASS` in Coolify to the mailbox password. The container logs `[mail] SMTP ready` on startup if the login works, or the exact error if it doesn't.
+- Sending is throttled to `SMTP_MAX_PER_MINUTE` (default 20) so a launch-day spike stays under Spacemail's per-mailbox limits. Emails queue in memory while throttled.
+- For good inbox placement the domain needs SPF, DKIM and DMARC records for Spacemail (see DNS below).
+- Signups that arrived while email was off (or failed) can be caught up with **Send missing welcome emails** on the dashboard.
 
-Without `RESEND_API_KEY` the site works normally and simply skips the email. Delivery failures are logged and never block a signup. The dashboard shows how many welcome emails were sent.
+Without `SMTP_PASS` the site works normally and simply skips the email. Delivery failures are logged and never block a signup.
+
+## DNS (Cloudflare)
+
+| Type | Name | Content | Proxy |
+|---|---|---|---|
+| A | `@` | your Coolify server's IP | Proxied |
+| CNAME | `www` | `privo.club` | Proxied |
+| MX | `@` | `mx1.spacemail.com` (priority 0) | DNS only |
+| MX | `@` | `mx2.spacemail.com` (priority 0) | DNS only |
+| TXT | `@` | `v=spf1 include:spf.spacemail.com ~all` | DNS only |
+| TXT | `spacemail._domainkey` | the DKIM key from Spacemail | DNS only |
+| TXT | `_dmarc` | `v=DMARC1; p=none; rua=mailto:support@privo.club` | DNS only |
+
+Use the same SSL/TLS mode as your other Coolify sites (Full or Full (strict)); "Flexible" causes redirect loops.
 
 ## What you'll learn from the dashboard
 

@@ -23,8 +23,8 @@
   const getToken = () => { try { return sessionStorage.getItem("privo.admin"); } catch { return null; } };
   const setToken = (t) => { try { t ? sessionStorage.setItem("privo.admin", t) : sessionStorage.removeItem("privo.admin"); } catch {} };
 
-  async function api(path) {
-    const res = await fetch(path, { headers: { Authorization: `Bearer ${getToken()}` } });
+  async function api(path, method = "GET") {
+    const res = await fetch(path, { method, headers: { Authorization: `Bearer ${getToken()}` } });
     if (res.status === 401) throw new Error("That token didn’t work.");
     if (!res.ok) throw new Error("Couldn’t load the dashboard.");
     return res;
@@ -48,7 +48,7 @@
       ["Answered survey", s.surveyed, `${pct(s.surveyed, s.total)}% of signups`],
       ["Came via referral", s.referred, `${pct(s.referred, s.total)}% of signups`],
       ["Would pay (yes)", s.pay.yes || 0, `${pct(s.pay.yes || 0, s.surveyed)}% of respondents`],
-      ["Welcome emails", s.welcomed, s.mailEnabled ? `${pct(s.welcomed, s.total)}% delivered to Resend` : "Off: RESEND_API_KEY not set"],
+      ["Welcome emails", s.welcomed, s.mailEnabled ? `${pct(s.welcomed, s.total)}% of signups` : "Off: SMTP_PASS not set"],
     ].map(([label, n, note]) => `<div class="kpi"><span>${label}</span><strong>${n}</strong>${note ? `<small>${note}</small>` : ""}</div>`).join("");
 
     // daily bars, filling in empty days
@@ -88,7 +88,21 @@
     $("[data-export]").hidden = false;
     $("[data-logout]").hidden = false;
     render(stats);
+    const missing = stats.total - stats.welcomed;
+    const sendBtn = $("[data-send-pending]");
+    sendBtn.hidden = !(stats.mailEnabled && missing > 0);
+    sendBtn.textContent = `Send ${missing} missing welcome email${missing === 1 ? "" : "s"}`;
   }
+
+  $("[data-send-pending]").addEventListener("click", async (e) => {
+    e.target.disabled = true;
+    try {
+      const { queued } = await (await api("/api/admin/send-pending", "POST")).json();
+      e.target.textContent = `Sending ${queued}… refresh in a minute`;
+    } catch (err) {
+      e.target.textContent = err.message;
+    }
+  });
 
   $("[data-login]").addEventListener("submit", async (e) => {
     e.preventDefault();
