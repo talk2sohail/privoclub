@@ -3,7 +3,7 @@
 
 import http from "node:http";
 import { DatabaseSync } from "node:sqlite";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, stat, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -312,6 +312,13 @@ const MIME = {
   ".webmanifest": "application/manifest+json",
 };
 
+// Fingerprint of the page assets. HTML references them as "?v=__V__", so every deploy that
+// changes an asset gets fresh URLs and Cloudflare/browser caches can never serve stale CSS or JS.
+const ASSET_VERSION = createHash("sha1")
+  .update(await Promise.all(["styles.css", "app.js", "admin.css", "admin.js", "favicon.svg", "og.png"]
+    .map((f) => readFile(path.join(PUBLIC_DIR, f)))).then((bufs) => Buffer.concat(bufs)))
+  .digest("hex").slice(0, 10);
+
 async function serveStatic(req, res, pathname, status = 200) {
   if (pathname.endsWith("/")) pathname += "index.html";
   const file = path.normalize(path.join(PUBLIC_DIR, decodeURIComponent(pathname)));
@@ -320,14 +327,23 @@ async function serveStatic(req, res, pathname, status = 200) {
     const info = await stat(file);
     if (!info.isFile()) throw new Error("not a file");
     const ext = path.extname(file);
-    const longCache = ext === ".woff2";
+    let body = await readFile(file);
+    let cache;
+    if (ext === ".html") {
+      body = Buffer.from(body.toString("utf8").replaceAll("__V__", ASSET_VERSION));
+      cache = "no-cache"; // always revalidate, so new asset URLs reach visitors right after a deploy
+    } else if (ext === ".woff2" || new URL(req.url, "http://localhost").searchParams.has("v")) {
+      cache = "public, max-age=31536000, immutable";
+    } else {
+      cache = "public, max-age=300";
+    }
     res.writeHead(status, {
       "Content-Type": MIME[ext] || "application/octet-stream",
-      "Content-Length": info.size,
-      "Cache-Control": longCache ? "public, max-age=31536000, immutable" : "public, max-age=300",
+      "Content-Length": body.length,
+      "Cache-Control": cache,
     });
     if (req.method === "HEAD") return res.end();
-    res.end(await readFile(file));
+    res.end(body);
   } catch {
     if (pathname !== "/404.html") return serveStatic(req, res, "/404.html", 404);
     send(res, 404, "Not found");
