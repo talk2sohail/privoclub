@@ -2,6 +2,12 @@
 (() => {
   document.documentElement.classList.add("js");
 
+  // Header is transparent over the hero gradient and turns frosted once scrolled.
+  const nav = document.querySelector(".nav");
+  const onScroll = () => nav?.classList.toggle("scrolled", window.scrollY > 8);
+  window.addEventListener("scroll", onScroll, { passive: true });
+  onScroll();
+
   const STORE_KEY = "privo.waitlist";
   const store = {
     get(key, area = localStorage) {
