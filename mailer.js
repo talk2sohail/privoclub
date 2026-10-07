@@ -58,57 +58,69 @@ const CHECKS = [
 ];
 
 function html({ position, shareUrl }) {
+  const font = "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif";
+  const colors = ["#ff7a59", "#e9a21b", "#2fb171", "#22b3c5", "#0a2540"];
   const checks = CHECKS.map(([title, body], i) => `
     <tr><td style="padding:0 0 18px 0;">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr>
-        <td valign="top" width="34" style="font-family:Georgia,serif;font-style:italic;font-size:22px;line-height:24px;color:#c9a66b;">${i + 1}</td>
-        <td valign="top" style="font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:23px;color:#d9d3c5;">
-          <strong style="color:#efe9dc;">${title}</strong><br>${body}
+        <td valign="top" width="40">
+          <div style="width:26px;height:26px;border-radius:13px;background:${colors[i]};color:#ffffff;font-family:${font};font-size:13px;font-weight:600;line-height:26px;text-align:center;">${i + 1}</div>
+        </td>
+        <td valign="top" style="font-family:${font};font-size:15px;line-height:23px;color:#425466;">
+          <strong style="color:#0a2540;">${title}</strong><br>${body}
         </td>
       </tr></table>
     </td></tr>`).join("");
 
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="color-scheme" content="dark light"><meta name="supported-color-schemes" content="dark light">
+<meta name="color-scheme" content="light"><meta name="supported-color-schemes" content="light">
 <title>Welcome to Privo Club</title></head>
-<body style="margin:0;padding:0;background:#0c0e0b;">
+<body style="margin:0;padding:0;background:#f6f9fc;">
 <div style="display:none;max-height:0;overflow:hidden;">You’re No. ${position}. Plus five checks to run before you install any MCP server.</div>
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#0c0e0b" style="background:#0c0e0b;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#f6f9fc" style="background:#f6f9fc;">
 <tr><td align="center" style="padding:32px 16px;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;">
-    <tr><td style="padding:0 4px 24px 4px;font-family:Georgia,serif;font-size:24px;color:#efe9dc;">Privo<span style="color:#c9a66b;">.</span>club</td></tr>
-    <tr><td bgcolor="#161a14" style="background:#161a14;border:1px solid #2a2e26;border-radius:18px;padding:32px 28px;">
-      <p style="margin:0 0 6px 0;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:12px;letter-spacing:2px;text-transform:uppercase;color:#c9a66b;">Founding member · No. ${position}</p>
-      <h1 style="margin:0 0 16px 0;font-family:Georgia,serif;font-weight:normal;font-size:30px;line-height:36px;color:#efe9dc;">Your seat is saved.</h1>
-      <p style="margin:0 0 16px 0;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;color:#d9d3c5;">
+    <tr><td style="padding:0 4px 20px 4px;">
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
+        <td width="28" style="width:28px;height:28px;border-radius:8px;background:#ff7a59;background-image:linear-gradient(135deg,#ff7a59,#ffc145);color:#ffffff;font-family:${font};font-size:16px;font-weight:700;text-align:center;line-height:28px;">P</td>
+        <td style="padding-left:10px;font-family:${font};font-size:17px;font-weight:600;color:#0a2540;letter-spacing:-0.3px;">Privo Club</td>
+      </tr></table>
+    </td></tr>
+    <tr><td bgcolor="#ffffff" style="background:#ffffff;border-radius:16px;box-shadow:0 2px 5px rgba(50,50,93,.10);overflow:hidden;">
+      <div style="height:6px;background:#ff7a59;background-image:linear-gradient(90deg,#ff7a59,#ffc145,#2fb171,#22b3c5);"></div>
+      <div style="padding:32px 28px;">
+      <p style="margin:0 0 8px 0;font-family:${font};font-size:14px;font-weight:600;color:#11784a;">Founding member No. ${position}</p>
+      <h1 style="margin:0 0 16px 0;font-family:${font};font-weight:700;font-size:28px;line-height:34px;letter-spacing:-0.6px;color:#0a2540;">Your seat is saved.</h1>
+      <p style="margin:0 0 16px 0;font-family:${font};font-size:15px;line-height:24px;color:#425466;">
         Thanks for joining Privo Club. We’re building a private home for MCP: vetted servers behind one endpoint, your keys in a vault, and every call on the record. Invites go out to founding members in small groups, in list order.
       </p>
-      <p style="margin:0 0 28px 0;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;color:#d9d3c5;">
+      <p style="margin:0 0 28px 0;font-family:${font};font-size:15px;line-height:24px;color:#425466;">
         You don’t have to wait to get something out of it, though. Here’s the checklist we use ourselves.
       </p>
 
-      <h2 style="margin:0 0 18px 0;font-family:Georgia,serif;font-weight:normal;font-size:22px;line-height:28px;color:#e6c891;">Five checks before you install any MCP server</h2>
+      <h2 style="margin:0 0 18px 0;font-family:${font};font-weight:700;font-size:19px;line-height:26px;letter-spacing:-0.3px;color:#0a2540;">Five checks before you install any MCP server</h2>
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">${checks}</table>
 
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:12px;border-top:1px solid #2a2e26;">
-        <tr><td style="padding-top:24px;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;color:#d9d3c5;">
-          <strong style="color:#efe9dc;">Want an earlier invite?</strong> Members who bring friends move to the front of the list. Your personal link:
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top:8px;border-top:1px solid #e3e8ee;">
+        <tr><td style="padding-top:24px;font-family:${font};font-size:15px;line-height:24px;color:#425466;">
+          <strong style="color:#0a2540;">Want an earlier invite?</strong> Members who bring friends move to the front of the list. Your personal link:
         </td></tr>
         <tr><td style="padding:14px 0 6px 0;">
-          <a href="${shareUrl}" style="display:inline-block;padding:13px 22px;border-radius:999px;background:#c9a66b;color:#1a1508;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;font-weight:600;text-decoration:none;">Share your invite link</a>
+          <a href="${shareUrl}" style="display:inline-block;padding:12px 22px;border-radius:999px;background:#0a2540;color:#ffffff;font-family:${font};font-size:15px;font-weight:600;text-decoration:none;">Share your invite link →</a>
         </td></tr>
-        <tr><td style="padding:4px 0 0 0;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;color:#9a9587;word-break:break-all;">${shareUrl}</td></tr>
-        <tr><td style="padding-top:24px;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;color:#d9d3c5;">
-          <strong style="color:#efe9dc;">One question:</strong> which tool would you connect to your AI first, and what’s stopped you so far? Just hit reply. A real person reads every answer, and it decides which servers we vet first.
+        <tr><td style="padding:4px 0 0 0;font-family:Menlo,Consolas,monospace;font-size:13px;color:#697386;word-break:break-all;">${shareUrl}</td></tr>
+        <tr><td style="padding-top:24px;font-family:${font};font-size:15px;line-height:24px;color:#425466;">
+          <strong style="color:#0a2540;">One question:</strong> which tool would you connect to your AI first, and what’s stopped you so far? Just hit reply. A real person reads every answer, and it decides which servers we vet first.
         </td></tr>
-        <tr><td style="padding-top:20px;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;font-size:15px;line-height:24px;color:#d9d3c5;">
-          See you inside,<br>The Privo Club team
+        <tr><td style="padding-top:20px;font-family:${font};font-size:15px;line-height:24px;color:#425466;">
+          See you inside,<br><strong style="color:#0a2540;">The Privo Club team</strong>
         </td></tr>
       </table>
+      </div>
     </td></tr>
-    <tr><td style="padding:20px 4px 0 4px;font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;line-height:19px;color:#6c695f;">
-      You’re getting this because this address joined the waitlist at <a href="${PUBLIC_URL}" style="color:#9a9587;">privo.club</a>. Reply “remove” and we’ll delete it. No trackers in this email.
+    <tr><td style="padding:20px 4px 0 4px;font-family:${font};font-size:12px;line-height:19px;color:#8792a2;">
+      You’re getting this because this address joined the waitlist at <a href="${PUBLIC_URL}" style="color:#697386;">privo.club</a>. Reply “remove” and we’ll delete it. No trackers in this email.
     </td></tr>
   </table>
 </td></tr></table>

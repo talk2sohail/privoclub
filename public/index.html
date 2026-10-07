@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Privo Club — the private club for MCP</title>
-  <meta name="description" content="Vetted MCP servers behind one private endpoint. Every server reviewed, every credential vaulted, every call logged. Self-host it if you'd rather. Request an invite.">
-  <meta name="theme-color" content="#0c0e0b">
+  <title>Privo Club | The private club for MCP</title>
+  <meta name="description" content="Vetted MCP servers behind one private endpoint. Every server reviewed, every credential vaulted, every call logged. Self-host it if you prefer. Request an invite.">
+  <meta name="theme-color" content="#ffffff">
   <link rel="canonical" href="https://privo.club/">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://privo.club/">
-  <meta property="og:title" content="Privo Club — the private club for MCP">
+  <meta property="og:title" content="Privo Club | The private club for MCP">
   <meta property="og:description" content="Vetted MCP servers, one private endpoint, your keys stay yours. Founding members are joining now.">
   <meta property="og:site_name" content="Privo Club">
   <meta property="og:image" content="https://privo.club/og.png">
@@ -19,205 +19,244 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="Privo Club: the private club for MCP. Vetted servers, one private endpoint, your keys stay yours.">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Privo Club — the private club for MCP">
+  <meta name="twitter:title" content="Privo Club | The private club for MCP">
   <meta name="twitter:description" content="Vetted MCP servers, one private endpoint, your keys stay yours. Founding members are joining now.">
   <meta name="twitter:image" content="https://privo.club/og.png">
 
-  <link rel="preload" href="/fonts/instrument-serif-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="preload" href="/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/geist-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/geist-sans-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/styles.css">
   <script src="/app.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#main">Skip to content</a>
+  <div class="guides" aria-hidden="true"><div class="wrap"><i></i><i></i><i></i><i></i><i></i></div></div>
 
-  <header class="nav wrap">
-    <a class="brand" href="/" aria-label="Privo Club home">
-      <img src="/favicon.svg" alt="" width="28" height="28">
-      <span class="brand-name">Privo<span class="brand-dot">.</span>club</span>
-    </a>
-    <span class="nav-est">Members only · Est. 2024</span>
-    <a class="btn btn-ghost btn-sm" href="#join">Request an invite</a>
+  <header class="nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="/" aria-label="Privo Club home">
+        <img src="/favicon.svg" alt="" width="26" height="26">
+        <span>Privo Club</span>
+      </a>
+      <nav class="nav-links" aria-label="Sections">
+        <a href="#membership">Membership</a>
+        <a href="#how">How it works</a>
+        <a href="#trust">Trust</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <a class="btn btn-dark btn-sm" href="#join">Request an invite <span class="arrow" aria-hidden="true">→</span></a>
+    </div>
   </header>
 
   <main id="main">
     <!-- ============ HERO ============ -->
-    <section class="hero wrap">
-      <div class="hero-copy">
-        <p class="eyebrow"><span class="pulse" aria-hidden="true"></span> A private club for MCP</p>
-        <h1>Connect your AI to everything&nbsp;— <em>without handing over the keys.</em></h1>
-        <p class="lede">
-          Privo Club gives you vetted MCP servers behind one private endpoint.
-          Every server reviewed. Every credential vaulted. Every call logged.
-          Self-host the whole thing if you’d rather.
-        </p>
+    <section class="hero">
+      <div class="hero-bg" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span><span class="blob b4"></span></div>
+      <div class="wrap hero-grid">
+        <div class="hero-copy">
+          <p class="pill">Members only · Est. 2024</p>
+          <h1>Your AI, connected to everything. Your keys, kept private.</h1>
+          <p class="lede">
+            Privo Club gives you vetted MCP servers behind one private endpoint.
+            Every server reviewed, every credential vaulted, every call logged.
+            Run it on our cloud or on your own servers.
+          </p>
 
-        <div class="join-slot" id="join">
-          <form class="join" data-join novalidate>
-            <label class="sr-only" for="email-hero">Email address</label>
-            <div class="join-row">
-              <input id="email-hero" name="email" type="email" autocomplete="email" inputmode="email"
-                     placeholder="you@company.com" required>
-              <button class="btn btn-brass" type="submit">Request an invite</button>
-            </div>
-            <div class="hp" aria-hidden="true">
-              <label>Website <input name="website" tabindex="-1" autocomplete="off"></label>
-            </div>
-            <p class="join-msg" role="status" aria-live="polite"></p>
-            <p class="join-note">Founding members get early access. Just your email: no spam, no trackers.</p>
-          </form>
+          <div class="join-slot" id="join">
+            <form class="join" data-join novalidate>
+              <label class="sr-only" for="email-hero">Email address</label>
+              <div class="join-row">
+                <input id="email-hero" name="email" type="email" autocomplete="email" inputmode="email"
+                       placeholder="Your work email" required>
+                <button class="btn btn-dark" type="submit">Request an invite</button>
+              </div>
+              <div class="hp" aria-hidden="true">
+                <label>Website <input name="website" tabindex="-1" autocomplete="off"></label>
+              </div>
+              <p class="join-msg" role="status" aria-live="polite"></p>
+              <p class="join-note">Founding members get early access. No spam, no trackers.</p>
+            </form>
+          </div>
+          <p class="social-proof" data-count hidden></p>
         </div>
-        <p class="social-proof" data-count hidden></p>
+
+        <div class="hero-visual" aria-hidden="true">
+          <div class="console">
+            <div class="console-head">
+              <div>
+                <p class="console-title">Gateway</p>
+                <p class="console-sub">5 servers · 4 active</p>
+              </div>
+              <span class="status-dot">Live</span>
+            </div>
+            <div class="endpoint">
+              <span class="ep-label">Endpoint</span>
+              <code>https://you.privo.club/mcp</code>
+            </div>
+            <ul class="servers">
+              <li>
+                <span class="srv-icon i-gh">GH</span>
+                <span class="srv-name">GitHub<small>repo:read · issues:write</small></span>
+                <span class="tag tag-ok">Verified</span>
+                <span class="toggle on"></span>
+              </li>
+              <li>
+                <span class="srv-icon i-gm">GM</span>
+                <span class="srv-name">Gmail<small>Read, drafts only</small></span>
+                <span class="tag tag-ok">Verified</span>
+                <span class="toggle on"></span>
+              </li>
+              <li>
+                <span class="srv-icon i-no">NO</span>
+                <span class="srv-name">Notion<small>Workspace: Product</small></span>
+                <span class="tag tag-ok">Verified</span>
+                <span class="toggle on"></span>
+              </li>
+              <li>
+                <span class="srv-icon i-pg">PG</span>
+                <span class="srv-name">Postgres<small>Read-only · your server</small></span>
+                <span class="tag tag-self">Self-hosted</span>
+                <span class="toggle on"></span>
+              </li>
+              <li class="blocked">
+                <span class="srv-icon">?</span>
+                <span class="srv-name">free-weather-mcp<small>Wants filesystem + network</small></span>
+                <span class="tag tag-bad">Blocked</span>
+                <span class="toggle"></span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="log-card">
+            <p class="log-title">Activity</p>
+            <div class="log-row"><span class="dot ok"></span><code>github.search_issues</code><span class="log-st ok">Allowed</span></div>
+            <div class="log-row"><span class="dot hold"></span><code>gmail.send_email</code><span class="log-st hold">Needs approval</span></div>
+            <div class="log-row"><span class="dot bad"></span><code>fs.read_file</code><span class="log-st bad">Blocked</span></div>
+          </div>
+
+          <div class="member-card">
+            <div class="mc-top"><svg class="mc-mark" viewBox="0 0 64 64"><path d="M24 46V18h10a9 9 0 010 18H24"/></svg><span>Founding member</span></div>
+            <div class="mc-no">No. <span data-card-no>0001</span></div>
+            <div class="mc-bottom"><span>Privo Club</span><span>Since 2024</span></div>
+          </div>
+        </div>
       </div>
 
-      <div class="hero-visual" aria-hidden="true">
-        <div class="member-card">
-          <div class="mc-top">
-            <span class="mc-crest">P</span>
-            <span class="mc-label">Founding member</span>
-          </div>
-          <div class="mc-no">No. <span data-card-no>0001</span></div>
-          <div class="mc-bottom">
-            <span>PRIVO CLUB</span>
-            <span>MMXXIV</span>
-          </div>
-        </div>
-
-        <div class="console">
-          <div class="console-head">
-            <span class="dots"><i></i><i></i><i></i></span>
-            <span class="console-title">your private gateway</span>
-          </div>
-          <div class="endpoint">
-            <span class="ep-lock">●</span>
-            <code>https://you.privo.club/mcp</code>
-          </div>
-          <ul class="servers">
-            <li>
-              <span class="srv-icon">GH</span>
-              <span class="srv-name">GitHub<small>repo:read · issues:write</small></span>
-              <span class="tag tag-ok">Verified</span>
-              <span class="toggle on"></span>
-            </li>
-            <li>
-              <span class="srv-icon">GM</span>
-              <span class="srv-name">Gmail<small>read · drafts only</small></span>
-              <span class="tag tag-ok">Verified</span>
-              <span class="toggle on"></span>
-            </li>
-            <li>
-              <span class="srv-icon">NO</span>
-              <span class="srv-name">Notion<small>workspace: Product</small></span>
-              <span class="tag tag-ok">Verified</span>
-              <span class="toggle on"></span>
-            </li>
-            <li>
-              <span class="srv-icon">PG</span>
-              <span class="srv-name">Postgres<small>read-only · on your server</small></span>
-              <span class="tag tag-self">Self-hosted</span>
-              <span class="toggle on"></span>
-            </li>
-            <li class="blocked">
-              <span class="srv-icon">??</span>
-              <span class="srv-name">free-weather-mcp<small>asks for: filesystem, network:*</small></span>
-              <span class="tag tag-bad">Not in club</span>
-              <span class="toggle"></span>
-            </li>
-          </ul>
-          <div class="log">
-            <div><time>12:04:19</time> github.search_issues <b class="ok">allowed</b></div>
-            <div><time>12:04:22</time> gmail.send_email <b class="hold">awaiting approval</b></div>
-            <div><time>12:04:31</time> fs.read_file <b class="bad">blocked by policy</b></div>
-          </div>
-        </div>
+      <div class="wrap clients">
+        <span>Built for</span>
+        <ul>
+          <li>Claude</li><li>ChatGPT</li><li>Cursor</li><li>VS Code</li><li>Windsurf</li><li>Any MCP client</li>
+        </ul>
       </div>
     </section>
 
     <!-- ============ PROBLEM ============ -->
     <section class="section wrap">
       <div class="section-head reveal">
-        <p class="kicker">The problem</p>
-        <h2>MCP is powerful. Right now it’s also an <em>open bazaar.</em></h2>
-        <p class="sub">The Model Context Protocol lets assistants like Claude, ChatGPT and Cursor use your real tools. It also hands them real access, and the ecosystem hasn’t caught up.</p>
+        <p class="eyebrow c-coral">The problem</p>
+        <h2>MCP is powerful. Right now it’s also wide open.</h2>
+        <p class="sub">The Model Context Protocol lets assistants like Claude, ChatGPT and Cursor use your real tools. That means real access, and the ecosystem hasn’t caught up.</p>
       </div>
       <div class="grid grid-4">
-        <article class="card reveal">
-          <span class="num">01</span>
+        <article class="problem reveal">
+          <span class="chip chip-coral"><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01"/><path d="M10.3 3.9L2.4 17.5A2 2 0 004.1 20.5h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z"/></svg></span>
           <h3>Anyone can publish</h3>
-          <p>Thousands of servers, most of them unaudited. A single tool description can smuggle hidden instructions straight to your AI.</p>
+          <p>Thousands of servers, most of them unaudited. One tool description can slip hidden instructions to your AI.</p>
         </article>
-        <article class="card reveal">
-          <span class="num">02</span>
+        <article class="problem reveal">
+          <span class="chip chip-sun"><svg viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M10.8 12.2L19 4M16 7l3 3M14 9l2 2"/></svg></span>
           <h3>Keys everywhere</h3>
-          <p>API tokens pasted into a dozen config files across Claude, Cursor and your IDE, each one a copy you have to rotate.</p>
+          <p>API tokens pasted into a dozen config files across Claude, Cursor and your IDE. Every copy is one more to rotate.</p>
         </article>
-        <article class="card reveal">
-          <span class="num">03</span>
+        <article class="problem reveal">
+          <span class="chip chip-lagoon"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></span>
           <h3>Hard to host</h3>
           <p>Many servers only run on your laptop. Putting them online means OAuth, HTTPS, updates and uptime.</p>
         </article>
-        <article class="card reveal">
-          <span class="num">04</span>
+        <article class="problem reveal">
+          <span class="chip chip-leaf"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></span>
           <h3>No paper trail</h3>
           <p>When an agent touches your inbox or your repo, there’s no easy way to see what it actually did.</p>
         </article>
       </div>
     </section>
 
-    <!-- ============ MEMBERSHIP ============ -->
-    <section class="section wrap" id="membership">
-      <div class="section-head reveal">
-        <p class="kicker">Membership</p>
-        <h2>Fewer servers. <em>Every one earns its seat.</em></h2>
-        <p class="sub">Other directories compete on how many integrations they list. We compete on how few you have to worry about.</p>
-      </div>
-      <div class="grid grid-3">
-        <article class="feature reveal">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>
-          <h3>A vetted catalog</h3>
-          <p>Every server is reviewed before it joins: permissions, network calls, maintainer and tool descriptions. Each one gets a public scorecard.</p>
-        </article>
-        <article class="feature reveal">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h16M12 4v16"/><circle cx="12" cy="12" r="8.5"/></svg>
-          <h3>One private endpoint</h3>
-          <p>Add a single URL to any MCP client. Switch servers on and off from your dashboard instead of editing config files.</p>
-        </article>
-        <article class="feature reveal">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg>
-          <h3>A vault for your keys</h3>
-          <p>Credentials are encrypted and injected at call time. Your AI clients never see a raw token.</p>
-        </article>
-        <article class="feature reveal">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
-          <h3>A full audit log</h3>
-          <p>Every tool call is recorded: who, what, when and the result. Know exactly what your agents did.</p>
-        </article>
-        <article class="feature reveal">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M4 12h16M4 18h7"/><circle cx="17" cy="6" r="2"/><circle cx="14" cy="18" r="2"/></svg>
-          <h3>Your rules</h3>
-          <p>Set policies like “GitHub is read-only” or “ask me before sending email”. Unvetted tools are blocked by default.</p>
-        </article>
-        <article class="feature reveal">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M3 19c.8-3 2.8-4.5 5-4.5s4.2 1.5 5 4.5M11 19c.8-3 2.8-4.5 5-4.5s4.2 1.5 5 4.5"/></svg>
-          <h3>The club</h3>
-          <p>Vote on which servers get vetted next, swap agent setups with other members and join monthly build sessions.</p>
-        </article>
+    <!-- ============ MEMBERSHIP (bento) ============ -->
+    <section class="section tint" id="membership">
+      <div class="wrap">
+        <div class="section-head reveal">
+          <p class="eyebrow c-leaf">Membership</p>
+          <h2>Fewer servers. Every one of them reviewed.</h2>
+          <p class="sub">Other directories compete on how many integrations they list. We compete on how few you have to worry about.</p>
+        </div>
+
+        <div class="bento">
+          <article class="tile tile-wide reveal">
+            <div class="tile-copy">
+              <h3>A vetted catalog</h3>
+              <p>Every server is reviewed before it joins: permissions, network calls, maintainer and tool descriptions. Each one gets a public scorecard.</p>
+            </div>
+            <div class="mini-catalog" aria-hidden="true">
+              <div><span class="srv-icon i-gh">GH</span>GitHub<span class="tag tag-ok">Verified</span></div>
+              <div><span class="srv-icon i-li">LI</span>Linear<span class="tag tag-ok">Verified</span></div>
+              <div><span class="srv-icon i-sl">SL</span>Slack<span class="tag tag-wait">In review</span></div>
+            </div>
+          </article>
+
+          <article class="tile reveal">
+            <h3>One private endpoint</h3>
+            <p>Add a single URL to any MCP client and switch servers on or off from your dashboard.</p>
+            <code class="mini-url" aria-hidden="true">you.privo.club/mcp</code>
+          </article>
+
+          <article class="tile reveal">
+            <h3>A vault for your keys</h3>
+            <p>Credentials are encrypted and injected at call time. Your AI clients never see a raw token.</p>
+            <div class="mini-vault" aria-hidden="true"><span>GITHUB_TOKEN</span><span class="mask">••••••••••</span></div>
+          </article>
+
+          <article class="tile reveal">
+            <h3>A full audit log</h3>
+            <p>Every tool call is recorded: who, what, when and the result.</p>
+            <div class="mini-log" aria-hidden="true">
+              <div><span class="dot ok"></span>notion.search</div>
+              <div><span class="dot ok"></span>linear.create_issue</div>
+            </div>
+          </article>
+
+          <article class="tile reveal">
+            <h3>The club</h3>
+            <p>Vote on which servers get vetted next, swap agent setups with other members and join monthly build sessions.</p>
+          </article>
+          <article class="tile tile-wide tile-full reveal">
+            <div class="tile-copy">
+              <h3>Your rules</h3>
+              <p>Set policies like “GitHub is read-only” or “ask me before sending email”. Unvetted tools are blocked by default.</p>
+            </div>
+            <div class="mini-rules" aria-hidden="true">
+              <div><span>GitHub</span><b>Read-only</b></div>
+              <div><span>Gmail · send</span><b class="hold">Ask first</b></div>
+              <div><span>Unvetted tools</span><b class="bad">Block</b></div>
+            </div>
+          </article>
+
+        </div>
       </div>
     </section>
 
     <!-- ============ HOW IT WORKS ============ -->
-    <section class="section wrap how">
-      <div class="how-steps reveal">
-        <p class="kicker">How it works</p>
-        <h2>Three steps. <em>One URL.</em></h2>
+    <section class="section wrap how" id="how">
+      <div class="reveal">
+        <p class="eyebrow c-lagoon">How it works</p>
+        <h2>Three steps. One URL.</h2>
         <ol class="steps">
-          <li><span>1</span><div><h3>Pick your servers</h3><p>Choose from the vetted catalog. Read each scorecard before you switch anything on.</p></div></li>
+          <li><span>1</span><div><h3>Pick your servers</h3><p>Choose from the vetted catalog and read each scorecard before you switch anything on.</p></div></li>
           <li><span>2</span><div><h3>Connect your accounts once</h3><p>Sign in to GitHub, Gmail, Notion and the rest. Keys go into your vault, not your config files.</p></div></li>
-          <li><span>3</span><div><h3>Paste one URL</h3><p>Add your private endpoint to Claude, ChatGPT, Cursor or any MCP client. Done.</p></div></li>
+          <li><span>3</span><div><h3>Paste one URL</h3><p>Add your private endpoint to Claude, ChatGPT, Cursor or any MCP client.</p></div></li>
         </ol>
       </div>
       <div class="code-card reveal" aria-label="Example MCP client configuration">
-        <div class="code-head"><span>mcp.json</span><span class="code-hint">that’s the whole config</span></div>
+        <div class="code-head"><span class="dots"><i></i><i></i><i></i></span><span>mcp.json</span></div>
 <pre><code><span class="c-p">{</span>
   <span class="c-k">"mcpServers"</span><span class="c-p">: {</span>
     <span class="c-k">"privo"</span><span class="c-p">: {</span>
@@ -225,53 +264,58 @@
     <span class="c-p">}</span>
   <span class="c-p">}</span>
 <span class="c-p">}</span></code></pre>
+        <p class="code-foot">That’s the whole config.</p>
       </div>
     </section>
 
     <!-- ============ SCORECARD ============ -->
-    <section class="section wrap scorecard-section">
-      <div class="section-head reveal">
-        <p class="kicker">Trust, shown</p>
-        <h2>We read the code <em>so you don’t have to.</em></h2>
-        <p class="sub">Each server is reviewed before it joins the club and pinned to the version we reviewed. If it changes, it’s reviewed again before your gateway gets the update.</p>
-      </div>
-      <div class="scorecard reveal">
-        <div class="sc-head">
-          <div>
-            <span class="sc-icon">GH</span>
-            <div>
-              <h3>GitHub</h3>
-              <p class="sc-sub">Example scorecard</p>
-            </div>
-          </div>
-          <span class="tag tag-ok tag-lg">Privo Verified</span>
+    <section class="section tint" id="trust">
+      <div class="wrap trust">
+        <div class="section-head reveal">
+          <p class="eyebrow c-coral">Trust</p>
+          <h2>We read the code so you don’t have to.</h2>
+          <p class="sub">Each server is reviewed before it joins the club and pinned to the version we reviewed. If it changes, it’s reviewed again before your gateway gets the update.</p>
         </div>
-        <dl class="sc-rows">
-          <div><dt>Publisher</dt><dd>Identity confirmed</dd><dd class="sc-ok">Pass</dd></div>
-          <div><dt>Version</dt><dd>Pinned to the reviewed release</dd><dd class="sc-ok">Pass</dd></div>
-          <div><dt>Permissions</dt><dd>repo:read, issues:write</dd><dd class="sc-ok">Scoped</dd></div>
-          <div><dt>Network egress</dt><dd>api.github.com only</dd><dd class="sc-ok">Pass</dd></div>
-          <div><dt>Tool descriptions</dt><dd>Scanned for hidden instructions</dd><dd class="sc-ok">Clean</dd></div>
-          <div><dt>Secrets handling</dt><dd>Token injected by vault, never logged</dd><dd class="sc-ok">Pass</dd></div>
-        </dl>
+        <div class="scorecard reveal">
+          <div class="sc-head">
+            <div>
+              <span class="srv-icon i-gh sc-icon">GH</span>
+              <div>
+                <h3>GitHub</h3>
+                <p class="sc-sub">Example scorecard</p>
+              </div>
+            </div>
+            <span class="tag tag-ok tag-lg">Privo Verified</span>
+          </div>
+          <dl class="sc-rows">
+            <div><dt>Publisher</dt><dd>Identity confirmed</dd><dd class="sc-ok">Pass</dd></div>
+            <div><dt>Version</dt><dd>Pinned to the reviewed release</dd><dd class="sc-ok">Pass</dd></div>
+            <div><dt>Permissions</dt><dd>repo:read, issues:write</dd><dd class="sc-ok">Scoped</dd></div>
+            <div><dt>Network egress</dt><dd>api.github.com only</dd><dd class="sc-ok">Pass</dd></div>
+            <div><dt>Tool descriptions</dt><dd>Scanned for hidden instructions</dd><dd class="sc-ok">Clean</dd></div>
+            <div><dt>Secrets handling</dt><dd>Token injected by vault, never logged</dd><dd class="sc-ok">Pass</dd></div>
+          </dl>
+        </div>
       </div>
     </section>
 
     <!-- ============ HOSTING ============ -->
     <section class="section wrap">
       <div class="section-head reveal">
-        <p class="kicker">Your data, your call</p>
-        <h2>Hosted by us, <em>or on your own metal.</em></h2>
+        <p class="eyebrow c-leaf">Deployment</p>
+        <h2>Hosted by us, or on your own servers.</h2>
       </div>
       <div class="grid grid-2">
         <article class="host reveal">
+          <span class="chip chip-lagoon"><svg viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 01-.6-9 6 6 0 0111.6 1.5A3.75 3.75 0 0117.25 18H7z"/></svg></span>
           <h3>Privo Cloud</h3>
-          <p>Zero setup. Sign in, pick servers, paste your URL. We run the gateway and the vault, with encryption at rest and in transit.</p>
+          <p>Zero setup. Sign in, pick servers, paste your URL. We run the gateway and the vault, encrypted at rest and in transit.</p>
           <ul><li>Ready in minutes</li><li>Managed updates and re-reviews</li><li>Dashboard, policies and audit log</li></ul>
         </article>
-        <article class="host host-alt reveal">
+        <article class="host reveal">
+          <span class="chip chip-leaf"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></span>
           <h3>Self-hosted</h3>
-          <p>Deploy the same gateway to your own server with Docker or Coolify in one click. Your keys and your logs never leave your infrastructure.</p>
+          <p>Deploy the same gateway to your own server with Docker or Coolify in one click. Your keys and logs never leave your infrastructure.</p>
           <ul><li>One-click Docker and Coolify deploys</li><li>Same vetted catalog, synced to you</li><li>Nothing phones home</li></ul>
         </article>
       </div>
@@ -280,9 +324,11 @@
     <!-- ============ FOUNDING ============ -->
     <section class="section wrap">
       <div class="founding reveal">
-        <p class="kicker">Founding members</p>
-        <h2>The first 500 members <em>shape the club.</em></h2>
-        <div class="grid grid-3 perks">
+        <div>
+          <p class="eyebrow c-sun-dark">Founding members</p>
+          <h2>The first 500 members shape the club.</h2>
+        </div>
+        <div class="perks">
           <div><h3>Early access</h3><p>Invites go out in small groups, in list order. Members who bring friends move to the front.</p></div>
           <div><h3>A real say</h3><p>You decide which servers we vet first and which features ship next.</p></div>
           <div><h3>Founding pricing</h3><p>Your membership rate is locked in for as long as you stay.</p></div>
@@ -291,10 +337,10 @@
     </section>
 
     <!-- ============ FAQ ============ -->
-    <section class="section wrap faq-section">
+    <section class="section wrap faq-section" id="faq">
       <div class="section-head reveal">
-        <p class="kicker">Questions</p>
-        <h2>Before you <em>pull up a chair.</em></h2>
+        <p class="eyebrow c-lagoon">FAQ</p>
+        <h2>Questions, answered.</h2>
       </div>
       <div class="faq reveal">
         <details>
@@ -315,23 +361,24 @@
         </details>
         <details>
           <summary>What do you do with my email?</summary>
-          <p>We store your email and any survey answers you choose to give, and use them only to invite you and build the club. No ad trackers on this site, no selling, no sharing. Email <a href="mailto:hello@privo.club">hello@privo.club</a> and we’ll delete it.</p>
+          <p>We store your email and any survey answers you choose to give, and use them only to invite you and build the club. No ad trackers on this site, no selling, no sharing. Email <a href="mailto:support@privo.club">support@privo.club</a> and we’ll delete it.</p>
         </details>
       </div>
     </section>
 
     <!-- ============ FINAL CTA ============ -->
-    <section class="section wrap final">
-      <div class="final-card reveal">
-        <h2>Your seat is <em>waiting.</em></h2>
+    <section class="final">
+      <div class="final-bg" aria-hidden="true"><span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span></div>
+      <div class="wrap final-inner reveal">
+        <h2>Your seat is waiting.</h2>
         <p class="sub">Join the list for an invite to the founding cohort.</p>
         <div class="join-slot">
           <form class="join" data-join novalidate>
             <label class="sr-only" for="email-final">Email address</label>
             <div class="join-row">
               <input id="email-final" name="email" type="email" autocomplete="email" inputmode="email"
-                     placeholder="you@company.com" required>
-              <button class="btn btn-brass" type="submit">Request an invite</button>
+                     placeholder="Your work email" required>
+              <button class="btn btn-dark" type="submit">Request an invite</button>
             </div>
             <div class="hp" aria-hidden="true">
               <label>Website <input name="website" tabindex="-1" autocomplete="off"></label>
@@ -343,21 +390,28 @@
     </section>
   </main>
 
-  <footer class="footer wrap">
-    <span class="brand-name">Privo<span class="brand-dot">.</span>club</span>
-    <span>No trackers on this page. Not even analytics.</span>
-    <span>© 2024–2026 Privo Club</span>
+  <footer class="footer">
+    <div class="wrap footer-inner">
+      <a class="brand" href="/"><img src="/favicon.svg" alt="" width="22" height="22"><span>Privo Club</span></a>
+      <span>No trackers on this site. Not even analytics.</span>
+      <span>© 2024–2026 Privo Club · <a href="mailto:support@privo.club">support@privo.club</a></span>
+    </div>
   </footer>
 
   <!-- Shown in place of a form once someone has joined -->
   <template id="joined-tpl">
     <div class="joined">
-      <p class="joined-title">You’re on the list<span data-already hidden>, again</span>.</p>
-      <p class="joined-pos">No. <strong data-pos></strong></p>
+      <div class="joined-head">
+        <span class="joined-check" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+        <div>
+          <p class="joined-title">You’re on the list<span data-already hidden>, again</span>.</p>
+          <p class="joined-pos">Founding member No. <strong data-pos></strong></p>
+        </div>
+      </div>
       <p class="joined-copy">Invites go out in list order, and members who bring friends move to the front. Share your link:</p>
       <div class="share">
         <input data-share-url readonly aria-label="Your invite link">
-        <button class="btn btn-ghost btn-sm" type="button" data-copy>Copy</button>
+        <button class="btn btn-light btn-sm" type="button" data-copy>Copy</button>
       </div>
       <p class="joined-inbox" data-inbox hidden>Check your inbox: we’ve sent a welcome note with a 5-point MCP safety checklist.</p>
       <p class="joined-refs" data-refs hidden></p>
@@ -370,7 +424,7 @@
     <form method="dialog" data-survey>
       <div class="survey-head">
         <div>
-          <p class="kicker">Welcome, No. <span data-pos></span></p>
+          <p class="eyebrow c-leaf">Welcome, No. <span data-pos></span></p>
           <h2 id="survey-title">Help us build the right club.</h2>
           <p class="sub">Five quick questions, about 30 seconds. All optional.</p>
         </div>
@@ -445,16 +499,16 @@
 
       <div class="survey-actions">
         <button class="link-btn" type="button" data-close>Skip for now</button>
-        <button class="btn btn-brass" type="submit">Send answers</button>
+        <button class="btn btn-dark" type="submit">Send answers</button>
       </div>
       <p class="join-msg" data-survey-msg role="status" aria-live="polite"></p>
     </form>
 
     <div class="survey-done" hidden>
-      <p class="kicker">Thank you</p>
-      <h2>Noted. You’ve already shaped the club.</h2>
+      <span class="joined-check big" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg></span>
+      <h2>Thank you. That helps a lot.</h2>
       <p class="sub">We’ll be in touch when your invite is ready.</p>
-      <button class="btn btn-ghost" type="button" data-close>Close</button>
+      <button class="btn btn-light" type="button" data-close>Close</button>
     </div>
   </dialog>
 </body>

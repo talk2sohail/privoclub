@@ -4,19 +4,23 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
-  <title>Waitlist — Privo Club</title>
+  <title>Waitlist | Privo Club</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/admin.css">
   <script src="/admin.js" defer></script>
 </head>
-<body>
-  <header class="nav wrap">
-    <a class="brand" href="/"><img src="/favicon.svg" alt="" width="28" height="28"><span class="brand-name">Privo<span class="brand-dot">.</span>club</span></a>
-    <span class="nav-est">Waitlist dashboard</span>
-    <button class="btn btn-ghost btn-sm" type="button" data-send-pending hidden>Send missing welcome emails</button>
-    <button class="btn btn-ghost btn-sm" type="button" data-export hidden>Export CSV</button>
-    <button class="btn btn-ghost btn-sm" type="button" data-logout hidden>Sign out</button>
+<body class="admin-page">
+  <header class="nav admin-nav">
+    <div class="wrap nav-inner">
+      <a class="brand" href="/"><img src="/favicon.svg" alt="" width="24" height="24"><span>Privo Club</span></a>
+      <span class="nav-title">Waitlist</span>
+      <div class="nav-actions">
+        <button class="btn btn-light btn-sm" type="button" data-send-pending hidden>Send missing welcome emails</button>
+        <button class="btn btn-light btn-sm" type="button" data-export hidden>Export CSV</button>
+        <button class="btn btn-light btn-sm" type="button" data-logout hidden>Sign out</button>
+      </div>
+    </div>
   </header>
 
   <main class="wrap admin">
@@ -26,7 +30,7 @@
       <div class="join-row">
         <label class="sr-only" for="token">Admin token</label>
         <input id="token" name="token" type="password" autocomplete="current-password" placeholder="Admin token" required>
-        <button class="btn btn-brass" type="submit">Open</button>
+        <button class="btn btn-dark" type="submit">Open</button>
       </div>
       <p class="join-msg" role="status" aria-live="polite"></p>
     </form>
