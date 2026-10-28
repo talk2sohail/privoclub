@@ -262,7 +262,7 @@ ADRs: 0004, 0010
 
 - [x] Claude Code over a static bearer header (`claude mcp add --transport http`): connects; the empty `cacheScope` bug was found and fixed (see F02). Still to confirm in Claude Code: `tools/call`, prompts and resources
 - [x] `tools/call` through DeepWiki failed in Claude Code: results lacked `resultType` (required from 2026-07-28). Fixed in `internal/gateway/resulttype.go`; `TestEveryResultCarriesResultTypeOnNewProtocol` speaks the new protocol as raw JSON against an upstream that does and one that does not. Needs a re-run in Claude Code after deploy
-- [ ] Report to the Go SDK: results returned from receiving middleware miss `resultType` (the field is unexported and only the SDK's own handlers set it). Drop `typedResult` when a release fixes it
+- [ ] Report to the Go SDK: results returned from receiving middleware miss `resultType` (the field is unexported and only the SDK's own handlers set it). Issue text with a reproduction is drafted in `docs/upstream/go-sdk-resulttype-from-middleware.md`; search the tracker for duplicates, then file. Drop `typedResult` when a release fixes it
 - [ ] Validate the gateway's raw responses against the MCP schema in the acceptance suite, so a strict client cannot surprise us again (the Go SDK client accepts what Claude Code rejects)
 
 - [ ] CI tests against reference clients and upstreams, both protocol versions
