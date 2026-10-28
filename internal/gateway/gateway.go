@@ -116,7 +116,7 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 		case "resources/list":
 			return g.listResources(ctx, p)
 		case "resources/templates/list":
-			return &mcp.ListResourceTemplatesResult{ResourceTemplates: []*mcp.ResourceTemplate{}}, nil
+			return &mcp.ListResourceTemplatesResult{Cacheable: listCache(), ResourceTemplates: []*mcp.ResourceTemplate{}}, nil
 		case "resources/read":
 			params, _ := req.GetParams().(*mcp.ReadResourceParams)
 			if params == nil {
@@ -168,12 +168,25 @@ func (g *Gateway) find(ctx context.Context, org store.OrgID, kind, public string
 	return upstream.Item{}, false, nil
 }
 
+// Cache hints (ADR 0001). What a person sees depends on who they are, so every
+// result is private to the requesting client. Lists may be reused for a few
+// seconds, in line with the 5-second bound on revocation (ADR 0003); a resource
+// read is never reused. The SDK fills in a default only for results it builds
+// itself, and strict clients such as Claude Code reject an empty cacheScope, so
+// every list result built here and every read forwarded from an upstream sets
+// the hints explicitly. An upstream's own hints are overridden: a "public"
+// scope from a server must not make per-person content shareable.
+const listCacheTTLMs = 5000
+
+func listCache() mcp.Cacheable { return mcp.Cacheable{TTLMs: listCacheTTLMs, CacheScope: "private"} }
+func readCache() mcp.Cacheable { return mcp.Cacheable{TTLMs: 0, CacheScope: "private"} }
+
 func (g *Gateway) listTools(ctx context.Context, p auth.Principal) (mcp.Result, error) {
 	items, err := g.visible(ctx, p.OrgID, upstream.KindTool)
 	if err != nil {
 		return nil, err
 	}
-	res := &mcp.ListToolsResult{Tools: make([]*mcp.Tool, 0, len(items))}
+	res := &mcp.ListToolsResult{Cacheable: listCache(), Tools: make([]*mcp.Tool, 0, len(items))}
 	for _, it := range items {
 		t := *it.Tool
 		t.Name = PublicName(it.Alias, it.Name)
@@ -187,7 +200,7 @@ func (g *Gateway) listPrompts(ctx context.Context, p auth.Principal) (mcp.Result
 	if err != nil {
 		return nil, err
 	}
-	res := &mcp.ListPromptsResult{Prompts: make([]*mcp.Prompt, 0, len(items))}
+	res := &mcp.ListPromptsResult{Cacheable: listCache(), Prompts: make([]*mcp.Prompt, 0, len(items))}
 	for _, it := range items {
 		pr := *it.Prompt
 		pr.Name = PublicName(it.Alias, it.Name)
@@ -201,7 +214,7 @@ func (g *Gateway) listResources(ctx context.Context, p auth.Principal) (mcp.Resu
 	if err != nil {
 		return nil, err
 	}
-	res := &mcp.ListResourcesResult{Resources: make([]*mcp.Resource, 0, len(items))}
+	res := &mcp.ListResourcesResult{Cacheable: listCache(), Resources: make([]*mcp.Resource, 0, len(items))}
 	for _, it := range items {
 		r := *it.Resource
 		r.Name = PublicName(it.Alias, it.Resource.Name)
@@ -467,6 +480,7 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 		for _, c := range res.Contents {
 			c.URI = ResourceURI(alias, c.URI)
 		}
+		res.Cacheable = readCache()
 		result = res
 		return "ok", nil
 	})

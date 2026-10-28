@@ -34,3 +34,13 @@ the `config.Secret` type, and the static root page.
 
 - The Coolify webhook and watch paths (no code; configuration only, not yet done).
 - Behaviour under a real Coolify deploy: the 24-hour window, env handling by Coolify, and Traefik in front of `/`.
+
+## Addendum: cache hints on list and read results (same day)
+
+Self-review again; the request pipeline is touched, so the independent review should include it.
+
+- **Change:** list results now set `cacheScope: "private"` and a 5-second `ttlMs`; `resources/read` forces `private` and ttl 0, replacing whatever the upstream sent.
+- **Security effect:** it tightens things. Before, `resources/read` forwarded an upstream's `public` scope, which tells clients and intermediaries that per-person content may be shared. Lists went out with an empty scope, which strict clients reject.
+- **Behaviour risk:** a client may reuse a list for 5 seconds, which equals the revocation bound in ADR 0003 and adds no new window.
+- **Test:** `TestListAndReadResultsCarryValidCacheHints` reads the raw JSON, including the `resources/read` override.
+

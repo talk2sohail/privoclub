@@ -70,6 +70,7 @@ ADRs: 0001, 0004
 - [x] Security review of milestone 1: 4 high, 4 medium, 4 low findings, all fixed (docs/reviews/2026-10-28-milestone-1-security-review.md)
 - [ ] Tests for the admin API (token revocation ranks, header validation) and refresh coalescing
 - [ ] Decide whether `/version` stays unauthenticated
+- [x] List results (tools, prompts, resources, templates) carry `cacheScope: "private"` and `ttlMs: 5000`; `resources/read` is private with ttl 0 and overrides an upstream's own hints (ADR 0001). Found with Claude Code on 2026-10-29: it rejected the empty `cacheScope` and showed "tools fetch failed". Test: `TestListAndReadResultsCarryValidCacheHints` (raw JSON, since the Go client does not check the field)
 
 ## F03. Storage and tenancy
 Status: In progress
@@ -255,8 +256,11 @@ ADRs: 0011
 - [ ] Passkeys or TOTP for local accounts
 
 ## F21. Client compatibility suite
-Status: Not started
+Status: In progress (first real client tried 2026-10-29)
 ADRs: 0004, 0010
+
+- [x] Claude Code over a static bearer header (`claude mcp add --transport http`): connects; the empty `cacheScope` bug was found and fixed (see F02). Still to confirm in Claude Code: `tools/call`, prompts and resources
+- [ ] Validate the gateway's raw responses against the MCP schema in the acceptance suite, so a strict client cannot surprise us again (the Go SDK client accepts what Claude Code rejects)
 
 - [ ] CI tests against reference clients and upstreams, both protocol versions
 - [ ] Manual matrix: Claude Code, Cursor, Codex, VS Code, Amp, ChatGPT
