@@ -104,7 +104,8 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 			if params == nil {
 				return nil, errors.New("invalid tools/call params")
 			}
-			return g.callTool(ctx, p, params)
+			res, err := g.callTool(ctx, p, params)
+			return withResultType(req, res, err)
 		case "prompts/list":
 			return g.listPrompts(ctx, p)
 		case "prompts/get":
@@ -112,7 +113,8 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 			if params == nil {
 				return nil, errors.New("invalid prompts/get params")
 			}
-			return g.getPrompt(ctx, p, params)
+			res, err := g.getPrompt(ctx, p, params)
+			return withResultType(req, res, err)
 		case "resources/list":
 			return g.listResources(ctx, p)
 		case "resources/templates/list":
@@ -122,7 +124,8 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 			if params == nil {
 				return nil, errors.New("invalid resources/read params")
 			}
-			return g.readResource(ctx, p, params)
+			res, err := g.readResource(ctx, p, params)
+			return withResultType(req, res, err)
 		}
 		return next(ctx, method, req)
 	}

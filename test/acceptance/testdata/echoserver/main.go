@@ -8,6 +8,7 @@
 //	tools-only  tool "ping" only; writes any prompts/* or resources/* request to $FLAG
 //	flaky       exits with status 1 until it has been started twice (counts in $MARKER), then default
 //	annotated   tools "read_note" (readOnlyHint) and "delete_note" (destructiveHint)
+//	legacy      as default, but speaks only protocol versions before 2026-07-28, like most servers today
 package main
 
 import (
@@ -25,7 +26,7 @@ type echoInput struct {
 }
 
 func main() {
-	mode := flag.String("mode", "default", "default, tools-only, flaky or annotated")
+	mode := flag.String("mode", "default", "default, tools-only, flaky, annotated or legacy")
 	flag.Parse()
 
 	if *mode == "flaky" {
@@ -42,7 +43,13 @@ func main() {
 		}
 	}
 
-	s := mcp.NewServer(&mcp.Implementation{Name: "echo", Version: "0.0.1"}, nil)
+	var opts *mcp.ServerOptions
+	if *mode == "legacy" {
+		// Results from such a server carry no "resultType"; the gateway has
+		// to add it for clients on 2026-07-28 (resulttype_test.go).
+		opts = &mcp.ServerOptions{SupportedProtocolVersions: []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}}
+	}
+	s := mcp.NewServer(&mcp.Implementation{Name: "echo", Version: "0.0.1"}, opts)
 
 	if *mode == "annotated" {
 		yes := true
