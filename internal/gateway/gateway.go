@@ -460,6 +460,25 @@ func (g *Gateway) getPrompt(ctx context.Context, p auth.Principal, params *mcp.G
 	return result, err
 }
 
+// rewriteRead gives every content of an upstream's resources/read reply its
+// public URI. The reply is untrusted: no result, or a null among the contents,
+// is refused as malformed before anything is changed, because a panic here
+// would end the process for every tenant.
+func rewriteRead(alias string, res *mcp.ReadResourceResult) error {
+	if res == nil {
+		return errors.New("upstream sent a malformed resources/read reply: no result")
+	}
+	for i, c := range res.Contents {
+		if c == nil {
+			return fmt.Errorf("upstream sent a malformed resources/read reply: contents[%d] is null", i)
+		}
+	}
+	for _, c := range res.Contents {
+		c.URI = ResourceURI(alias, c.URI)
+	}
+	return nil
+}
+
 func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mcp.ReadResourceParams) (mcp.Result, error) {
 	alias, up, ok := ParseResourceURI(params.URI)
 	if !ok {
@@ -480,8 +499,8 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 		if err != nil {
 			return "error", err
 		}
-		for _, c := range res.Contents {
-			c.URI = ResourceURI(alias, c.URI)
+		if err = rewriteRead(alias, res); err != nil {
+			return "error", err
 		}
 		res.Cacheable = readCache()
 		result = res

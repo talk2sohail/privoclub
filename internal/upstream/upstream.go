@@ -402,6 +402,9 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 			if err != nil {
 				return fmt.Errorf("tools/list: %w", err)
 			}
+			if t == nil { // the SDK client drops these itself today; do not depend on that
+				return errNullEntry("tools/list")
+			}
 			if err := add(KindTool, t.Name, t, func(i *Item) { i.Tool = t }); err != nil {
 				return err
 			}
@@ -412,6 +415,9 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 			if err != nil {
 				return fmt.Errorf("prompts/list: %w", err)
 			}
+			if p == nil {
+				return errNullEntry("prompts/list")
+			}
 			if err := add(KindPrompt, p.Name, p, func(i *Item) { i.Prompt = p }); err != nil {
 				return err
 			}
@@ -421,6 +427,9 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 		for r, err := range session.Resources(ctx, nil) {
 			if err != nil {
 				return fmt.Errorf("resources/list: %w", err)
+			}
+			if r == nil {
+				return errNullEntry("resources/list")
 			}
 			if err := add(KindResource, r.URI, r, func(i *Item) { i.Resource = r }); err != nil {
 				return err
@@ -443,6 +452,13 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 	e.state = ServerState{Status: StatusUp, Items: items}
 	e.session = session
 	return nil
+}
+
+// errNullEntry reports a list that has a JSON null among its items. The upstream
+// is untrusted input and one process serves every tenant, so this puts that
+// server down with a reason; dereferencing the null would end the process.
+func errNullEntry(method string) error {
+	return fmt.Errorf("%s: server returned a null entry", method)
 }
 
 func firstNonNil(it Item) any {

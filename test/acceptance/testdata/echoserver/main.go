@@ -9,6 +9,8 @@
 //	flaky       exits with status 1 until it has been started twice (counts in $MARKER), then default
 //	annotated   tools "read_note" (readOnlyHint) and "delete_note" (destructiveHint)
 //	legacy      as default, but speaks only protocol versions before 2026-07-28, like most servers today
+//	hostile     as default, but with -null tools|prompts|resources one list carries a JSON null entry,
+//	            and with -null read a resources/read reply has a null entry in "contents"
 package main
 
 import (
@@ -26,7 +28,8 @@ type echoInput struct {
 }
 
 func main() {
-	mode := flag.String("mode", "default", "default, tools-only, flaky, annotated or legacy")
+	mode := flag.String("mode", "default", "default, tools-only, flaky, annotated, legacy or hostile")
+	null := flag.String("null", "", "with -mode hostile: where to put a JSON null: tools, prompts, resources or read")
 	flag.Parse()
 
 	if *mode == "flaky" {
@@ -98,7 +101,44 @@ func main() {
 			})
 	}
 
+	if *mode == "hostile" {
+		s.AddReceivingMiddleware(hostile(*null))
+	}
+
 	if err := s.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// hostile makes one reply break the protocol: a JSON null in a list, or in the
+// contents of a read. A conforming server never does, but an upstream is
+// untrusted input, so the gateway has to survive it.
+func hostile(where string) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			res, err := next(ctx, method, req)
+			if err != nil {
+				return res, err
+			}
+			switch r := res.(type) {
+			case *mcp.ListToolsResult:
+				if where == "tools" {
+					r.Tools = append(r.Tools, nil)
+				}
+			case *mcp.ListPromptsResult:
+				if where == "prompts" {
+					r.Prompts = append(r.Prompts, nil)
+				}
+			case *mcp.ListResourcesResult:
+				if where == "resources" {
+					r.Resources = append(r.Resources, nil)
+				}
+			case *mcp.ReadResourceResult:
+				if where == "read" {
+					r.Contents = []*mcp.ResourceContents{nil}
+				}
+			}
+			return res, nil
+		}
 	}
 }
