@@ -1,0 +1,27 @@
+version: "2"
+run:
+  timeout: 5m
+  build-tags: [acceptance]
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - gosec
+    - misspell
+    - noctx
+    - revive
+    - unparam
+    - contextcheck
+    - nilerr
+  settings:
+    gosec:
+      excludes:
+        - G104 # unchecked errors are covered by errcheck
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [gosec, noctx, bodyclose]
+formatters:
+  enable: [gofmt, goimports]

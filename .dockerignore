@@ -1,6 +1,11 @@
-node_modules
-data
-.env
 .git
+bin
+data
+docs
+*.md
+
+# Landing page (built separately from site/) and local backups
+site
+_backup-*
+.env
 .DS_Store
-README.md

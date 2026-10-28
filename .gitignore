@@ -1,4 +1,14 @@
-node_modules
-data
+/bin/
+/data/
+*.test
+coverage.out
 .env
+
+# Local backups and data (never commit)
+/_backup-*/
+
+# Landing page (site/) local files
+/site/node_modules/
+/site/.env
+/site/data/
 .DS_Store
