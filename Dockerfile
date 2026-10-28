@@ -8,10 +8,13 @@ ARG VERSION=dev COMMIT=none DATE=unknown
 RUN CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w -X privo.club/privo/internal/buildinfo.Version=${VERSION} -X privo.club/privo/internal/buildinfo.Commit=${COMMIT} -X privo.club/privo/internal/buildinfo.Date=${DATE}" \
     -o /out/privo ./cmd/privo
+# The data dir must exist and belong to nonroot, or a fresh volume is root-owned.
+RUN mkdir -p /out/data
 
 # Static, non-root, no shell. The stdio runner is a separate image (ADR 0007).
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/privo /privo
+COPY --from=build --chown=65532:65532 /out/data /data
 ENV PRIVO_LISTEN=:8080 PRIVO_DATA_DIR=/data
 VOLUME ["/data"]
 EXPOSE 8080
