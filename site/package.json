@@ -1,0 +1,17 @@
+{
+  "name": "privoclub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Privo Club landing page and waitlist",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env server.js",
+    "dev": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env --watch server.js"
+  },
+  "dependencies": {
+    "nodemailer": "^10.0.16"
+  }
+}
