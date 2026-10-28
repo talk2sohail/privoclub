@@ -4,12 +4,36 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 	"time"
+
+	"privo.club/privo/internal/token"
 )
+
+// Secret is a configuration value that must never reach a log line, an error
+// message or an API response. Every formatting path prints a placeholder; the
+// value is available only through Reveal.
+type Secret string
+
+// Reveal returns the secret value.
+func (s Secret) Reveal() string { return string(s) }
+
+// String implements fmt.Stringer.
+func (Secret) String() string { return "[redacted]" }
+
+// GoString implements fmt.GoStringer, for %#v.
+func (Secret) GoString() string { return "[redacted]" }
+
+// LogValue implements slog.LogValuer.
+func (Secret) LogValue() slog.Value { return slog.StringValue("[redacted]") }
+
+// MarshalText implements encoding.TextMarshaler, so JSON output is redacted too.
+func (Secret) MarshalText() ([]byte, error) { return []byte("[redacted]"), nil }
 
 // Config is the validated process configuration.
 type Config struct {
@@ -39,6 +63,10 @@ type Config struct {
 	// ApprovalHold is how long a call waits for a person's decision before the
 	// caller is told to retry (PRIVO_APPROVAL_HOLD).
 	ApprovalHold time.Duration
+	// BootstrapToken is a token made with `privo token generate` that the first
+	// boot installs as the owner's control token (PRIVO_BOOTSTRAP_TOKEN, or
+	// PRIVO_BOOTSTRAP_TOKEN_FILE, which wins). Empty when unset. See F24.
+	BootstrapToken Secret
 }
 
 // Defaults applied when a variable is unset or empty.
@@ -114,6 +142,12 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 
+	bt, err := loadBootstrapToken(getenv)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	cfg.BootstrapToken = bt
+
 	if v := getenv("PRIVO_PUBLIC_URL"); v != "" {
 		u, err := parsePublicURL(v)
 		if err != nil {
@@ -127,6 +161,36 @@ func Load(getenv func(string) string) (Config, error) {
 		return Config{}, errors.Join(errs...)
 	}
 	return cfg, nil
+}
+
+// loadBootstrapToken reads and checks the bootstrap token. Errors name the
+// variable but never repeat its value.
+func loadBootstrapToken(getenv func(string) string) (Secret, error) {
+	name, raw := "PRIVO_BOOTSTRAP_TOKEN", getenv("PRIVO_BOOTSTRAP_TOKEN")
+	if path := strings.TrimSpace(getenv("PRIVO_BOOTSTRAP_TOKEN_FILE")); path != "" {
+		name = "PRIVO_BOOTSTRAP_TOKEN_FILE"
+		f, err := os.Open(path) //nolint:gosec // operator-supplied path is the point
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", name, err)
+		}
+		defer func() { _ = f.Close() }()
+		b, err := io.ReadAll(io.LimitReader(f, 1<<10))
+		if err != nil {
+			return "", fmt.Errorf("%s: %w", name, err)
+		}
+		if strings.TrimSpace(string(b)) == "" {
+			return "", fmt.Errorf("%s: the file is empty", name)
+		}
+		raw = string(b)
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if _, _, err := token.Parse(raw); err != nil {
+		return "", fmt.Errorf("%s: not a valid Privo token; make one with `privo token generate`", name)
+	}
+	return Secret(raw), nil
 }
 
 func parsePublicURL(v string) (*url.URL, error) {

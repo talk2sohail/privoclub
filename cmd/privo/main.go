@@ -5,6 +5,8 @@
 //	privo serve         run the gateway (default)
 //	privo version       print build information
 //	privo healthcheck   exit 0 if the local server is live (for container health checks)
+//	privo token create  issue a token from the command line (needs the data directory)
+//	privo token generate  print a fresh token for PRIVO_BOOTSTRAP_TOKEN (touches nothing)
 package main
 
 import (
@@ -42,16 +44,19 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 	case "healthcheck":
 		return healthcheck(stderr, getenv)
 	case "token":
+		if len(args) >= 2 && args[1] == "generate" {
+			return tokenGenerate(args[2:], stdout, stderr)
+		}
 		if len(args) < 2 || args[1] != "create" {
-			_, _ = fmt.Fprintln(stderr, "usage: privo token create --name NAME [--role owner|admin|auditor|approver|member] [--kind control|gateway] [--person NAME]")
+			_, _ = fmt.Fprintln(stderr, "usage: privo token create --name NAME [--role owner|admin|auditor|approver|member] [--kind control|gateway] [--person NAME]\n       privo token generate")
 			return 2
 		}
 		return tokenCreate(args[2:], stdout, stderr, getenv)
 	case "help", "-h", "--help":
-		_, _ = fmt.Fprintln(stdout, "usage: privo [serve|version|healthcheck|token create]")
+		_, _ = fmt.Fprintln(stdout, "usage: privo [serve|version|healthcheck|token create|token generate]")
 		return 0
 	default:
-		_, _ = fmt.Fprintf(stderr, "privo: unknown command %q\nusage: privo [serve|version|healthcheck|token create]\n", cmd)
+		_, _ = fmt.Fprintf(stderr, "privo: unknown command %q\nusage: privo [serve|version|healthcheck|token create|token generate]\n", cmd)
 		return 2
 	}
 }

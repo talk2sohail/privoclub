@@ -37,9 +37,10 @@ curl localhost:8080/livez
 | `PRIVO_APPROVAL_HOLD` | `25s` | How long a call waits for an approval decision |
 | `PRIVO_TOKEN_TTL` | `2160h` | Default personal token lifetime |
 | `PRIVO_EGRESS_ALLOW_CIDRS` | unset | Internal networks remote servers may use (self-hosted only) |
+| `PRIVO_BOOTSTRAP_TOKEN_FILE` / `PRIVO_BOOTSTRAP_TOKEN` | unset | First boot only: a token from `privo token generate`, installed once as the owner's control token (expires after 24h). Remove after first use |
 
-Endpoints: `/mcp` (MCP gateway), `/api/v1/...` (admin API), `/livez`,
-`/readyz`, `/version`.
+Endpoints: `/` (static landing page), `/mcp` (MCP gateway), `/api/v1/...`
+(admin API), `/livez`, `/readyz`, `/version`.
 
 ## Tokens
 
@@ -50,10 +51,17 @@ Privo has two kinds of personal token (ADR 0014):
 - **Control tokens** are for people administering Privo and work only on the
   admin API. Approvers only get control tokens.
 
-First setup, on the server:
+First setup, where you have a shell on the server:
 
 ```sh
 privo token create --name you --role owner --kind control       # admin API
 privo token create --name you-agent --role owner --kind gateway --person you   # AI client
 ```
 
+Where you have no shell (the distroless image on Coolify), generate a token on
+your own machine and give it to the first boot instead; see
+`docs/deploy-coolify.md`:
+
+```sh
+go run ./cmd/privo token generate     # prints the token; keep it, it is not shown again
+```

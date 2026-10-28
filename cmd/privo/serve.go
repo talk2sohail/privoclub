@@ -37,6 +37,10 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		_, _ = fmt.Fprintf(stderr, "privo: invalid configuration:\n%v\n", err)
 		return 2
 	}
+	if cfg.BootstrapToken != "" {
+		// Like the master key: gone from the environment, so child processes never inherit it.
+		_ = os.Unsetenv("PRIVO_BOOTSTRAP_TOKEN")
+	}
 	logger := newLogger(stderr, cfg)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -74,6 +78,11 @@ func runGateway(ctx context.Context, cfg config.Config, logger *slog.Logger) err
 	kr := keyring.New(st, keys)
 	if err := kr.EnsureOrgKey(ctx, org.ID); err != nil {
 		return err
+	}
+	if cfg.BootstrapToken != "" {
+		if err := installBootstrap(ctx, st, org.ID, cfg.BootstrapToken.Reveal(), logger); err != nil {
+			return err
+		}
 	}
 
 	var rn runner.Runner

@@ -41,6 +41,7 @@ func New(opts Options) *Server {
 		opts.ShutdownTimeout = 30 * time.Second
 	}
 	mux := http.NewServeMux()
+	mux.Handle("GET /{$}", rootHandler()) // exactly "/"; every other unknown path stays 404
 	mux.Handle("GET /livez", health.LiveHandler())
 	mux.Handle("GET /readyz", opts.Health.ReadyHandler())
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {

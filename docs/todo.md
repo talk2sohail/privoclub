@@ -107,7 +107,7 @@ ADRs: 0003
 Status: Not started
 ADRs: 0003
 
-- [ ] First-boot setup link
+- [ ] First-boot setup link (until then, F24's `PRIVO_BOOTSTRAP_TOKEN` gives the first owner token)
 - [ ] OIDC (Google, Microsoft); magic-link fallback
 - [ ] Orgs, members, roles, groups, invites
 
@@ -277,3 +277,42 @@ Goal: a stolen database plus every Privo key cannot decrypt a person's upstream 
 - [ ] Prototype: per-user key wrapped by keys derived from each active token secret (key slots)
 - [ ] Re-wrap on token rotation; reconnect flow when all tokens are revoked
 - [ ] Security review before release
+
+## F24. First-deploy readiness
+Status: In progress (code done, tested; Coolify settings and independent review open)
+ADRs: 0003, 0010 (no new ADR: the bootstrap token is an interim measure until the F05 first-boot setup link replaces it)
+
+Goal: a fresh Coolify deploy (distroless image, no shell, so no web terminal and
+no `privo token create` from the Coolify UI) goes from "running" to "the owner
+holds an admin token" without any secret being logged or returned by the API; it
+serves a sensible page at `/`; and a push to `main` rebuilds only the app whose
+files changed.
+
+Acceptance criteria:
+1. With `PRIVO_BOOTSTRAP_TOKEN` (or `PRIVO_BOOTSTRAP_TOKEN_FILE`) set to a well-formed token and no control token ever issued for the org, the first boot installs it as an owner control token named `bootstrap`, expiring 24 hours after install. Only the SHA-256 of its secret is stored.
+2. It installs at most once per org. A restart with the variable still set does nothing, even when the token was revoked or has expired. If any control token already exists, nothing is installed and a warning says so.
+3. A malformed value stops the process at startup (exit 2) and the message never contains the value.
+4. The install is audited (`bootstrap.token.install:<id>`, actor `system`); the log carries the token id only.
+5. The variable is removed from the process environment after loading.
+6. `privo token generate` prints a fresh well-formed token and touches neither the data directory nor the configuration, so it can run on a laptop.
+7. `GET /` returns a static HTML page (200) with security headers; any other unknown path stays 404; `POST /` is 405; the page shows no version, org or configuration.
+8. A push to `main` that changes only `site/**` deploys the landing page and not the gateway; a push that changes anything else deploys the gateway and not the landing page. The GitHub webhook delivers (verified signature) to Coolify.
+
+Threat note:
+- The bootstrap token sits in the Coolify environment, readable by anyone with Coolify access and via `/proc/<pid>/environ`. Those people already hold the master key. Mitigations: 24-hour expiry from install, install-once marker, variable cleared from the process environment, `is_shown_once` in Coolify, and the guide says to delete the variable after first use.
+- Resurrection: a revoked or expired bootstrap token must not come back at the next restart. The `bootstrap.consumed` setting is written in the same transaction as the token row.
+- Two processes racing at first boot: the writer lease allows one; the install check and insert share one transaction.
+- Guessing: 256-bit secret, constant-time hash comparison on the existing verify path.
+- Root page: fully static, no reflected input, no version or tenant data; `default-src 'none'` CSP, `nosniff`, no framing.
+- Webhook: Coolify verifies the GitHub HMAC secret; the secret never enters the repo.
+
+Tasks (tests named first, per the workflow):
+- [x] Tests, `internal/store`: `TestInstallBootstrapToken` (installs once, refuses when a control token exists, refuses after consumed even when the token is revoked, writes marker and row together, cross-org isolation)
+- [x] Tests, `internal/control`: `TestBootstrapToken` (malformed rejected without echoing the value, installed token authenticates as owner control, cannot call `/mcp`, expires after 24h, only hash stored)
+- [x] Tests, `internal/config`: `TestBootstrapTokenConfig` (env and file forms, file wins, malformed rejected, value not in error text)
+- [x] Tests: `internal/server` `TestRootPage` (200 and headers, CSP hash matches the inline style, 404 for other paths, 405 for writes, nothing reflected); `cmd/privo` `TestTokenGenerate`, `TestServeRejectsMalformedBootstrapToken`, `TestInstallBootstrapAtStartup`; acceptance `TestBootstrapTokenFirstRun`, `TestBootstrapTokenIgnoredWhenAlreadyAdministered`, `TestRootPage`
+- [x] Build: store method (token, consumed marker and audit in one transaction), control installer, config with a redacting `Secret` type, startup wiring, `privo token generate`, root page
+- [ ] Coolify: watch paths on both apps, auto deploy on and a shared webhook secret are set (API, 2026-10-29) and verified with a signed test delivery (docs-only push skipped by both apps, bad signature rejected). Open: add the GitHub webhook (needs a GitHub sign-in), then confirm a `site/` push deploys only the landing page and an `internal/` push only the gateway
+- [x] Docs: `docs/deploy-coolify.md` first-run section and deploy setup; README variable table and token section
+- [ ] Independent security review of the bootstrap change (auth, secrets). A self-review by the implementing session is in `docs/reviews/2026-10-29-f24-bootstrap-self-review.md`; it does not replace this
+- [ ] Discovered: tokens created by `privo token create` are not audited (the admin API audits its own); decide whether the CLI writes an audit event

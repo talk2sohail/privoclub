@@ -28,19 +28,23 @@ type AuditEvent struct {
 
 // InsertAudit appends audit events in one transaction.
 func (s *Store) InsertAudit(ctx context.Context, org OrgID, events ...AuditEvent) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
-		for _, e := range events {
-			_, err := tx.ExecContext(ctx, `
-				INSERT INTO audit_events (org_id, id, call_id, phase, ts, actor, actor_id, client, server, item, action, decision, approved_by, outcome, latency_ms, payload)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				org, e.ID, e.CallID, e.Phase, ts(e.Time), e.Actor, e.ActorID, e.Client, e.Server, e.Item, e.Action,
-				e.Decision, e.ApprovedBy, e.Outcome, e.LatencyMS, e.Payload)
-			if err != nil {
-				return err
-			}
+	return s.tx(ctx, func(tx *sql.Tx) error { return insertAudit(ctx, tx, org, events) })
+}
+
+// insertAudit appends events inside a caller's transaction, so a state change
+// and its audit record commit or roll back together.
+func insertAudit(ctx context.Context, tx *sql.Tx, org OrgID, events []AuditEvent) error {
+	for _, e := range events {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO audit_events (org_id, id, call_id, phase, ts, actor, actor_id, client, server, item, action, decision, approved_by, outcome, latency_ms, payload)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			org, e.ID, e.CallID, e.Phase, ts(e.Time), e.Actor, e.ActorID, e.Client, e.Server, e.Item, e.Action,
+			e.Decision, e.ApprovedBy, e.Outcome, e.LatencyMS, e.Payload)
+		if err != nil {
+			return err
 		}
-		return nil
-	})
+	}
+	return nil
 }
 
 // CallRecord joins a call's intent with its completion, if any.

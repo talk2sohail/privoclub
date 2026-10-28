@@ -97,6 +97,16 @@ func freePort(t *testing.T) int {
 // startGateway boots privo with a fresh data directory and an owner token.
 func startGateway(t *testing.T, extraEnv ...string) *gateway {
 	t.Helper()
+	g := newGateway(t, extraEnv...)
+	g.issueTokens()
+	g.start()
+	return g
+}
+
+// newGateway prepares a fresh data directory and environment without
+// creating tokens or starting the server.
+func newGateway(t *testing.T, extraEnv ...string) *gateway {
+	t.Helper()
 	dir := t.TempDir()
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
@@ -124,32 +134,42 @@ func startGateway(t *testing.T, extraEnv ...string) *gateway {
 		"PRIVO_APPROVAL_HOLD=300ms", // tests that wait for a decision override this
 	)
 	g.env = append(g.env, extraEnv...)
+	t.Cleanup(g.stop)
+	return g
+}
 
+// issueTokens creates the owner control token and the owner's gateway token
+// with the command line (break-glass), before the server starts.
+func (g *gateway) issueTokens() {
+	g.t.Helper()
 	out, err := g.command("token", "create", "--name", "owner", "--role", "owner", "--kind", "control").Output()
 	if err != nil {
-		t.Fatalf("token create: %v", err)
+		g.t.Fatalf("token create: %v", err)
 	}
 	g.owner = strings.TrimSpace(string(out))
 	if !strings.HasPrefix(g.owner, "privo_pat_") {
-		t.Fatalf("owner token %q does not use the privo_pat_ format (ADR 0003)", g.owner)
+		g.t.Fatalf("owner token %q does not use the privo_pat_ format (ADR 0003)", g.owner)
 	}
 	out, err = g.command("token", "create", "--name", "owner-agent", "--role", "owner", "--kind", "gateway", "--person", "owner").Output()
 	if err != nil {
-		t.Fatalf("token create (gateway): %v", err)
+		g.t.Fatalf("token create (gateway): %v", err)
 	}
 	g.agent = strings.TrimSpace(string(out))
+}
 
+// start runs the server and waits until it is ready. It can be called again
+// after stop to restart on the same data directory.
+func (g *gateway) start() {
+	g.t.Helper()
 	g.cmd = g.command("serve")
 	g.cmd.Stdout, g.cmd.Stderr = g.logs, g.logs
 	if err := g.cmd.Start(); err != nil {
-		t.Fatal(err)
+		g.t.Fatal(err)
 	}
-	t.Cleanup(g.stop)
 	g.eventually("gateway ready", 10*time.Second, func() bool {
 		code, _ := g.raw(http.MethodGet, "/readyz", "", nil)
 		return code == http.StatusOK
 	})
-	return g
 }
 
 func (g *gateway) command(args ...string) *exec.Cmd {
@@ -162,16 +182,18 @@ func (g *gateway) stop() {
 	if g.cmd == nil || g.cmd.Process == nil {
 		return
 	}
-	_ = g.cmd.Process.Signal(syscall.SIGTERM)
+	cmd := g.cmd
+	g.cmd = nil // a second stop (explicit, then cleanup) is a no-op
+	_ = cmd.Process.Signal(syscall.SIGTERM)
 	done := make(chan error, 1)
-	go func() { done <- g.cmd.Wait() }()
+	go func() { done <- cmd.Wait() }()
 	select {
 	case err := <-done:
 		if err != nil {
 			g.t.Errorf("gateway exited with %v after SIGTERM, want a clean exit", err)
 		}
 	case <-time.After(15 * time.Second):
-		_ = g.cmd.Process.Kill()
+		_ = cmd.Process.Kill()
 		g.t.Errorf("gateway did not stop within 15s")
 	}
 	if g.t.Failed() {
