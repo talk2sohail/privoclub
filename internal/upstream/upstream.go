@@ -13,9 +13,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -26,6 +28,7 @@ import (
 	"privo.club/privo/internal/buildinfo"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/runner"
+	"privo.club/privo/internal/safe"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/vault"
 )
@@ -69,6 +72,7 @@ type Store interface {
 	ListServers(ctx context.Context, org store.OrgID) ([]store.Server, error)
 	ServerCredentials(ctx context.Context, org store.OrgID, serverID string) ([]store.Credential, error)
 	RecordSeen(ctx context.Context, org store.OrgID, pins []store.Pin) error
+	PrunePending(ctx context.Context, org store.OrgID, serverID string, keep []store.PinKey) (int, error)
 }
 
 // Options configure a Manager.
@@ -81,6 +85,13 @@ type Options struct {
 	RetryMax       time.Duration
 	ConnectTimeout time.Duration
 	Logger         *slog.Logger
+
+	// Bounds on what an upstream can make the gateway hold or do (R-04). Zero
+	// means the default.
+	MaxResponseBytes int64         // largest JSON reply of an HTTP or SSE upstream: default 16 MiB
+	MaxLoadBytes     int           // definitions of one load together: default 8 MiB
+	MaxPages         int           // pages of one list: default 100
+	RefreshGap       time.Duration // least time between two refreshes of one server: default 5 s
 }
 
 // Manager supervises upstream connections for every org.
@@ -101,8 +112,9 @@ type entry struct {
 	state   ServerState
 	session *mcp.ClientSession
 
-	loading atomic.Bool // a refresh is running
-	dirty   atomic.Bool // another refresh was requested meanwhile
+	loading  atomic.Bool  // a refresh is running
+	dirty    atomic.Bool  // another refresh was requested meanwhile
+	lastLoad atomic.Int64 // when the last load ended, unix nanoseconds
 }
 
 // New returns a manager.
@@ -115,6 +127,18 @@ func New(o Options) *Manager {
 	}
 	if o.ConnectTimeout <= 0 {
 		o.ConnectTimeout = 20 * time.Second
+	}
+	if o.MaxResponseBytes <= 0 {
+		o.MaxResponseBytes = DefaultMaxResponseBytes
+	}
+	if o.MaxLoadBytes <= 0 {
+		o.MaxLoadBytes = DefaultMaxLoadBytes
+	}
+	if o.MaxPages <= 0 {
+		o.MaxPages = DefaultMaxPages
+	}
+	if o.RefreshGap <= 0 {
+		o.RefreshGap = DefaultRefreshGap
 	}
 	if o.Logger == nil {
 		o.Logger = slog.Default()
@@ -273,10 +297,11 @@ func (m *Manager) supervise(ctx context.Context, e *entry) {
 	defer close(e.done)
 	attempt := 0
 	for {
-		session, err := m.connect(ctx, e)
+		session, release, err := m.connect(ctx, e)
 		if err == nil {
 			attempt = 0
 			_ = session.Wait() // returns when the connection ends
+			release()
 			if ctx.Err() != nil {
 				return
 			}
@@ -310,14 +335,17 @@ func (e *entry) setDown(msg string) {
 	e.session = nil
 }
 
-func (m *Manager) connect(ctx context.Context, e *entry) (*mcp.ClientSession, error) {
+// connect opens the connection and loads what the server offers. The returned
+// release function ends the context of the connection; call it when the
+// connection has ended.
+func (m *Manager) connect(ctx context.Context, e *entry) (*mcp.ClientSession, context.CancelFunc, error) {
 	env, headers, err := m.secrets(ctx, e)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	transport, err := m.transport(ctx, e.srv, env, headers)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var live atomic.Pointer[mcp.ClientSession]
 	refresh := func(context.Context) {
@@ -330,22 +358,48 @@ func (m *Manager) connect(ctx context.Context, e *entry) (*mcp.ClientSession, er
 		PromptListChangedHandler:   func(c context.Context, _ *mcp.PromptListChangedRequest) { refresh(c) },
 		ResourceListChangedHandler: func(c context.Context, _ *mcp.ResourceListChangedRequest) { refresh(c) },
 	})
-	cctx, cancel := context.WithTimeout(ctx, m.opts.ConnectTimeout)
-	defer cancel()
+	// The SDK recovers from no panic in the goroutines that handle what the
+	// upstream sends, and one message without "params" was enough to end the
+	// process for every tenant (R-01).
+	client.AddReceivingMiddleware(safe.Recover(m.opts.Logger, "upstream "+e.srv.Alias))
+	// ConnectTimeout bounds the handshake and the first load, but the context
+	// given to Connect has to live as long as the connection: the legacy SSE
+	// transport ties its event stream to it, and with a context that ended when
+	// connect returned an SSE server was dropped at once and reconnected, over
+	// and over. So a timer cancels it, and is stopped once the connection is up.
+	cctx, release := context.WithCancel(ctx)
+	timer := time.AfterFunc(m.opts.ConnectTimeout, release)
+	fail := func(err error) (*mcp.ClientSession, context.CancelFunc, error) {
+		timer.Stop()
+		release()
+		if ctx.Err() == nil && errors.Is(err, context.Canceled) {
+			err = fmt.Errorf("%w (no answer within the connect timeout of %s)", err, m.opts.ConnectTimeout)
+		}
+		return nil, nil, err
+	}
 	session, err := client.Connect(cctx, transport, nil)
 	if err != nil {
-		return nil, fmt.Errorf("connect: %w", err)
+		return fail(fmt.Errorf("connect: %w", err))
 	}
 	if err := m.load(cctx, e, session); err != nil {
 		_ = session.Close()
-		return nil, err
+		return fail(err)
+	}
+	if !timer.Stop() { // the timeout fired just now: the connection is ending
+		_ = session.Close()
+		return fail(context.Canceled)
 	}
 	live.Store(session)
-	return session, nil
+	return session, release, nil
 }
 
 // scheduleLoad coalesces list-changed notifications: at most one refresh runs
-// per server, and a burst of notifications costs at most one extra refresh.
+// per server, a burst of notifications costs at most one extra refresh, and a
+// server gets one refresh per RefreshGap at most however often it announces a
+// change. Every refresh lists everything and writes to the store, and an
+// upstream is untrusted (R-04). A refresh ends at the latest after the connect
+// timeout; one that hung used to keep the slot for good, and no later change of
+// the server's list was ever read.
 func (m *Manager) scheduleLoad(ctx context.Context, e *entry, s *mcp.ClientSession) {
 	e.dirty.Store(true)
 	if !e.loading.CompareAndSwap(false, true) {
@@ -353,8 +407,22 @@ func (m *Manager) scheduleLoad(ctx context.Context, e *entry, s *mcp.ClientSessi
 	}
 	go func() {
 		for {
-			for e.dirty.Swap(false) {
-				if err := m.load(ctx, e, s); err != nil {
+			for e.dirty.Load() {
+				if wait := m.opts.RefreshGap - time.Since(time.Unix(0, e.lastLoad.Load())); wait > 0 {
+					t := time.NewTimer(wait)
+					select {
+					case <-ctx.Done():
+						t.Stop()
+						e.loading.Store(false)
+						return
+					case <-t.C:
+					}
+				}
+				e.dirty.Store(false) // a change announced from here on needs one more refresh
+				lctx, cancel := context.WithTimeout(ctx, m.opts.ConnectTimeout)
+				err := m.load(lctx, e, s)
+				cancel()
+				if err != nil {
 					m.opts.Logger.Warn("upstream refresh failed", "server", e.srv.Alias, "err", redactError(err.Error(), e.srv.Config.URL))
 				}
 			}
@@ -372,14 +440,59 @@ const (
 	MaxDefinitionBytes = 64 << 10
 )
 
+// Defaults of the limits in Options (R-04).
+const (
+	DefaultMaxResponseBytes = 16 << 20
+	DefaultMaxLoadBytes     = 8 << 20
+	DefaultMaxPages         = 100
+	DefaultRefreshGap       = 5 * time.Second
+)
+
+// walk reads a list page by page. The SDK's own iterator follows the cursors a
+// server sends without any limit, so a server that always had a next page kept
+// the load running until the connect timeout (R-04). walk stops after maxPages
+// pages, and when a cursor comes back that it has already used. Errors of
+// fetch carry the method; errors of each are the caller's own.
+func walk[T any](method string, maxPages int, fetch func(cursor string) (items []T, next string, err error), each func(T) error) error {
+	seen := map[[sha256.Size]byte]struct{}{} // hashes: a cursor is up to the server
+	cursor := ""
+	for n := 1; ; n++ {
+		items, next, err := fetch(cursor)
+		if err != nil {
+			return fmt.Errorf("%s: %w", method, err)
+		}
+		for _, it := range items {
+			if err := each(it); err != nil {
+				return err
+			}
+		}
+		if next == "" {
+			return nil
+		}
+		if n >= maxPages {
+			return fmt.Errorf("%s: the list has more than %d pages", method, maxPages)
+		}
+		h := sha256.Sum256([]byte(next))
+		if _, dup := seen[h]; dup {
+			return fmt.Errorf("%s: the server sent the same page cursor twice", method)
+		}
+		seen[h] = struct{}{}
+		cursor = next
+	}
+}
+
+var errEmptyReply = errors.New("empty reply")
+
 // load lists everything the server advertises, records it for pin review and
 // publishes it.
 func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession) error {
+	defer func() { e.lastLoad.Store(time.Now().UnixNano()) }()
 	caps := &mcp.ServerCapabilities{}
 	if r := session.InitializeResult(); r != nil && r.Capabilities != nil {
 		caps = r.Capabilities
 	}
 	var items []Item
+	budget := 0
 	add := func(kind, name string, def any, set func(*Item)) error {
 		b, err := json.Marshal(def)
 		if err != nil {
@@ -391,6 +504,9 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 		if len(items) >= MaxItems {
 			return fmt.Errorf("server offers more than %d items", MaxItems)
 		}
+		if budget += len(b); budget > m.opts.MaxLoadBytes {
+			return fmt.Errorf("the definitions of this server pass %d bytes together", m.opts.MaxLoadBytes)
+		}
 		sum := sha256.Sum256(b)
 		it := Item{ServerID: e.srv.ID, Alias: e.srv.Alias, Kind: kind, Name: name, Hash: hex.EncodeToString(sum[:])}
 		set(&it)
@@ -398,51 +514,81 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 		return nil
 	}
 	if caps.Tools != nil {
-		for t, err := range session.Tools(ctx, nil) {
+		err := walk("tools/list", m.opts.MaxPages, func(cursor string) ([]*mcp.Tool, string, error) {
+			r, err := session.ListTools(ctx, &mcp.ListToolsParams{Cursor: cursor})
 			if err != nil {
-				return fmt.Errorf("tools/list: %w", err)
+				return nil, "", err
 			}
+			if r == nil {
+				return nil, "", errEmptyReply
+			}
+			return r.Tools, r.NextCursor, nil
+		}, func(t *mcp.Tool) error {
 			if t == nil { // the SDK client drops these itself today; do not depend on that
 				return errNullEntry("tools/list")
 			}
-			if err := add(KindTool, t.Name, t, func(i *Item) { i.Tool = t }); err != nil {
-				return err
-			}
+			return add(KindTool, t.Name, t, func(i *Item) { i.Tool = t })
+		})
+		if err != nil {
+			return err
 		}
 	}
 	if caps.Prompts != nil {
-		for p, err := range session.Prompts(ctx, nil) {
+		err := walk("prompts/list", m.opts.MaxPages, func(cursor string) ([]*mcp.Prompt, string, error) {
+			r, err := session.ListPrompts(ctx, &mcp.ListPromptsParams{Cursor: cursor})
 			if err != nil {
-				return fmt.Errorf("prompts/list: %w", err)
+				return nil, "", err
 			}
+			if r == nil {
+				return nil, "", errEmptyReply
+			}
+			return r.Prompts, r.NextCursor, nil
+		}, func(p *mcp.Prompt) error {
 			if p == nil {
 				return errNullEntry("prompts/list")
 			}
-			if err := add(KindPrompt, p.Name, p, func(i *Item) { i.Prompt = p }); err != nil {
-				return err
-			}
+			return add(KindPrompt, p.Name, p, func(i *Item) { i.Prompt = p })
+		})
+		if err != nil {
+			return err
 		}
 	}
 	if caps.Resources != nil {
-		for r, err := range session.Resources(ctx, nil) {
+		err := walk("resources/list", m.opts.MaxPages, func(cursor string) ([]*mcp.Resource, string, error) {
+			r, err := session.ListResources(ctx, &mcp.ListResourcesParams{Cursor: cursor})
 			if err != nil {
-				return fmt.Errorf("resources/list: %w", err)
+				return nil, "", err
 			}
+			if r == nil {
+				return nil, "", errEmptyReply
+			}
+			return r.Resources, r.NextCursor, nil
+		}, func(r *mcp.Resource) error {
 			if r == nil {
 				return errNullEntry("resources/list")
 			}
-			if err := add(KindResource, r.URI, r, func(i *Item) { i.Resource = r }); err != nil {
-				return err
-			}
+			return add(KindResource, r.URI, r, func(i *Item) { i.Resource = r })
+		})
+		if err != nil {
+			return err
 		}
 	}
 	pins := make([]store.Pin, 0, len(items))
+	keep := make([]store.PinKey, 0, len(items))
 	for _, it := range items {
 		def, _ := json.Marshal(firstNonNil(it))
 		pins = append(pins, store.Pin{ServerID: it.ServerID, Kind: it.Kind, Name: it.Name, Hash: it.Hash, Definition: string(def)})
+		keep = append(keep, store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash})
 	}
 	if err := m.opts.Store.RecordSeen(ctx, e.org, pins); err != nil {
 		return fmt.Errorf("recording definitions: %w", err)
+	}
+	// Definitions that the server offered once and no longer offers are not
+	// kept for review. Only here, after a load that listed everything: a
+	// partial list must not delete anything. This is housekeeping, so a failure
+	// does not put the server down.
+	if _, err := m.opts.Store.PrunePending(ctx, e.org, e.srv.ID, keep); err != nil {
+		m.opts.Logger.Warn("upstream: pruning unreviewed definitions failed", "server", e.srv.Alias, "err", err)
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -518,6 +664,7 @@ func (m *Manager) transport(ctx context.Context, srv store.Server, env, headers 
 		if err != nil {
 			return nil, err
 		}
+		client = limitBodies(client, m.opts.MaxResponseBytes)
 		if srv.Transport == "sse" {
 			return &mcp.SSEClientTransport{Endpoint: srv.Config.URL, HTTPClient: client}, nil
 		}
@@ -581,6 +728,137 @@ func RedactURL(raw string) string {
 	}
 	return u.Scheme + "://" + u.Host + u.EscapedPath()
 }
+
+var urlInText = regexp.MustCompile(`https?://[^\s"'<>]+`)
+
+// RedactText removes the credentials from every http(s) URL in free text such
+// as an error message: user info, query and fragment. URLs often carry the API
+// key in the query. It works without knowing which URL to look for, so it also
+// covers redirects and error texts that quote a URL the caller never saw.
+func RedactText(s string) string {
+	return urlInText.ReplaceAllStringFunc(s, func(m string) string {
+		u, err := url.Parse(m)
+		if err != nil || u.Host == "" {
+			return "(redacted URL)"
+		}
+		return u.Scheme + "://" + u.Host + u.EscapedPath()
+	})
+}
+
+// ErrResponseTooLarge is returned when a reply of an upstream passes the limit.
+var ErrResponseTooLarge = errors.New("upstream: reply is larger than the limit")
+
+// limitBodies returns a client whose replies fail with ErrResponseTooLarge once
+// they pass max bytes. The SDK reads a JSON reply with io.ReadAll, so without
+// this an upstream decided how much memory one reply took (R-04). A JSON body
+// is counted as the SDK reads it, after decompression, and a reply that
+// announces more than max is refused before its body is read. An event stream
+// lasts as long as the call does, so it is counted per event (an event ends at
+// an empty line); the SDK's own cap is 16 MiB per event. max <= 0 turns the
+// limit off.
+func limitBodies(c *http.Client, max int64) *http.Client {
+	if max <= 0 {
+		return c
+	}
+	cc := *c
+	next := cc.Transport
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	cc.Transport = limitRT{next: next, max: max}
+	return &cc
+}
+
+type limitRT struct {
+	next http.RoundTripper
+	max  int64
+}
+
+func (l limitRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	resp, err := l.next.RoundTrip(r)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	if strings.HasPrefix(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+		resp.Body = &eventCapBody{rc: resp.Body, max: l.max, atLineStart: true}
+		return resp, nil
+	}
+	if resp.ContentLength > l.max {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("%w: it announces %d bytes, the limit is %d", ErrResponseTooLarge, resp.ContentLength, l.max)
+	}
+	resp.Body = &capBody{rc: resp.Body, left: l.max}
+	return resp, nil
+}
+
+// capBody passes on at most left more bytes, then fails.
+type capBody struct {
+	rc   io.ReadCloser
+	left int64 // negative: the limit was passed
+}
+
+func (b *capBody) Read(p []byte) (int, error) {
+	if b.left < 0 {
+		return 0, ErrResponseTooLarge
+	}
+	if int64(len(p)) > b.left+1 {
+		p = p[:b.left+1] // one byte more than allowed is enough to know
+	}
+	n, err := b.rc.Read(p)
+	if int64(n) > b.left {
+		n = int(b.left)
+		b.left = -1
+		return n, ErrResponseTooLarge
+	}
+	b.left -= int64(n)
+	return n, err
+}
+
+func (b *capBody) Close() error { return b.rc.Close() }
+
+// eventCapBody fails once a single server-sent event passes max bytes. An event
+// ends at an empty line, and a line ends with \n, \r\n or \r. The bytes before
+// the first one over the limit are passed on.
+type eventCapBody struct {
+	rc          io.ReadCloser
+	max         int64
+	run         int64 // bytes of the current event so far
+	prev        byte
+	atLineStart bool
+	over        bool
+}
+
+func (b *eventCapBody) Read(p []byte) (int, error) {
+	if b.over {
+		return 0, ErrResponseTooLarge
+	}
+	n, err := b.rc.Read(p)
+	for i := 0; i < n; i++ {
+		c := p[i]
+		switch {
+		case c == '\n' && b.prev == '\r':
+			// the second half of \r\n; the line ended at the \r
+		case c == '\r' || c == '\n':
+			if b.atLineStart {
+				b.run = 0 // an empty line: the event is complete
+			} else {
+				b.atLineStart = true
+				b.run++
+			}
+		default:
+			b.atLineStart = false
+			b.run++
+		}
+		b.prev = c
+		if b.run > b.max {
+			b.over = true
+			return i, ErrResponseTooLarge
+		}
+	}
+	return n, err
+}
+
+func (b *eventCapBody) Close() error { return b.rc.Close() }
 
 func redactError(msg, rawURL string) string {
 	if rawURL == "" {

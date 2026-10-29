@@ -198,3 +198,35 @@ func TestInstallBootstrapToken(t *testing.T) {
 		}
 	})
 }
+
+func TestBootstrapNeeded(t *testing.T) {
+	ctx := context.Background()
+	s, _ := open(t)
+	a, b := twoOrgs(t, s)
+	needed := func(org OrgID) bool {
+		t.Helper()
+		got, err := s.BootstrapNeeded(ctx, org)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if !needed(a) || !needed(b) {
+		t.Fatal("a fresh org needs a bootstrap token")
+	}
+	if _, err := s.InstallBootstrapToken(ctx, bootstrapTok(a, "tid1"), bootstrapEvent("ev1")); err != nil {
+		t.Fatal(err)
+	}
+	if needed(a) {
+		t.Error("an org that took a bootstrap token needs none, even after the token is revoked")
+	}
+	if err := s.CreateToken(ctx, bootstrapTok(b, "ctl1")); err != nil {
+		t.Fatal(err)
+	}
+	if needed(b) {
+		t.Error("an org that has a control token needs no bootstrap token")
+	}
+	if !needed("org-that-has-nothing") {
+		t.Error("an org with no rows needs one")
+	}
+}

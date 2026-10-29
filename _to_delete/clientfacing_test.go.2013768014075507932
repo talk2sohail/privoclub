@@ -1,0 +1,71 @@
+package gateway
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"log/slog"
+	"strings"
+	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+
+	"privo.club/privo/internal/upstream"
+)
+
+// R-02 (independent review, 2026-10-29): the text of a transport error holds
+// the upstream's URL, with the API key in its query, and went to the AI client.
+func TestClientFacing(t *testing.T) {
+	var logs bytes.Buffer
+	g := &Gateway{Logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	c := call{item: upstream.Item{Alias: "remote"}, action: "tools/call"}
+
+	t.Run("a transport error is replaced and logged without the key", func(t *testing.T) {
+		raw := fmt.Errorf(`calling "tools/call": Post "https://api.example.com/mcp?key=SECRET-1": dial tcp 10.0.0.7:443: connection refused`)
+		got := g.clientFacing(c, raw)
+		if got == nil || strings.Contains(got.Error(), "SECRET-1") || strings.Contains(got.Error(), "10.0.0.7") || !strings.Contains(got.Error(), `"remote"`) {
+			t.Fatalf("client sees %v", got)
+		}
+		if strings.Contains(logs.String(), "SECRET-1") || !strings.Contains(logs.String(), "api.example.com/mcp") || !strings.Contains(logs.String(), "connection refused") {
+			t.Errorf("log should keep the detail but not the key:\n%s", logs.String())
+		}
+	})
+	t.Run("nil stays nil", func(t *testing.T) {
+		if err := g.clientFacing(c, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	// The shape the SDK really produces for a refused connection: its own
+	// "rejected by transport" error (code -32005) with the transport's text
+	// formatted after it, URL and all. Found by the acceptance test.
+	t.Run("the SDK's own wrapper around a transport error is not an upstream answer", func(t *testing.T) {
+		for _, code := range []int64{-32001, -32003, -32004, -32005} {
+			raw := fmt.Errorf(`calling "tools/call": sending "tools/call": %w: %v`, &jsonrpc.Error{Code: code, Message: "rejected by transport"},
+				errors.New(`Post "http://127.0.0.1:1/mcp?key=SECRET-2": dial tcp 127.0.0.1:1: connect: connection refused`))
+			got := g.clientFacing(c, raw)
+			if got == nil || strings.Contains(got.Error(), "SECRET-2") || strings.Contains(got.Error(), "127.0.0.1") {
+				t.Fatalf("code %d: client sees %v", code, got)
+			}
+		}
+	})
+	t.Run("the upstream's own JSON-RPC error reaches the client as it sent it", func(t *testing.T) {
+		raw := fmt.Errorf(`calling "tools/call": %w`, &jsonrpc.Error{Code: -32602, Message: "bad arguments"})
+		var rpc *jsonrpc.Error
+		got := g.clientFacing(c, raw)
+		if !errors.As(got, &rpc) || rpc.Code != -32602 || got.Error() != "bad arguments" {
+			t.Fatalf("got %v, want the upstream's error alone", got)
+		}
+	})
+	same := map[string]error{
+		"a refusal":                         &refusal{msg: "Denied by policy"},
+		"server unavailable":                fmt.Errorf("remote: %w", upstream.ErrUnavailable),
+		"a malformed reply":                 fmt.Errorf("%w: contents[0] is null", errMalformedRead),
+	}
+	for name, err := range same {
+		t.Run(name+" passes through", func(t *testing.T) {
+			if got := g.clientFacing(c, err); !errors.Is(got, err) && got != err {
+				t.Fatalf("got %v, want the error unchanged", got)
+			}
+		})
+	}
+}

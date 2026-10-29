@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -37,21 +38,29 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		_, _ = fmt.Fprintf(stderr, "privo: invalid configuration:\n%v\n", err)
 		return 2
 	}
-	if cfg.BootstrapToken != "" {
+	// A value that is not a token stops the process here. A file that cannot be
+	// read waits for the store, which knows whether the token is still needed.
+	var bs bootstrapInput
+	bs.token, bs.err = config.LoadBootstrapToken(getenv)
+	if bs.err != nil && !errors.Is(bs.err, config.ErrBootstrapUnreadable) {
+		_, _ = fmt.Fprintf(stderr, "privo: invalid configuration:\n%v\n", bs.err)
+		return 2
+	}
+	if bs.token != "" {
 		// Like the master key: gone from the environment, so child processes never inherit it.
 		_ = os.Unsetenv("PRIVO_BOOTSTRAP_TOKEN")
 	}
 	logger := newLogger(stderr, cfg)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := runGateway(ctx, cfg, logger); err != nil {
+	if err := runGateway(ctx, cfg, bs, logger); err != nil {
 		logger.Error("privo stopped with error", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func runGateway(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+func runGateway(ctx context.Context, cfg config.Config, bs bootstrapInput, logger *slog.Logger) error {
 	if os.Getenv("PRIVO_MASTER_KEY") != "" {
 		logger.Warn("master key given as PRIVO_MASTER_KEY; prefer PRIVO_MASTER_KEY_FILE: an environment variable stays readable in /proc/<pid>/environ for the life of the process")
 	}
@@ -79,10 +88,8 @@ func runGateway(ctx context.Context, cfg config.Config, logger *slog.Logger) err
 	if err := kr.EnsureOrgKey(ctx, org.ID); err != nil {
 		return err
 	}
-	if cfg.BootstrapToken != "" {
-		if err := installBootstrap(ctx, st, org.ID, cfg.BootstrapToken.Reveal(), logger); err != nil {
-			return err
-		}
+	if err := bootstrapAtStartup(ctx, st, org.ID, bs, logger); err != nil {
+		return err
 	}
 
 	var rn runner.Runner
@@ -91,7 +98,7 @@ func runGateway(ctx context.Context, cfg config.Config, logger *slog.Logger) err
 		rn = runner.Local{}
 	}
 	mgr := upstream.New(upstream.Options{Store: st, Keys: kr, Runner: rn, HTTPClient: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true}),
-		RetryBase: cfg.RetryBase, RetryMax: cfg.RetryMax, Logger: logger})
+		RetryBase: cfg.RetryBase, RetryMax: cfg.RetryMax, RefreshGap: cfg.RefreshGap, MaxResponseBytes: cfg.MaxResponseBytes, Logger: logger})
 	defer mgr.Close()
 	if err := mgr.Sync(ctx, org.ID); err != nil {
 		return err
@@ -108,7 +115,7 @@ func runGateway(ctx context.Context, cfg config.Config, logger *slog.Logger) err
 	prm := base + "/.well-known/oauth-protected-resource/mcp"
 	approvals := &approval.Service{Store: st, Keys: kr, Hold: cfg.ApprovalHold}
 	gw := &gateway.Gateway{Store: st, Upstream: mgr, Keys: kr, Audit: aw, Auth: authn, Approval: approvals, Logger: logger,
-		ResourceMetadataURL: prm, BaseURL: base}
+		ResourceMetadataURL: prm, BaseURL: base, CallTimeout: cfg.CallTimeout}
 	api := &control.API{Store: st, Keys: kr, Auth: authn, Upstream: mgr, Audit: aw, Approval: approvals, Egress: policy, Logger: logger,
 		TokenTTL: cfg.TokenTTL}
 

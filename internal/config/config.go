@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -63,10 +64,15 @@ type Config struct {
 	// ApprovalHold is how long a call waits for a person's decision before the
 	// caller is told to retry (PRIVO_APPROVAL_HOLD).
 	ApprovalHold time.Duration
-	// BootstrapToken is a token made with `privo token generate` that the first
-	// boot installs as the owner's control token (PRIVO_BOOTSTRAP_TOKEN, or
-	// PRIVO_BOOTSTRAP_TOKEN_FILE, which wins). Empty when unset. See F24.
-	BootstrapToken Secret
+	// CallTimeout is how long one call to an upstream server may take
+	// (PRIVO_UPSTREAM_CALL_TIMEOUT).
+	CallTimeout time.Duration
+	// RefreshGap is the least time between two refreshes of one server's lists,
+	// however often it announces a change (PRIVO_UPSTREAM_REFRESH_GAP).
+	RefreshGap time.Duration
+	// MaxResponseBytes limits one JSON reply of an HTTP or SSE upstream
+	// (PRIVO_UPSTREAM_MAX_RESPONSE_BYTES).
+	MaxResponseBytes int64
 }
 
 // Defaults applied when a variable is unset or empty.
@@ -75,6 +81,13 @@ const (
 	DefaultDataDir         = "./data"
 	DefaultLogFormat       = "json"
 	DefaultShutdownTimeout = 30 * time.Second
+
+	// PRIVO_UPSTREAM_MAX_RESPONSE_BYTES: the default is what the MCP SDK allows
+	// for one frame on stdio and SSE; below the minimum nothing would fit, and
+	// above the maximum one reply could take the memory of the whole gateway.
+	DefaultMaxResponseBytes = 16 << 20
+	MinMaxResponseBytes     = 1024
+	MaxMaxResponseBytes     = 1 << 30
 )
 
 // Load reads configuration using getenv (usually os.Getenv). All problems are
@@ -130,6 +143,8 @@ func Load(getenv func(string) string) (Config, error) {
 		{"PRIVO_UPSTREAM_RETRY_MAX", &cfg.RetryMax, 30 * time.Second},
 		{"PRIVO_TOKEN_TTL", &cfg.TokenTTL, 90 * 24 * time.Hour},
 		{"PRIVO_APPROVAL_HOLD", &cfg.ApprovalHold, 25 * time.Second},
+		{"PRIVO_UPSTREAM_CALL_TIMEOUT", &cfg.CallTimeout, 10 * time.Minute},
+		{"PRIVO_UPSTREAM_REFRESH_GAP", &cfg.RefreshGap, 5 * time.Second},
 	} {
 		*d.dst = d.def
 		if v := getenv(d.name); v != "" {
@@ -142,11 +157,15 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 
-	bt, err := loadBootstrapToken(getenv)
-	if err != nil {
-		errs = append(errs, err)
+	cfg.MaxResponseBytes = DefaultMaxResponseBytes
+	if v := getenv("PRIVO_UPSTREAM_MAX_RESPONSE_BYTES"); v != "" {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n < MinMaxResponseBytes || n > MaxMaxResponseBytes {
+			errs = append(errs, fmt.Errorf("PRIVO_UPSTREAM_MAX_RESPONSE_BYTES %q: must be a number of bytes from %d to %d", v, MinMaxResponseBytes, MaxMaxResponseBytes))
+		} else {
+			cfg.MaxResponseBytes = n
+		}
 	}
-	cfg.BootstrapToken = bt
 
 	if v := getenv("PRIVO_PUBLIC_URL"); v != "" {
 		u, err := parsePublicURL(v)
@@ -163,23 +182,35 @@ func Load(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
-// loadBootstrapToken reads and checks the bootstrap token. Errors name the
-// variable but never repeat its value.
-func loadBootstrapToken(getenv func(string) string) (Secret, error) {
+// ErrBootstrapUnreadable marks a bootstrap token file that cannot be read or is
+// empty, as opposed to a value that is not a token. Whether that matters
+// depends on whether the organisation still needs a bootstrap token, which
+// only the store knows.
+var ErrBootstrapUnreadable = errors.New("cannot read the bootstrap token")
+
+// LoadBootstrapToken reads and checks the token made with `privo token
+// generate` that the first boot installs as the owner's control token
+// (PRIVO_BOOTSTRAP_TOKEN, or PRIVO_BOOTSTRAP_TOKEN_FILE, which wins; F24). It
+// returns an empty Secret when neither is set. Only `serve` calls it: Load
+// does not, so the healthcheck and the break-glass `token create` never depend
+// on a variable that is left over once the token has been used (R-03,
+// independent review 2026-10-29). Errors name the variable but never repeat its
+// value.
+func LoadBootstrapToken(getenv func(string) string) (Secret, error) {
 	name, raw := "PRIVO_BOOTSTRAP_TOKEN", getenv("PRIVO_BOOTSTRAP_TOKEN")
 	if path := strings.TrimSpace(getenv("PRIVO_BOOTSTRAP_TOKEN_FILE")); path != "" {
 		name = "PRIVO_BOOTSTRAP_TOKEN_FILE"
 		f, err := os.Open(path) //nolint:gosec // operator-supplied path is the point
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", name, err)
+			return "", fmt.Errorf("%s: %w: %w", name, ErrBootstrapUnreadable, err)
 		}
 		defer func() { _ = f.Close() }()
 		b, err := io.ReadAll(io.LimitReader(f, 1<<10))
 		if err != nil {
-			return "", fmt.Errorf("%s: %w", name, err)
+			return "", fmt.Errorf("%s: %w: %w", name, ErrBootstrapUnreadable, err)
 		}
 		if strings.TrimSpace(string(b)) == "" {
-			return "", fmt.Errorf("%s: the file is empty", name)
+			return "", fmt.Errorf("%s: %w: the file is empty", name, ErrBootstrapUnreadable)
 		}
 		raw = string(b)
 	}

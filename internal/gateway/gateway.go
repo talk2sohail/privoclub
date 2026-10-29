@@ -23,6 +23,7 @@ import (
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"privo.club/privo/internal/approval"
@@ -32,6 +33,7 @@ import (
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/policy"
+	"privo.club/privo/internal/safe"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/upstream"
 	"privo.club/privo/internal/vault"
@@ -66,6 +68,9 @@ type Gateway struct {
 	BaseURL string
 	// ResourceMetadataURL is advertised in 401 responses (RFC 9728).
 	ResourceMetadataURL string
+	// CallTimeout is how long one call to an upstream server may take; zero
+	// means no limit (R-04). It starts once the call is allowed and approved.
+	CallTimeout time.Duration
 }
 
 // Handler returns the authenticated MCP HTTP handler.
@@ -79,7 +84,8 @@ func (g *Gateway) Handler() http.Handler {
 		},
 		Logger: g.Logger,
 	})
-	server.AddReceivingMiddleware(g.middleware)
+	// Outermost, so a panic anywhere in the gateway answers one request with an error.
+	server.AddReceivingMiddleware(safe.Recover(g.Logger, "gateway"), g.middleware)
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
 		&mcp.StreamableHTTPOptions{Stateless: true, Logger: g.Logger})
 	return mcpauth.RequireBearerToken(g.Auth.MCPVerifier(), &mcpauth.RequireBearerTokenOptions{
@@ -360,14 +366,69 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	outcome := "error"
 	session, err := g.Upstream.Session(c.p.OrgID, c.item.ServerID)
 	if err == nil {
-		outcome, err = do(ctx, session)
+		outcome, err = g.callUpstream(ctx, c, session, do)
 	}
 	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Outcome: outcome, LatencyMS: time.Since(start).Milliseconds()}
 	if aerr := g.Audit.Completion(ctx, c.p.OrgID, completion); aerr != nil {
 		g.Logger.Error("audit completion not queued", "err", aerr)
 	}
-	return err
+	return g.clientFacing(c, err)
+}
+
+// errCallTimeout means the upstream did not answer within Gateway.CallTimeout.
+var errCallTimeout = errors.New("the upstream server did not answer in time")
+
+// callUpstream runs do with the call timeout. It reports a timeout only when
+// the deadline was the reason the call failed: a caller that went away, or an
+// answer that arrived anyway, is not one (R-04).
+func (g *Gateway) callUpstream(ctx context.Context, c call, session *mcp.ClientSession,
+	do func(context.Context, *mcp.ClientSession) (string, error)) (string, error) {
+	if g.CallTimeout <= 0 {
+		return do(ctx, session)
+	}
+	callCtx, cancel := context.WithTimeout(ctx, g.CallTimeout)
+	defer cancel()
+	outcome, err := do(callCtx, session)
+	if err != nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
+		err = fmt.Errorf("%w (server %q, limit %s)", errCallTimeout, c.item.Alias, g.CallTimeout)
+	}
+	return outcome, err
+}
+
+// sdkLocalCode reports the JSON-RPC codes the SDK raises itself (unknown error,
+// client closing, server closing, rejected by transport). It wraps them around
+// the text of a local failure such as "Post <url>: connection refused", so an
+// error with one of these codes is not an answer from the upstream.
+func sdkLocalCode(code int64) bool {
+	switch code {
+	case -32001, -32003, -32004, -32005:
+		return true
+	}
+	return false
+}
+
+// clientFacing decides what the caller of a failed call may read. The text of
+// a transport error holds the upstream's URL, and URLs often carry the API key
+// in the query (R-02, independent review 2026-10-29). Connection errors are for
+// administrators (the server list hides them from members), so the caller gets
+// a fixed message and the log gets the detail with the credentials removed from
+// every URL. The upstream's own JSON-RPC answer passes through (the error
+// alone, not the text the SDK wrapped around it), and so do the gateway's own.
+func (g *Gateway) clientFacing(c call, err error) error {
+	if err == nil {
+		return nil
+	}
+	var rpc *jsonrpc.Error
+	if errors.As(err, &rpc) && !sdkLocalCode(rpc.Code) {
+		return rpc
+	}
+	var r *refusal
+	if errors.As(err, &r) || errors.Is(err, upstream.ErrUnavailable) || errors.Is(err, errMalformedRead) || errors.Is(err, errCallTimeout) {
+		return err
+	}
+	g.Logger.Warn("upstream call failed", "server", c.item.Alias, "action", c.action, "err", upstream.RedactText(err.Error()))
+	return fmt.Errorf("the upstream server %q did not answer or failed; an administrator can see details in the server status and the log", c.item.Alias)
 }
 
 // argumentsPayload encrypts the arguments when the org records them.
@@ -460,17 +521,20 @@ func (g *Gateway) getPrompt(ctx context.Context, p auth.Principal, params *mcp.G
 	return result, err
 }
 
+// errMalformedRead marks a resources/read reply that breaks the protocol.
+var errMalformedRead = errors.New("upstream sent a malformed resources/read reply")
+
 // rewriteRead gives every content of an upstream's resources/read reply its
 // public URI. The reply is untrusted: no result, or a null among the contents,
 // is refused as malformed before anything is changed, because a panic here
 // would end the process for every tenant.
 func rewriteRead(alias string, res *mcp.ReadResourceResult) error {
 	if res == nil {
-		return errors.New("upstream sent a malformed resources/read reply: no result")
+		return fmt.Errorf("%w: no result", errMalformedRead)
 	}
 	for i, c := range res.Contents {
 		if c == nil {
-			return fmt.Errorf("upstream sent a malformed resources/read reply: contents[%d] is null", i)
+			return fmt.Errorf("%w: contents[%d] is null", errMalformedRead, i)
 		}
 	}
 	for _, c := range res.Contents {

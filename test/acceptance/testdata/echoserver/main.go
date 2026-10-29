@@ -9,6 +9,8 @@
 //	flaky       exits with status 1 until it has been started twice (counts in $MARKER), then default
 //	annotated   tools "read_note" (readOnlyHint) and "delete_note" (destructiveHint)
 //	legacy      as default, but speaks only protocol versions before 2026-07-28, like most servers today
+//	raw-notify  a hand-written server (no SDK) that sends one notification, -method M with -params absent|null,
+//	            right after the handshake: what the SDK would never let a server send
 //	hostile     as default, but with -null tools|prompts|resources one list carries a JSON null entry,
 //	            and with -null read a resources/read reply has a null entry in "contents"
 package main
@@ -29,8 +31,14 @@ type echoInput struct {
 
 func main() {
 	mode := flag.String("mode", "default", "default, tools-only, flaky, annotated, legacy or hostile")
+	method := flag.String("method", "", "with -mode raw-notify: the notification method to send")
+	params := flag.String("params", "absent", "with -mode raw-notify: absent or null")
 	null := flag.String("null", "", "with -mode hostile: where to put a JSON null: tools, prompts, resources or read")
 	flag.Parse()
+	if *mode == "raw-notify" {
+		rawNotify(*method, *params)
+		return
+	}
 
 	if *mode == "flaky" {
 		marker := os.Getenv("MARKER")

@@ -8,10 +8,43 @@ import (
 	"log/slog"
 	"time"
 
+	"privo.club/privo/internal/config"
 	"privo.club/privo/internal/control"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/token"
 )
+
+// bootstrapInput is what the environment said about the bootstrap token. It is
+// read before the store is open and acted on after, because only the store can
+// say whether the organisation still needs one.
+type bootstrapInput struct {
+	token config.Secret
+	err   error // the file named by PRIVO_BOOTSTRAP_TOKEN_FILE cannot be read
+}
+
+// bootstrapAtStartup installs the bootstrap token when there is one, and decides
+// what an unreadable bootstrap file means. On an organisation that still needs a
+// token it is an error (fail closed: the operator asked for a token and would
+// otherwise be locked out without a word). On one that has been set up already
+// it is a leftover, typically a file the operator deleted after using it, and
+// only worth a warning (R-03, independent review 2026-10-29).
+func bootstrapAtStartup(ctx context.Context, st *store.Store, org store.OrgID, in bootstrapInput, logger *slog.Logger) error {
+	if in.err != nil {
+		needed, err := st.BootstrapNeeded(ctx, org)
+		if err != nil {
+			return err
+		}
+		if needed {
+			return fmt.Errorf("the first boot needs the bootstrap token: %w", in.err)
+		}
+		logger.Warn("the bootstrap token cannot be read, which does not matter: this organisation is set up already. Remove the variable", "err", in.err)
+		return nil
+	}
+	if in.token == "" {
+		return nil
+	}
+	return installBootstrap(ctx, st, org, in.token.Reveal(), logger)
+}
 
 // installBootstrap installs the operator's bootstrap token on first boot (F24).
 // It never logs the token, only its public id. A malformed token is an error;

@@ -6,7 +6,9 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -114,5 +116,55 @@ func TestRootPage(t *testing.T) {
 	}
 	if resp, _ := get("/does-not-exist"); resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("unknown path = %d, want 404", resp.StatusCode)
+	}
+}
+
+// R-03 (independent review, 2026-10-29): the bootstrap variables were checked
+// by the configuration loader that every subcommand shares. The operator who
+// mounts the token as a file, uses it, and deletes the file but not the
+// variable (the natural clean-up) then had a container that the healthcheck
+// marked unhealthy, a restart that exited, and a break-glass `token create`
+// that exited too.
+func TestBootstrapFileRemovedAfterUse(t *testing.T) {
+	plain := generateToken(t)
+	path := filepath.Join(t.TempDir(), "bootstrap-token")
+	if err := os.WriteFile(path, []byte(plain+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g := newGateway(t, "PRIVO_BOOTSTRAP_TOKEN_FILE="+path)
+	g.start()
+	g.api(http.MethodGet, "/api/v1/tokens", plain, nil, http.StatusOK)
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := g.command("healthcheck").CombinedOutput(); err != nil {
+		t.Errorf("healthcheck of the running gateway after the file was removed: %v: %s", err, out)
+	}
+	if out, err := g.command("token", "create", "--name", "break-glass", "--role", "owner", "--kind", "control").Output(); err != nil || !strings.HasPrefix(string(out), "privo_pat_") {
+		t.Errorf("token create after the file was removed: %v: %q", err, out)
+	}
+	g.stop()
+	g.start() // fatal if the gateway does not come up
+	if !strings.Contains(g.logs.String(), "PRIVO_BOOTSTRAP_TOKEN_FILE") {
+		t.Errorf("the restart should tell the operator to remove the variable:\n%s", g.logs.String())
+	}
+}
+
+// The other half: a first boot that was told to install a token and cannot
+// read it must still refuse to start (fail closed), and say why.
+func TestBootstrapFileMissingOnFirstBootRefusesToStart(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-file")
+	g := newGateway(t, "PRIVO_BOOTSTRAP_TOKEN_FILE="+missing)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, privoBin, "serve")
+	cmd.Env = g.env
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("serve kept running with an unreadable bootstrap file:\n%s", out)
+	}
+	if err == nil || !strings.Contains(string(out), "PRIVO_BOOTSTRAP_TOKEN_FILE") {
+		t.Fatalf("serve: err %v, output %q; want a failure that names PRIVO_BOOTSTRAP_TOKEN_FILE", err, out)
 	}
 }

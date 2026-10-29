@@ -89,3 +89,18 @@ func (s *Store) InstallBootstrapToken(ctx context.Context, t APIToken, ev AuditE
 	}
 	return result, nil
 }
+
+// BootstrapNeeded reports whether an org could still take a bootstrap token: no
+// bootstrap token was installed before and it has never had a control token. It
+// only reads, so that startup can tell a bootstrap file that matters from a
+// leftover; InstallBootstrapToken still decides, in its own transaction.
+func (s *Store) BootstrapNeeded(ctx context.Context, org OrgID) (bool, error) {
+	if marker, err := s.Setting(ctx, org, BootstrapSetting, ""); err != nil || marker != "" {
+		return false, err
+	}
+	var controls int
+	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_tokens WHERE org_id = ? AND kind = ?`, org, KindControl).Scan(&controls); err != nil {
+		return false, mapErr(err)
+	}
+	return controls == 0, nil
+}

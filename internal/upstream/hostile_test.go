@@ -103,3 +103,17 @@ func TestLoadRefusesNullListEntries(t *testing.T) {
 		})
 	}
 }
+
+func TestRedactText(t *testing.T) {
+	for in, want := range map[string]string{
+		`Post "https://h.example/mcp?key=S3CRET": dial tcp 1.2.3.4:443: refused`: `Post "https://h.example/mcp": dial tcp 1.2.3.4:443: refused`,
+		`GET http://user:pw@h.example:8080/a/b?x=1#frag failed`:                  `GET http://h.example:8080/a/b failed`,
+		`redirected from https://a.example/x?t=1 to https://b.example/y?t=2`:     `redirected from https://a.example/x to https://b.example/y`,
+		`no url here: connection reset`:                                          `no url here: connection reset`,
+		`bad http://[::1/x?key=S3CRET`:                                           `bad (redacted URL)`,
+	} {
+		if got := RedactText(in); got != want || strings.Contains(got, "S3CRET") || strings.Contains(got, "pw@") {
+			t.Errorf("RedactText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

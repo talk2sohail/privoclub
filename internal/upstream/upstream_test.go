@@ -107,6 +107,27 @@ type fakeStore struct {
 	mu      sync.Mutex
 	servers []store.Server
 	delay   time.Duration
+	prunes  []prune
+}
+
+// prune is one PrunePending call.
+type prune struct {
+	org      store.OrgID
+	serverID string
+	keep     []store.PinKey
+}
+
+func (f *fakeStore) PrunePending(_ context.Context, org store.OrgID, serverID string, keep []store.PinKey) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prunes = append(f.prunes, prune{org, serverID, append([]store.PinKey(nil), keep...)})
+	return 0, nil
+}
+
+func (f *fakeStore) pruned() []prune {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]prune(nil), f.prunes...)
 }
 
 func (f *fakeStore) ListServers(context.Context, store.OrgID) ([]store.Server, error) {

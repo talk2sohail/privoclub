@@ -110,3 +110,55 @@ func (s *Store) PinStatuses(ctx context.Context, org OrgID, serverID string) (ma
 type PinKey struct {
 	Kind, Name, Hash string
 }
+
+// PrunePending deletes the pending pins of a server that are not in keep, that
+// is, definitions the server offered once and no longer offers. Accepted and
+// blocked pins are never deleted: they are decisions. Without this a server
+// that changes a definition on every refresh adds rows without end (R-04). It
+// returns the number of rows deleted.
+func (s *Store) PrunePending(ctx context.Context, org OrgID, serverID string, keep []PinKey) (int, error) {
+	keepSet := make(map[PinKey]struct{}, len(keep))
+	for _, k := range keep {
+		keepSet[k] = struct{}{}
+	}
+	deleted := 0
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		deleted = 0
+		rows, err := tx.QueryContext(ctx, `
+			SELECT kind, name, hash FROM pins
+			WHERE org_id = ? AND server_id = ? AND status = 'pending'`, org, serverID)
+		if err != nil {
+			return err
+		}
+		var stale []PinKey
+		for rows.Next() {
+			var k PinKey
+			if err := rows.Scan(&k.Kind, &k.Name, &k.Hash); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			if _, ok := keepSet[k]; !ok {
+				stale = append(stale, k)
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, k := range stale {
+			res, err := tx.ExecContext(ctx, `
+				DELETE FROM pins
+				WHERE org_id = ? AND server_id = ? AND kind = ? AND name = ? AND hash = ? AND status = 'pending'`,
+				org, serverID, k.Kind, k.Name, k.Hash)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			deleted += int(n)
+		}
+		return nil
+	})
+	return deleted, err
+}
