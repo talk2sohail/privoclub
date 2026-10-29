@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -165,4 +166,30 @@ func TestLoadEnvKeyProvider(t *testing.T) {
 			t.Fatal("garbage key accepted")
 		}
 	})
+}
+
+func TestLoadKeyProviderUsesTheGivenLookup(t *testing.T) {
+	key, prev := mustKey(t), mustKey(t)
+	dir := t.TempDir()
+	kf, pf := filepath.Join(dir, "k"), filepath.Join(dir, "p")
+	if err := os.WriteFile(kf, []byte(base64.StdEncoding.EncodeToString(key)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pf, []byte(base64.StdEncoding.EncodeToString(prev)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The process environment says something else; only the lookup counts.
+	t.Setenv("PRIVO_MASTER_KEY_FILE", "/nonexistent")
+	t.Setenv("PRIVO_MASTER_KEY", base64.StdEncoding.EncodeToString(mustKey(t)))
+	vals := map[string]string{"PRIVO_MASTER_KEY_FILE": kf, "PRIVO_MASTER_KEY_PREVIOUS_FILE": pf}
+	p, err := LoadKeyProvider(func(k string) string { return vals[k] })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(p.Current(), key) || !bytes.Equal(p.Previous(), prev) {
+		t.Fatal("the keys named by the lookup were not loaded")
+	}
+	if _, err := LoadKeyProvider(func(string) string { return "" }); err == nil || !strings.Contains(err.Error(), "PRIVO_MASTER_KEY_FILE") {
+		t.Fatalf("missing key: %v, want an error naming PRIVO_MASTER_KEY_FILE", err)
+	}
 }

@@ -8,6 +8,7 @@
 //	tools-only  tool "ping" only; writes any prompts/* or resources/* request to $FLAG
 //	flaky       exits with status 1 until it has been started twice (counts in $MARKER), then default
 //	annotated   tools "read_note" (readOnlyHint) and "delete_note" (destructiveHint)
+//	outcomes    tools "fine" (succeeds), "fail" (a tool error: isError) and "boom" (a JSON-RPC error)
 //	legacy      as default, but speaks only protocol versions before 2026-07-28, like most servers today
 //	raw-notify  a hand-written server (no SDK) that sends one notification, -method M with -params absent|null,
 //	            right after the handshake: what the SDK would never let a server send
@@ -20,6 +21,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"os"
@@ -74,6 +76,20 @@ func main() {
 		mcp.AddTool(s, &mcp.Tool{Name: "delete_note", Description: "Delete a note.", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes}},
 			func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "deleted"}}}, nil, nil
+			})
+	} else if *mode == "outcomes" {
+		mcp.AddTool(s, &mcp.Tool{Name: "fine", Description: "Succeeds."},
+			func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "fine"}}}, nil, nil
+			})
+		mcp.AddTool(s, &mcp.Tool{Name: "fail", Description: "Returns a tool error."},
+			func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: "failed on purpose"}}}, nil, nil
+			})
+		// A raw handler: an error it returns is a JSON-RPC error, not a tool result.
+		s.AddTool(&mcp.Tool{Name: "boom", Description: "Returns a protocol error.", InputSchema: map[string]any{"type": "object"}},
+			func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return nil, errors.New("boom")
 			})
 	} else if *mode == "tools-only" {
 		s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {

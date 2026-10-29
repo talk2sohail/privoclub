@@ -23,8 +23,7 @@ lint:
 vuln:
 	go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
-# Black-box tests against the built binary (test/acceptance). Expected to fail
-# until feature F02 lands; see docs/todo.md.
+# Black-box tests against the built binary (test/acceptance).
 acceptance:
 	go test -tags acceptance -count=1 -timeout 5m ./test/acceptance/...
 

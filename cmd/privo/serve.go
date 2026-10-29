@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"privo.club/privo/internal/approval"
 	"privo.club/privo/internal/audit"
@@ -58,18 +59,18 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	logger := newLogger(stderr, cfg)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := runGateway(ctx, cfg, bs, logger); err != nil {
+	if err := runGateway(ctx, cfg, bs, getenv, logger); err != nil {
 		logger.Error("privo stopped with error", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func runGateway(ctx context.Context, cfg config.Config, bs bootstrapInput, logger *slog.Logger) error {
-	if os.Getenv("PRIVO_MASTER_KEY") != "" {
+func runGateway(ctx context.Context, cfg config.Config, bs bootstrapInput, getenv func(string) string, logger *slog.Logger) error {
+	if getenv("PRIVO_MASTER_KEY") != "" {
 		logger.Warn("master key given as PRIVO_MASTER_KEY; prefer PRIVO_MASTER_KEY_FILE: an environment variable stays readable in /proc/<pid>/environ for the life of the process")
 	}
-	keys, err := vault.LoadEnvKeyProvider()
+	keys, err := vault.LoadKeyProvider(getenv)
 	if err != nil {
 		return err
 	}
@@ -93,6 +94,11 @@ func runGateway(ctx context.Context, cfg config.Config, bs bootstrapInput, logge
 	if err := kr.EnsureOrgKey(ctx, org.ID); err != nil {
 		return err
 	}
+	// A database restored with the wrong master key would start and then fail on
+	// every credential. Opening the org key once makes that a clear stop.
+	if _, _, err := kr.Current(ctx, org.ID); err != nil {
+		return fmt.Errorf("the master key cannot open this database (is PRIVO_MASTER_KEY_FILE the key it was created with, or a restored backup's key?): %w", err)
+	}
 	if err := bootstrapAtStartup(ctx, st, org.ID, bs, logger); err != nil {
 		return err
 	}
@@ -107,6 +113,14 @@ func runGateway(ctx context.Context, cfg config.Config, bs bootstrapInput, logge
 	defer mgr.Close()
 	if err := mgr.Sync(ctx, org.ID); err != nil {
 		return err
+	}
+	if cfg.BackupInterval > 0 {
+		job := &backupJob{st: st, org: org.ID, dataDir: cfg.DataDir, dir: cfg.BackupDir, interval: cfg.BackupInterval, keep: cfg.BackupKeep, logger: logger, now: time.Now}
+		jobCtx, stopJob := context.WithCancel(ctx)
+		jobDone := make(chan struct{})
+		go func() { job.run(jobCtx); close(jobDone) }()
+		defer func() { stopJob(); <-jobDone }() // before the store is closed
+		logger.Info("scheduled backups on", "every", cfg.BackupInterval.String(), "keep", cfg.BackupKeep)
 	}
 	aw := audit.NewWriter(st, audit.Options{Logger: logger}) //nolint:contextcheck // the writer must outlive request contexts to flush on shutdown
 	defer aw.Close()

@@ -24,3 +24,4 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0012](0012-oauth-server-library.md) | OAuth authorization server library | Proposed (accept after F06 prototype) |
 | [0013](0013-key-custody.md) | Key custody and shared responsibility | Accepted |
 | [0014](0014-token-kinds-and-persons.md) | Token kinds and person identity | Accepted (security fix) |
+| [0015](0015-configuration.md) | Configuration: environment and an optional file | Accepted |

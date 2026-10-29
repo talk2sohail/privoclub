@@ -36,6 +36,16 @@ func (s *Store) EnsureOrg(ctx context.Context, slug, name string) (Org, error) {
 	return o, err
 }
 
+// OrgBySlug returns the org with slug, or ErrNotFound. It never creates one.
+func (s *Store) OrgBySlug(ctx context.Context, slug string) (Org, error) {
+	var o Org
+	err := s.r.QueryRowContext(ctx, `SELECT id, slug, name FROM orgs WHERE slug = ?`, slug).Scan(&o.ID, &o.Slug, &o.Name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Org{}, ErrNotFound
+	}
+	return o, err
+}
+
 // OrgKey is one version of an org's wrapped data key (ADR 0013).
 type OrgKey struct {
 	Version    uint32

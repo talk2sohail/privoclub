@@ -27,6 +27,23 @@ Why a file: an environment variable stays readable in `/proc/<pid>/environ` for 
 
 Moving an existing install from the variable to the file (done on 2026-10-29): add the file mount with the same content, set `PRIVO_MASTER_KEY_FILE`, deploy and check the app is healthy, delete `PRIVO_MASTER_KEY` (the normal and the preview entry), deploy again and check that the warning is gone from the logs. The file wins when both are set, so the first deploy is safe.
 
+## Settings: environment or a configuration file
+
+Everything above can stay in Coolify's environment, as today. For settings you would rather read in one place, Privo also reads a YAML file (ADR 0015, template: `docs/privo.example.yaml`). Two parts:
+
+1. Coolify → privo-gateway → Persistent Storage → add a **file** mount, for example at `/etc/privo/privo.yaml`, and put the settings in it:
+   ```yaml
+   listen: ":8080"
+   data_dir: /data
+   public_url: https://app.privo.club
+   master_key_file: /run/secrets/privo_master_key
+   ```
+2. Set `PRIVO_CONFIG_FILE=/etc/privo/privo.yaml` in the environment (the variable, not `--config`, so the image's healthcheck reads the file too) and redeploy.
+
+The environment overrides the file, so a value left in Coolify's environment still wins; `docker exec <container> /privo config show` lists every setting with its value and where it comes from (default, file, environment). Secrets are refused in the file (`master_key`, `master_key_previous`, `bootstrap_token`): the file names the key file with `master_key_file`, which is how it is already set up here. An unknown or repeated key, a list, or a missing file stops the start with exit 2 and the reason in the log; nothing falls back to defaults. The file is read at start only; changing it needs a redeploy.
+
+Nothing on the live app uses a file yet, and nothing needs to: moving settings across is optional and can be done one deploy at a time.
+
 ## First run: your first admin token
 
 The image has no shell, so Coolify's web terminal cannot run `privo token create`.
@@ -56,6 +73,39 @@ To see that the install happened without a shell, read the admin events: `curl -
 Anyone who can read Coolify's environment can read the variable while it is set, as they can the master key, so keep step 2 to step 5 short.
 
 **If the 24 hours pass unused**, the bootstrap cannot run again. Use the host: `docker exec $(docker ps -qf name=f46equvu3pb9kmq0shusvojo) /privo token create --name owner --role owner --kind control` (the binary runs without a shell; this needs SSH to the server).
+
+## Backups
+
+A backup is a consistent copy of the database (`privo.db`) taken while the gateway runs, with no downtime. It holds token hashes, policy, audit and the wrapped keys and credentials, and nothing in the clear. It does **not** hold the master key, and it is useless without it: keep the key in your password manager (see above). Restoring with another key is refused at start with a message that names the master key.
+
+**On demand** (needs SSH to the server; the image has no shell, so Coolify's terminal and Coolify's scheduled tasks, which run a command in a shell inside the container, cannot do this):
+
+```sh
+docker exec $(docker ps -qf name=f46equvu3pb9kmq0shusvojo) /privo backup            # into /data/backups/
+docker exec $(docker ps -qf name=f46equvu3pb9kmq0shusvojo) /privo backup --keep 7   # and keep only the newest 7
+```
+
+**On a schedule**, built in, off by default. In Coolify → privo-gateway → Environment, then redeploy:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `PRIVO_BACKUP_INTERVAL` | unset (off) | A snapshot every interval (`24h`, `6h`, at least `1s`). At start the gateway waits out what is left of the interval since the newest snapshot, or takes one at once if there is none |
+| `PRIVO_BACKUP_KEEP` | `7` | How many of the newest snapshots to keep (1 to 1000); only files named `privo-<UTC time>.db` are ever deleted |
+| `PRIVO_BACKUP_DIR` | `<data dir>/backups` | Where snapshots go |
+
+Each backup is an admin audit event (`backup.create`, actor `system` or `cli`; outcome `error` if it failed). A failed scheduled backup is logged, retried within at most 5 minutes, and never stops the gateway.
+
+**Off-host copy is your job for now.** The snapshots are on the same volume as the database, so they protect against mistakes and corruption, not against losing the server. Copy `/data/backups/` somewhere else on a schedule of your own (Coolify's S3 backups of the volume, `rsync`, `restic`). Built-in upload to S3-compatible storage is on the list (`docs/todo.md`, F15).
+
+**Restore** (stop the gateway first; a restore refuses while one is running):
+
+1. Coolify → privo-gateway → Stop.
+2. On the server, with the application's data volume (find it with `docker volume ls | grep f46equvu3pb9kmq0shusvojo`) and the image Coolify built (`docker ps -a` shows its name), run the binary once as the image's user:
+   `docker run --rm --user 65532:65532 -v <data volume>:/data -e PRIVO_DATA_DIR=/data <image> restore --from /data/backups/privo-<time>.db --force`
+3. The old `privo.db`, `-wal` and `-shm` are kept beside it as `*.replaced-<time>`; nothing is deleted. Delete them yourself when you are sure.
+4. Coolify → Start. The gateway must run with the master key the backup was made with. With another key it exits at start and says that the master key cannot open the database.
+
+The restore is tested end to end with the real binary (`test/acceptance`: `TestBackupAndRestoreDrill`, `TestScheduledBackupsKeepTheNewestAndRestore`, `TestRestoreWithTheWrongKeyRefusesToStart`). It has **not** been run on the production server; do one drill into a scratch directory (`--force` is not needed there) before you rely on it.
 
 ## DNS and TLS
 

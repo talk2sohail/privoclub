@@ -10,11 +10,11 @@ commit hash.
 Where it shows:
 
 - `GET /version` (unauthenticated, by decision of the owner on 2026-10-29) and
-  `privo version` print `{"version": "0.1.0", "go_version": "go1.27.3"}`. They
+  `privo version` print `{"version": "0.2.0", "go_version": "go1.27.3"}`. They
   carry nothing else: no commit, build date, organisation or configuration.
 - The `version` field of every log line, and the `serverInfo` that Privo reports
   to AI clients and sends to upstream servers.
-- The image tag from `make image` (`privo:0.1.0`).
+- The image tag from `make image` (`privo:0.2.0`).
 
 ## What counts as public
 

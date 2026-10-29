@@ -40,9 +40,8 @@ jobs:
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
   acceptance:
-    # Black-box suite ported from the prototype. Allowed to fail until F02 lands.
+    # Black-box suite against the built binary (test/acceptance). A failure blocks.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

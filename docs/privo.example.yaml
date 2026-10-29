@@ -1,0 +1,61 @@
+# Privo configuration file (ADR 0015, docs/deploy-coolify.md).
+#
+# Name it with --config FILE before the command, or with PRIVO_CONFIG_FILE
+# (use the variable in containers, so the image's healthcheck reads the same
+# file). Nothing is read unless it is named. Check the result with:
+#
+#   privo --config privo.yaml config show
+#
+# Every line below is a setting with its default or a typical value, switched
+# off. Remove the # in front of a line to use it. A key is the variable name in
+# lower case without PRIVO_ (PRIVO_BACKUP_INTERVAL is backup_interval). The
+# environment overrides the file, so one deployment can differ from a shared
+# file. The file is read once, at start: restart to change a setting.
+#
+# Secrets do not belong here and are refused: use master_key_file,
+# master_key_previous_file and bootstrap_token_file to name files that hold them.
+# A typo, a repeated key or a list is an error, not a silent default.
+
+# Where the gateway listens, and where its database and state live.
+#listen: ":8080"
+#data_dir: ./data
+# The address people and AI clients use to reach Privo; https unless loopback.
+#public_url: https://privo.example.com
+
+# Logging: debug, info, warn or error; json or text.
+#log_level: info
+#log_format: json
+#shutdown_timeout: 30s
+
+# The master key (32 random bytes, base64), kept in a file outside the data.
+#master_key_file: /run/secrets/privo_master_key
+# During key rotation only: the key being retired.
+#master_key_previous_file: /run/secrets/privo_master_key_previous
+# First boot only: a token from `privo token generate`, installed once as the
+# owner's control token. Remove the line after first use.
+#bootstrap_token_file: /run/secrets/privo_bootstrap_token
+
+# People, approvals and calls.
+#token_ttl: 2160h
+#approval_hold: 25s
+
+# Upstream MCP servers.
+#upstream_call_timeout: 10m
+#upstream_max_response_bytes: 16777216
+#upstream_refresh_gap: 5s
+#upstream_retry_base: 2s
+#upstream_retry_max: 30s
+# Internal networks that remote servers may use (self-hosted only).
+#egress_allow_cidrs: 10.0.0.0/8
+
+# Stdio servers. Empty refuses them; "local" runs them unisolated on this host,
+# for development only, and also needs insecure_local_runner.
+#runner: local
+#insecure_local_runner: i-understand
+
+# Snapshots of the database, taken by the gateway itself. Off unless an
+# interval is set. They sit on the same volume as the database: copy them
+# elsewhere too.
+#backup_interval: 24h
+#backup_keep: 7
+#backup_dir: ./data/backups

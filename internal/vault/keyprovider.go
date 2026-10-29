@@ -27,15 +27,20 @@ func (p staticProvider) Previous() []byte { return p.previous }
 // Keys are 32 bytes, base64 encoded (standard or URL alphabet, padding optional).
 // After loading, the plaintext variables are removed from the process
 // environment so child processes never inherit them.
-func LoadEnvKeyProvider() (KeyProvider, error) {
-	cur, err := loadKey("PRIVO_MASTER_KEY")
+func LoadEnvKeyProvider() (KeyProvider, error) { return LoadKeyProvider(os.Getenv) }
+
+// LoadKeyProvider is LoadEnvKeyProvider reading its variables through getenv,
+// so a configuration file can name the key files (ADR 0015). The key variables
+// themselves are still removed from the process environment.
+func LoadKeyProvider(getenv func(string) string) (KeyProvider, error) {
+	cur, err := loadKey(getenv, "PRIVO_MASTER_KEY")
 	if err != nil {
 		return nil, err
 	}
 	if cur == nil {
 		return nil, errors.New("vault: master key missing: set PRIVO_MASTER_KEY_FILE (preferred) or PRIVO_MASTER_KEY")
 	}
-	prev, err := loadKey("PRIVO_MASTER_KEY_PREVIOUS")
+	prev, err := loadKey(getenv, "PRIVO_MASTER_KEY_PREVIOUS")
 	if err != nil {
 		return nil, err
 	}
@@ -50,16 +55,16 @@ func StaticKeyProvider(current, previous []byte) KeyProvider {
 	return staticProvider{current: current, previous: previous}
 }
 
-func loadKey(name string) ([]byte, error) {
+func loadKey(getenv func(string) string, name string) ([]byte, error) {
 	var raw string
-	if path := os.Getenv(name + "_FILE"); path != "" {
+	if path := getenv(name + "_FILE"); path != "" {
 		b, err := os.ReadFile(path) //nolint:gosec // operator-supplied path is the point
 		if err != nil {
 			return nil, fmt.Errorf("vault: reading %s_FILE: %w", name, err)
 		}
 		raw = string(b)
 	} else {
-		raw = os.Getenv(name)
+		raw = getenv(name)
 	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" {

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -73,6 +74,13 @@ type Config struct {
 	// MaxResponseBytes limits one JSON reply of an HTTP or SSE upstream
 	// (PRIVO_UPSTREAM_MAX_RESPONSE_BYTES).
 	MaxResponseBytes int64
+	// BackupInterval is how often the gateway writes a snapshot of its database
+	// (PRIVO_BACKUP_INTERVAL); zero, the default, means it does not.
+	BackupInterval time.Duration
+	// BackupKeep is how many snapshots are kept (PRIVO_BACKUP_KEEP).
+	BackupKeep int
+	// BackupDir is where snapshots go (PRIVO_BACKUP_DIR, default <data dir>/backups).
+	BackupDir string
 }
 
 // Defaults applied when a variable is unset or empty.
@@ -88,6 +96,13 @@ const (
 	DefaultMaxResponseBytes = 16 << 20
 	MinMaxResponseBytes     = 1024
 	MaxMaxResponseBytes     = 1 << 30
+
+	// Scheduled backups: off unless an interval is set; a shorter interval than
+	// this is a mistake, and the keep count is bounded so a typo cannot keep or
+	// delete everything.
+	DefaultBackupKeep = 7
+	MinBackupInterval = time.Second
+	MaxBackupKeep     = 1000
 )
 
 // Load reads configuration using getenv (usually os.Getenv). All problems are
@@ -166,6 +181,25 @@ func Load(getenv func(string) string) (Config, error) {
 			cfg.MaxResponseBytes = n
 		}
 	}
+
+	if v := getenv("PRIVO_BACKUP_INTERVAL"); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < MinBackupInterval {
+			errs = append(errs, fmt.Errorf("PRIVO_BACKUP_INTERVAL %q: must be a duration of at least %s, such as 24h", v, MinBackupInterval))
+		} else {
+			cfg.BackupInterval = d
+		}
+	}
+	cfg.BackupKeep = DefaultBackupKeep
+	if v := getenv("PRIVO_BACKUP_KEEP"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > MaxBackupKeep {
+			errs = append(errs, fmt.Errorf("PRIVO_BACKUP_KEEP %q: must be a number from 1 to %d", v, MaxBackupKeep))
+		} else {
+			cfg.BackupKeep = n
+		}
+	}
+	cfg.BackupDir = orDefault(getenv("PRIVO_BACKUP_DIR"), filepath.Join(cfg.DataDir, "backups"))
 
 	if v := getenv("PRIVO_PUBLIC_URL"); v != "" {
 		u, err := parsePublicURL(v)
