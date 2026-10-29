@@ -73,6 +73,16 @@ func (s *Store) InstallBootstrapToken(ctx context.Context, t APIToken, ev AuditE
 			result = BootstrapNotNeeded
 			return nil
 		}
+		// A live token with the same name would make the unique name index fail
+		// the install and stop the process (R-11); the bootstrap token takes a
+		// name of its own instead and the other token is left alone.
+		var sameName int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_tokens WHERE org_id = ? AND name = ? AND revoked_at IS NULL`, t.OrgID, t.Name).Scan(&sameName); err != nil {
+			return err
+		}
+		if sameName > 0 {
+			t.Name += "-" + t.ID[:min(len(t.ID), 8)]
+		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO api_tokens (org_id, id, name, role, kind, person, secret_hash, created_at, expires_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

@@ -32,7 +32,7 @@ Instead the first boot installs a token you generated yourself. The secret
 never appears in a log or an API response, and only its hash is stored.
 
 1. On your own machine, from the repo: `go run ./cmd/privo token generate`. The token is printed once; keep it in your password manager.
-2. In Coolify → privo-gateway → Environment Variables, add `PRIVO_BOOTSTRAP_TOKEN` with that value (mark it secret / shown once if your Coolify version offers it). Deploy.
+2. In Coolify → privo-gateway → Environment Variables, add `PRIVO_BOOTSTRAP_TOKEN` with that value (mark it secret / shown once if your Coolify version offers it). Deploy. The variable stays readable in `/proc/<pid>/environ` while the process runs, and the log says so; to avoid that, mount the token as a file (Coolify → Persistent Storage → file mount) and set `PRIVO_BOOTSTRAP_TOKEN_FILE` to its path instead. A token made by hand, such as a repeated character, is refused at startup: use the output of `token generate`.
 3. The log shows `bootstrap owner token installed ... token_id=... expires=...`. The token is an **owner control token** (admin API only, never `/mcp`) and **expires 24 hours after install**.
 4. Use it to mint your own token, then revoke it:
 
@@ -48,6 +48,8 @@ never appears in a log or an API response, and only its hash is stored.
 
    Revocation takes effect within about two seconds.
 5. Delete `PRIVO_BOOTSTRAP_TOKEN` from Coolify and redeploy. If you forget, nothing is exposed beyond the 24 hours, and it never installs again (the gateway records that it was used); each boot logs a warning until the variable is gone.
+
+To see that the install happened without a shell, read the admin events: `curl -sS -H "Authorization: Bearer $OWNER" "$URL/api/v1/audit/events?kind=admin"` lists it as `bootstrap.token.install:<id>` (actor `system`), next to the token you minted and the one you revoked.
 
 Anyone who can read Coolify's environment can read the variable while it is set, as they can the master key, so keep step 2 to step 5 short.
 

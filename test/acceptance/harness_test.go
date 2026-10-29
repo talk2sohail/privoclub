@@ -16,7 +16,7 @@
 //	DELETE /api/v1/servers/{alias}
 //	POST   /api/v1/servers/{alias}/pins:accept accept every pending pin (review UI shortcut)
 //	POST   /api/v1/tokens, GET /api/v1/tokens, DELETE /api/v1/tokens/{id}
-//	GET    /api/v1/audit/events
+//	GET    /api/v1/audit/events[?kind=admin]
 //	PATCH  /api/v1/settings/audit              {"record_arguments": bool, "record_results": bool}
 //	POST   /mcp                                MCP Streamable HTTP endpoint
 package acceptance

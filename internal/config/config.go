@@ -200,6 +200,16 @@ func LoadBootstrapToken(getenv func(string) string) (Secret, error) {
 	name, raw := "PRIVO_BOOTSTRAP_TOKEN", getenv("PRIVO_BOOTSTRAP_TOKEN")
 	if path := strings.TrimSpace(getenv("PRIVO_BOOTSTRAP_TOKEN_FILE")); path != "" {
 		name = "PRIVO_BOOTSTRAP_TOKEN_FILE"
+		// A FIFO without a writer blocks Open for good, and a directory or a
+		// device is not a place for a token (R-11, independent review 2026-10-29).
+		// Stat follows symlinks, which is how some platforms mount secrets.
+		fi, err := os.Stat(path)
+		if err != nil {
+			return "", fmt.Errorf("%s: %w: %w", name, ErrBootstrapUnreadable, err)
+		}
+		if !fi.Mode().IsRegular() {
+			return "", fmt.Errorf("%s: %w: not a regular file", name, ErrBootstrapUnreadable)
+		}
 		f, err := os.Open(path) //nolint:gosec // operator-supplied path is the point
 		if err != nil {
 			return "", fmt.Errorf("%s: %w: %w", name, ErrBootstrapUnreadable, err)
@@ -218,10 +228,28 @@ func LoadBootstrapToken(getenv func(string) string) (Secret, error) {
 	if raw == "" {
 		return "", nil
 	}
-	if _, _, err := token.Parse(raw); err != nil {
+	_, secret, err := token.Parse(raw)
+	if err != nil {
 		return "", fmt.Errorf("%s: not a valid Privo token; make one with `privo token generate`", name)
 	}
+	if token.Weak(secret) {
+		// It would be an owner credential with no entropy (R-10).
+		return "", fmt.Errorf("%s: the token looks hand-made, its secret is too regular to be random; make one with `privo token generate`", name)
+	}
 	return Secret(raw), nil
+}
+
+// BootstrapTokenSource names the variable LoadBootstrapToken reads the token
+// from: PRIVO_BOOTSTRAP_TOKEN_FILE when it is set, which wins, otherwise
+// PRIVO_BOOTSTRAP_TOKEN, or "" when there is none.
+func BootstrapTokenSource(getenv func(string) string) string {
+	switch {
+	case strings.TrimSpace(getenv("PRIVO_BOOTSTRAP_TOKEN_FILE")) != "":
+		return "PRIVO_BOOTSTRAP_TOKEN_FILE"
+	case strings.TrimSpace(getenv("PRIVO_BOOTSTRAP_TOKEN")) != "":
+		return "PRIVO_BOOTSTRAP_TOKEN"
+	}
+	return ""
 }
 
 func parsePublicURL(v string) (*url.URL, error) {

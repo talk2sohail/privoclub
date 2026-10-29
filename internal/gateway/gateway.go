@@ -108,19 +108,19 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 		case "tools/call":
 			params, _ := req.GetParams().(*mcp.CallToolParamsRaw)
 			if params == nil {
-				return nil, errors.New("invalid tools/call params")
+				return nil, invalidParams("invalid tools/call params")
 			}
 			res, err := g.callTool(ctx, p, params)
-			return withResultType(req, res, err)
+			return g.finish(req, res, err)
 		case "prompts/list":
 			return g.listPrompts(ctx, p)
 		case "prompts/get":
 			params, _ := req.GetParams().(*mcp.GetPromptParams)
 			if params == nil {
-				return nil, errors.New("invalid prompts/get params")
+				return nil, invalidParams("invalid prompts/get params")
 			}
 			res, err := g.getPrompt(ctx, p, params)
-			return withResultType(req, res, err)
+			return g.finish(req, res, err)
 		case "resources/list":
 			return g.listResources(ctx, p)
 		case "resources/templates/list":
@@ -128,13 +128,20 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 		case "resources/read":
 			params, _ := req.GetParams().(*mcp.ReadResourceParams)
 			if params == nil {
-				return nil, errors.New("invalid resources/read params")
+				return nil, invalidParams("invalid resources/read params")
 			}
 			res, err := g.readResource(ctx, p, params)
-			return withResultType(req, res, err)
+			return g.finish(req, res, err)
 		}
 		return next(ctx, method, req)
 	}
+}
+
+// finish prepares the result of tools/call, prompts/get or resources/read for
+// the wire, or the error with a JSON-RPC code.
+func (g *Gateway) finish(req mcp.Request, res mcp.Result, err error) (mcp.Result, error) {
+	res, err = withResultType(req, res, err)
+	return res, g.rpcError(err)
 }
 
 // visible returns the reviewed items of kind for org, sorted by public name.
@@ -424,7 +431,12 @@ func (g *Gateway) clientFacing(c call, err error) error {
 		return rpc
 	}
 	var r *refusal
-	if errors.As(err, &r) || errors.Is(err, upstream.ErrUnavailable) || errors.Is(err, errMalformedRead) || errors.Is(err, errCallTimeout) {
+	if errors.Is(err, errMalformedReply) || errors.Is(err, errNeedsInput) {
+		// The text names a field and a position and nothing the upstream sent.
+		g.Logger.Warn("upstream sent a reply the gateway does not relay", "server", c.item.Alias, "action", c.action, "err", err)
+		return err
+	}
+	if errors.As(err, &r) || errors.Is(err, upstream.ErrUnavailable) || errors.Is(err, errCallTimeout) {
 		return err
 	}
 	g.Logger.Warn("upstream call failed", "server", c.item.Alias, "action", c.action, "err", upstream.RedactText(err.Error()))
@@ -478,6 +490,10 @@ func (g *Gateway) callTool(ctx context.Context, p auth.Principal, params *mcp.Ca
 		if err != nil {
 			return "error", err
 		}
+		if err = checkTool(res); err != nil {
+			return "error", err
+		}
+		cleanForRelay(res)
 		result = res
 		if res.IsError {
 			return "tool_error", nil
@@ -503,7 +519,7 @@ func (g *Gateway) getPrompt(ctx context.Context, p auth.Principal, params *mcp.G
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("prompt %q is not available", params.Name)
+		return nil, invalidParams("prompt %q is not available", params.Name)
 	}
 	args, err := json.Marshal(params.Arguments) // map[string]string: keys sorted by encoding/json
 	if err != nil {
@@ -515,27 +531,23 @@ func (g *Gateway) getPrompt(ctx context.Context, p auth.Principal, params *mcp.G
 		if err != nil {
 			return "error", err
 		}
+		if err = checkPrompt(res); err != nil {
+			return "error", err
+		}
+		cleanForRelay(res)
 		result = res
 		return "ok", nil
 	})
 	return result, err
 }
 
-// errMalformedRead marks a resources/read reply that breaks the protocol.
-var errMalformedRead = errors.New("upstream sent a malformed resources/read reply")
-
 // rewriteRead gives every content of an upstream's resources/read reply its
-// public URI. The reply is untrusted: no result, or a null among the contents,
-// is refused as malformed before anything is changed, because a panic here
-// would end the process for every tenant.
+// public URI. The reply is untrusted: no result, no contents, or a null among
+// the contents is refused as malformed before anything is changed, because a
+// panic here would end the process for every tenant.
 func rewriteRead(alias string, res *mcp.ReadResourceResult) error {
-	if res == nil {
-		return fmt.Errorf("%w: no result", errMalformedRead)
-	}
-	for i, c := range res.Contents {
-		if c == nil {
-			return fmt.Errorf("%w: contents[%d] is null", errMalformedRead, i)
-		}
+	if err := checkRead(res); err != nil {
+		return err
 	}
 	for _, c := range res.Contents {
 		c.URI = ResourceURI(alias, c.URI)
@@ -546,7 +558,7 @@ func rewriteRead(alias string, res *mcp.ReadResourceResult) error {
 func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mcp.ReadResourceParams) (mcp.Result, error) {
 	alias, up, ok := ParseResourceURI(params.URI)
 	if !ok {
-		return nil, fmt.Errorf("resource %q is not a Privo resource URI", params.URI)
+		return nil, invalidParams("resource %q is not a Privo resource URI", params.URI)
 	}
 	items, err := g.visible(ctx, p.OrgID, upstream.KindResource)
 	if err != nil {
@@ -554,7 +566,7 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 	}
 	idx := slices.IndexFunc(items, func(c upstream.Item) bool { return c.Alias == alias && c.Name == up })
 	if idx < 0 {
-		return nil, fmt.Errorf("resource %q is not available", params.URI)
+		return nil, resourceNotFound("resource %q is not available", params.URI)
 	}
 	it := items[idx]
 	var result *mcp.ReadResourceResult
@@ -566,6 +578,7 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 		if err = rewriteRead(alias, res); err != nil {
 			return "error", err
 		}
+		cleanForRelay(res)
 		res.Cacheable = readCache()
 		result = res
 		return "ok", nil

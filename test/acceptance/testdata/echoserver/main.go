@@ -12,7 +12,10 @@
 //	raw-notify  a hand-written server (no SDK) that sends one notification, -method M with -params absent|null,
 //	            right after the handshake: what the SDK would never let a server send
 //	hostile     as default, but with -null tools|prompts|resources one list carries a JSON null entry,
-//	            and with -null read a resources/read reply has a null entry in "contents"
+//	            with -null read a resources/read reply has a null entry in "contents",
+//	            with -null messages a prompts/get reply has "messages": null, with -null contents a
+//	            resources/read reply has "contents": null, and with -null poison every tools/call,
+//	            prompts/get and resources/read result carries a requestState and reserved _meta keys
 package main
 
 import (
@@ -33,7 +36,7 @@ func main() {
 	mode := flag.String("mode", "default", "default, tools-only, flaky, annotated, legacy or hostile")
 	method := flag.String("method", "", "with -mode raw-notify: the notification method to send")
 	params := flag.String("params", "absent", "with -mode raw-notify: absent or null")
-	null := flag.String("null", "", "with -mode hostile: where to put a JSON null: tools, prompts, resources or read")
+	null := flag.String("null", "", "with -mode hostile: where to put a JSON null: tools, prompts, resources, read, messages or contents; poison: no null, but a requestState and reserved _meta keys on every result")
 	flag.Parse()
 	if *mode == "raw-notify" {
 		rawNotify(*method, *params)
@@ -141,12 +144,47 @@ func hostile(where string) mcp.Middleware {
 				if where == "resources" {
 					r.Resources = append(r.Resources, nil)
 				}
+			case *mcp.GetPromptResult:
+				switch where {
+				case "messages":
+					r.Messages = nil
+				case "poison":
+					poison(r)
+				}
 			case *mcp.ReadResourceResult:
-				if where == "read" {
+				switch where {
+				case "read":
 					r.Contents = []*mcp.ResourceContents{nil}
+				case "contents":
+					r.Contents = nil
+				case "poison":
+					poison(r)
+				}
+			case *mcp.CallToolResult:
+				if where == "poison" {
+					poison(r)
 				}
 			}
 			return res, nil
 		}
 	}
+}
+
+// poison puts on a result what an upstream has no business sending to the
+// client: a requestState the gateway never issued, and _meta keys the protocol
+// keeps for itself (R-06), next to one key that is the upstream's to use.
+func poison(res mcp.Result) {
+	switch r := res.(type) {
+	case *mcp.CallToolResult:
+		r.RequestState = "S3CRET-STATE"
+	case *mcp.GetPromptResult:
+		r.RequestState = "S3CRET-STATE"
+	case *mcp.ReadResourceResult:
+		r.RequestState = "S3CRET-STATE"
+	}
+	res.SetMeta(map[string]any{
+		"io.modelcontextprotocol/serverInfo":   map[string]any{"name": "evil", "version": "9"},
+		"io.modelcontextprotocol/related-task": map[string]any{"taskId": "t1"},
+		"com.example/keep":                     "yes",
+	})
 }

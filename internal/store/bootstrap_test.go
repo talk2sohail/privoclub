@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -228,5 +229,33 @@ func TestBootstrapNeeded(t *testing.T) {
 	}
 	if !needed("org-that-has-nothing") {
 		t.Error("an org with no rows needs one")
+	}
+}
+
+// R-11 (independent review, 2026-10-29): a gateway token that is already called
+// "bootstrap" made the install fail on the unique name and the process exit.
+// The bootstrap token takes a name of its own instead.
+func TestInstallBootstrapTokenNameTaken(t *testing.T) {
+	ctx := context.Background()
+	s, _ := open(t)
+	a, _ := twoOrgs(t, s)
+	taken := bootstrapTok(a, "gw1")
+	taken.Role, taken.Kind = RoleMember, KindGateway
+	if err := s.CreateToken(ctx, taken); err != nil {
+		t.Fatal(err)
+	}
+	res, err := s.InstallBootstrapToken(ctx, bootstrapTok(a, "tid1abcdefgh"), bootstrapEvent("ev1"))
+	if err != nil || res != BootstrapInstalled {
+		t.Fatalf("install = %v, %v", res, err)
+	}
+	got, err := s.TokenByID(ctx, "tid1abcdefgh")
+	if err != nil || got.Kind != KindControl || got.Role != RoleOwner {
+		t.Fatalf("stored token %+v %v", got, err)
+	}
+	if got.Name == "bootstrap" || !strings.HasPrefix(got.Name, "bootstrap-") {
+		t.Errorf("name = %q, want bootstrap-<something>", got.Name)
+	}
+	if other, _ := s.TokenByID(ctx, "gw1"); other.Name != "bootstrap" {
+		t.Errorf("the existing token was renamed to %q", other.Name)
 	}
 }

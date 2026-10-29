@@ -3,6 +3,8 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
+	"hash/crc32"
 	"strings"
 	"testing"
 	"time"
@@ -142,4 +144,31 @@ func TestBootstrapToken(t *testing.T) {
 			t.Fatalf("install = %v, %v", res, err)
 		}
 	})
+}
+
+// R-10 (independent review, 2026-10-29): the installer is the boundary of the
+// control plane, so it refuses a token with no entropy itself and does not rely
+// on its caller.
+func TestInstallBootstrapTokenRefusesWeakToken(t *testing.T) {
+	ctx := context.Background()
+	st, org := newOrg(t)
+	id, secret := "aaaaaaaaaaaaaaaa", strings.Repeat("a", 52)
+	body := token.Prefix + id + "_" + secret
+	plain := fmt.Sprintf("%s%08x", body, crc32.ChecksumIEEE([]byte(body)))
+	if _, _, err := token.Parse(plain); err != nil {
+		t.Fatalf("the test token must be well-formed: %v", err)
+	}
+	_, _, err := InstallBootstrapToken(ctx, st, org, plain, time.Now())
+	if !errors.Is(err, token.ErrWeak) {
+		t.Fatalf("err = %v, want token.ErrWeak", err)
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("error repeats the secret: %v", err)
+	}
+	if _, err := st.TokenByID(ctx, id); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("the weak token was stored: %v", err)
+	}
+	if needed, _ := st.BootstrapNeeded(ctx, org); !needed {
+		t.Fatal("a refused token used up the one install")
+	}
 }

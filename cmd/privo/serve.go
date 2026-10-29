@@ -46,8 +46,13 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		_, _ = fmt.Fprintf(stderr, "privo: invalid configuration:\n%v\n", bs.err)
 		return 2
 	}
+	bs.source = config.BootstrapTokenSource(getenv)
 	if bs.token != "" {
-		// Like the master key: gone from the environment, so child processes never inherit it.
+		// Removed from the environment so that child processes (stdio servers)
+		// never inherit it. This does not remove it from /proc/<pid>/environ,
+		// which keeps the block the process started with; the file form is the
+		// one that keeps the token out of there (R-08), and bootstrapAtStartup
+		// warns when the variable was used.
 		_ = os.Unsetenv("PRIVO_BOOTSTRAP_TOKEN")
 	}
 	logger := newLogger(stderr, cfg)

@@ -213,3 +213,46 @@ func TestHealthcheckAndTokenCreateIgnoreBootstrapVariables(t *testing.T) {
 		t.Errorf("token create exit %d, stdout %q, stderr %q", code, out.String(), errb.String())
 	}
 }
+
+// R-08 (independent review, 2026-10-29): clearing the variable from the
+// process environment does not remove it from /proc/<pid>/environ, so the
+// only honest mitigation is the file form. A token given as a plain variable
+// is a warning, as the master key is.
+func TestBootstrapTokenFromEnvironmentWarns(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		source   string
+		wantWarn bool
+	}{
+		{"PRIVO_BOOTSTRAP_TOKEN", true},
+		{"PRIVO_BOOTSTRAP_TOKEN_FILE", false},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			st, err := store.Open(ctx, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+			org, err := st.EnsureOrg(ctx, DefaultOrgSlug, "Default")
+			if err != nil {
+				t.Fatal(err)
+			}
+			tok, _ := token.New()
+			_, secret, _ := token.Parse(tok.Plain)
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			in := bootstrapInput{token: config.Secret(tok.Plain), source: tc.source}
+			if err := bootstrapAtStartup(ctx, st, org.ID, in, logger); err != nil {
+				t.Fatal(err)
+			}
+			out := logs.String()
+			warned := strings.Contains(out, "level=WARN") && strings.Contains(out, "PRIVO_BOOTSTRAP_TOKEN_FILE") && strings.Contains(out, "/proc/")
+			if warned != tc.wantWarn {
+				t.Errorf("warned = %v, want %v; log: %s", warned, tc.wantWarn, out)
+			}
+			if strings.Contains(out, secret) || strings.Contains(out, tok.Plain) {
+				t.Errorf("log contains the token: %s", out)
+			}
+		})
+	}
+}

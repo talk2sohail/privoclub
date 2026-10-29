@@ -67,7 +67,7 @@ func withResultType(req mcp.Request, res mcp.Result, err error) (mcp.Result, err
 		// Labelling this "complete" would be false, and relaying an upstream
 		// server's questions to the client is not something the gateway does.
 		// The SDK client already refuses them; this keeps it that way.
-		return nil, errors.New("the upstream server asked for input, which the gateway does not relay")
+		return nil, errNeedsInput
 	}
 	return typedResult{Result: res, complete: wantsResultType(req)}, nil
 }

@@ -27,11 +27,15 @@ const (
 // of its secret is stored. It installs at most once per org and only when the
 // org has never had a control token; the result says which case applied.
 //
-// A malformed token returns token.ErrMalformed without repeating the input.
+// A malformed token returns token.ErrMalformed, and one whose secret is too
+// regular to be random (R-10) returns token.ErrWeak; neither repeats the input.
 func InstallBootstrapToken(ctx context.Context, s *store.Store, org store.OrgID, plain string, now time.Time) (store.BootstrapResult, store.APIToken, error) {
 	id, secret, err := token.Parse(plain)
 	if err != nil {
 		return 0, store.APIToken{}, token.ErrMalformed
+	}
+	if token.Weak(secret) {
+		return 0, store.APIToken{}, token.ErrWeak
 	}
 	rec := store.APIToken{OrgID: org, ID: id, Name: BootstrapTokenName, Role: store.RoleOwner, Kind: store.KindControl, Person: BootstrapTokenName,
 		SecretHash: token.HashSecret(secret), CreatedAt: now, ExpiresAt: now.Add(BootstrapTokenTTL)}

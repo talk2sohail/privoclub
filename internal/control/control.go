@@ -541,8 +541,19 @@ func (a *API) revokeToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 
 // ---- audit
 
+// listAudit serves the audit log: the calls through the gateway by default
+// (?kind=calls), or with ?kind=admin what the control API did and the
+// bootstrap install, which are separate rows (R-09, independent review
+// 2026-10-29).
 func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	switch kind := r.URL.Query().Get("kind"); kind {
+	case "", "calls":
+	case "admin":
+		return a.listAdminAudit(w, r, p, limit)
+	default:
+		return errorf(http.StatusBadRequest, "kind must be calls or admin")
+	}
 	calls, err := a.Store.RecentCalls(r.Context(), p.OrgID, limit)
 	if err != nil {
 		return err
@@ -568,6 +579,23 @@ func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal
 			} else {
 				e["arguments_error"] = "cannot decrypt"
 			}
+		}
+		out = append(out, e)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"events": out})
+	return nil
+}
+
+func (a *API) listAdminAudit(w http.ResponseWriter, r *http.Request, p auth.Principal, limit int) error {
+	events, err := a.Store.RecentAdminEvents(r.Context(), p.OrgID, limit)
+	if err != nil {
+		return err
+	}
+	out := make([]map[string]any, 0, len(events))
+	for _, ev := range events {
+		e := map[string]any{"id": ev.ID, "time": ev.Time, "actor": ev.Actor, "actor_id": ev.ActorID, "action": ev.Action, "decision": ev.Decision, "outcome": ev.Outcome}
+		if ev.Server != "" {
+			e["server"] = ev.Server
 		}
 		out = append(out, e)
 	}

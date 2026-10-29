@@ -4,6 +4,7 @@ package acceptance
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
@@ -167,4 +168,65 @@ func TestBootstrapFileMissingOnFirstBootRefusesToStart(t *testing.T) {
 	if err == nil || !strings.Contains(string(out), "PRIVO_BOOTSTRAP_TOKEN_FILE") {
 		t.Fatalf("serve: err %v, output %q; want a failure that names PRIVO_BOOTSTRAP_TOKEN_FILE", err, out)
 	}
+}
+
+// R-09 (independent review, 2026-10-29): the bootstrap install is audited as an
+// admin event, and on a deploy without a shell the owner has no other way to
+// read it. Admin events come back from the audit endpoint with kind=admin; the
+// default list stays the list of calls.
+func TestAdminAuditEventsAreReadable(t *testing.T) {
+	plain := generateToken(t)
+	id, secret, err := token.Parse(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := newGateway(t, "PRIVO_BOOTSTRAP_TOKEN="+plain)
+	g.start()
+
+	created := g.api(http.MethodPost, "/api/v1/tokens", plain, map[string]any{"name": "ada", "role": "member", "kind": "gateway"}, http.StatusCreated)
+	member, _ := created["token"].(string)
+
+	admin := g.api(http.MethodGet, "/api/v1/audit/events?kind=admin", plain, nil, http.StatusOK)
+	events, _ := admin["events"].([]any)
+	byAction := map[string]map[string]any{}
+	for _, e := range events {
+		m, _ := e.(map[string]any)
+		action, _ := m["action"].(string)
+		byAction[action] = m
+	}
+	install := byAction["bootstrap.token.install:"+id]
+	if install == nil {
+		t.Fatalf("no bootstrap install event in %v", events)
+	}
+	if install["actor"] != "system" || install["decision"] != "allow" || install["outcome"] != "ok" || install["time"] == nil {
+		t.Errorf("install event = %v", install)
+	}
+	if created := byAction["token.create:gateway:member:ada"]; created == nil || created["actor"] != "bootstrap" {
+		t.Errorf("token create event = %v (all: %v)", created, byAction)
+	}
+	if strings.Contains(g.logs.String()+toJSON(t, admin), secret) {
+		t.Errorf("the bootstrap secret appears in the admin events or the logs")
+	}
+
+	// The default is still the list of calls, and calls are not admin events.
+	calls := g.api(http.MethodGet, "/api/v1/audit/events", plain, nil, http.StatusOK)
+	if list, _ := calls["events"].([]any); len(list) != 0 {
+		t.Errorf("the call list holds admin events: %v", list)
+	}
+	g.api(http.MethodGet, "/api/v1/audit/events?kind=calls", plain, nil, http.StatusOK)
+	g.api(http.MethodGet, "/api/v1/audit/events?kind=bogus", plain, nil, http.StatusBadRequest)
+	// Who may read the audit log may read this too (an auditor does), and an
+	// agent's gateway token may not.
+	watcher := g.api(http.MethodPost, "/api/v1/tokens", plain, map[string]any{"name": "watcher", "role": "auditor", "kind": "control"}, http.StatusCreated)
+	g.api(http.MethodGet, "/api/v1/audit/events?kind=admin", watcher["token"].(string), nil, http.StatusOK)
+	g.api(http.MethodGet, "/api/v1/audit/events?kind=admin", member, nil, http.StatusUnauthorized)
+}
+
+func toJSON(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

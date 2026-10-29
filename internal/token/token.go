@@ -37,6 +37,10 @@ var enc = base32.NewEncoding("abcdefghijklmnopqrstuvwxyz234567").WithPadding(bas
 // ErrMalformed is returned for strings that are not well-formed Privo tokens.
 var ErrMalformed = errors.New("token: malformed")
 
+// ErrWeak is returned for a well-formed token whose secret is too regular to
+// have been generated at random.
+var ErrWeak = errors.New("token: the secret is too regular to be random; make one with `privo token generate`")
+
 // Token is a freshly generated token. Plain is shown to the user once.
 type Token struct {
 	ID         string
@@ -81,6 +85,55 @@ func Parse(plain string) (id, secret string, err error) {
 		return "", "", ErrMalformed
 	}
 	return id, secret, nil
+}
+
+// The checks in Weak. A secret from New has about 26 different symbols of 32;
+// fewer than 16, a run of 8, or 16 steps along the alphabet happen to a random
+// one far less than once in a million million times.
+const (
+	weakMinDistinct = 16
+	weakRun         = 8
+	weakSteps       = 16
+	symbolOrder     = "abcdefghijklmnopqrstuvwxyz234567"
+)
+
+// Weak reports whether a secret looks hand-made: too few different symbols,
+// a long run of one symbol, or a long walk along the alphabet in order. It is a
+// cheap guard against the careless case (a secret of repeated characters on a
+// token that grants owner access), not a proof of randomness. A secret from New
+// is never weak in practice.
+func Weak(secret string) bool {
+	if secret == "" {
+		return true
+	}
+	var seen [256]bool
+	distinct, run, steps := 0, 0, 0
+	for i := 0; i < len(secret); i++ {
+		c := secret[i]
+		if !seen[c] {
+			seen[c] = true
+			distinct++
+		}
+		if i == 0 {
+			run = 1
+			continue
+		}
+		prev := secret[i-1]
+		if c == prev {
+			if run++; run >= weakRun {
+				return true
+			}
+		} else {
+			run = 1
+		}
+		a, b := strings.IndexByte(symbolOrder, prev), strings.IndexByte(symbolOrder, c)
+		if a >= 0 && b >= 0 && (b-a == 1 || a-b == 1) {
+			if steps++; steps >= weakSteps {
+				return true
+			}
+		}
+	}
+	return distinct < weakMinDistinct
 }
 
 // HashSecret returns the hex SHA-256 of a secret.

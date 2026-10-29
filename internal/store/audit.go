@@ -90,6 +90,36 @@ func (s *Store) RecentCalls(ctx context.Context, org OrgID, limit int) ([]CallRe
 	return out, rows.Err()
 }
 
+// RecentAdminEvents returns the newest admin-phase events first: what the
+// control API did (tokens, servers, policies, settings, approvals) and the
+// bootstrap install. RecentCalls never returns them (R-09, independent review
+// 2026-10-29).
+func (s *Store) RecentAdminEvents(ctx context.Context, org OrgID, limit int) ([]AuditEvent, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	rows, err := s.r.QueryContext(ctx, `
+		SELECT id, call_id, ts, actor, actor_id, client, server, action, decision, outcome
+		FROM audit_events
+		WHERE org_id = ? AND phase = 'admin'
+		ORDER BY ts DESC, id DESC LIMIT ?`, org, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []AuditEvent
+	for rows.Next() {
+		e := AuditEvent{Phase: "admin"}
+		var at string
+		if err := rows.Scan(&e.ID, &e.CallID, &at, &e.Actor, &e.ActorID, &e.Client, &e.Server, &e.Action, &e.Decision, &e.Outcome); err != nil {
+			return nil, err
+		}
+		e.Time = parseTS(at)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // Setting reads a per-org setting; def is returned when unset.
 func (s *Store) Setting(ctx context.Context, org OrgID, key, def string) (string, error) {
 	var v string

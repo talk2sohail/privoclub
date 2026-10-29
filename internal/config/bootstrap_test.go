@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -105,5 +106,63 @@ func TestLoadIgnoresBootstrapVariables(t *testing.T) {
 	}))
 	if err != nil {
 		t.Fatalf("Load failed on the bootstrap variables: %v", err)
+	}
+}
+
+// handMade builds a well-formed token from an id and a secret of the caller's
+// choosing, as a script or an operator could: the checksum is public.
+func handMade(id, secret string) string {
+	body := token.Prefix + id + "_" + secret
+	return fmt.Sprintf("%s%08x", body, crc32.ChecksumIEEE([]byte(body)))
+}
+
+// R-10: a well-formed token with no entropy is refused at startup, and the
+// error neither repeats it nor blames the file.
+func TestBootstrapTokenWeakIsRefused(t *testing.T) {
+	weak := handMade("aaaaaaaaaaaaaaaa", strings.Repeat("a", 52))
+	if _, _, err := token.Parse(weak); err != nil {
+		t.Fatalf("the test token must be well-formed: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "bootstrap")
+	if err := os.WriteFile(path, []byte(weak+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, vars := range map[string]map[string]string{
+		"environment": {"PRIVO_BOOTSTRAP_TOKEN": weak},
+		"file":        {"PRIVO_BOOTSTRAP_TOKEN_FILE": path},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadBootstrapToken(env(vars))
+			if err == nil {
+				t.Fatal("a token with no entropy was accepted")
+			}
+			if !strings.Contains(err.Error(), "privo token generate") || !strings.Contains(err.Error(), "PRIVO_BOOTSTRAP_TOKEN") {
+				t.Errorf("err = %v, want it to name the variable and say how to make a token", err)
+			}
+			if strings.Contains(err.Error(), strings.Repeat("a", 20)) {
+				t.Errorf("error repeats the secret: %v", err)
+			}
+			if errors.Is(err, ErrBootstrapUnreadable) {
+				t.Errorf("a weak token is not an unreadable file: %v", err)
+			}
+		})
+	}
+}
+
+// R-08: the warning about the environment needs to know where the token came from.
+func TestBootstrapTokenSource(t *testing.T) {
+	for name, tc := range map[string]struct {
+		vars map[string]string
+		want string
+	}{
+		"nothing":       {nil, ""},
+		"blank values":  {map[string]string{"PRIVO_BOOTSTRAP_TOKEN": "  ", "PRIVO_BOOTSTRAP_TOKEN_FILE": " "}, ""},
+		"the variable":  {map[string]string{"PRIVO_BOOTSTRAP_TOKEN": "x"}, "PRIVO_BOOTSTRAP_TOKEN"},
+		"the file":      {map[string]string{"PRIVO_BOOTSTRAP_TOKEN_FILE": "/run/secrets/b"}, "PRIVO_BOOTSTRAP_TOKEN_FILE"},
+		"the file wins": {map[string]string{"PRIVO_BOOTSTRAP_TOKEN_FILE": "/run/secrets/b", "PRIVO_BOOTSTRAP_TOKEN": "x"}, "PRIVO_BOOTSTRAP_TOKEN_FILE"},
+	} {
+		if got := BootstrapTokenSource(env(tc.vars)); got != tc.want {
+			t.Errorf("%s: source = %q, want %q", name, got, tc.want)
+		}
 	}
 }

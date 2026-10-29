@@ -87,7 +87,7 @@ func auditOutcome(g *gateway, server, tool string) string {
 	var outcome string
 	g.eventually("the audit row of "+server+"."+tool, 10*time.Second, func() bool {
 		for _, e := range auditEvents(g) { // newest first
-			if e["server"] != server || e["tool"] != tool {
+			if e["server"] != server || e["item"] != tool { // "item" is the tool, prompt or resource name
 				continue
 			}
 			outcome, _ = e["outcome"].(string)

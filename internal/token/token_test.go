@@ -62,3 +62,45 @@ func flip(c byte) string {
 	}
 	return "a"
 }
+
+// R-10 (independent review, 2026-10-29): a well-formed token made by hand has
+// no entropy, and as the bootstrap token it was an owner credential for 24
+// hours. Weak is a cheap check for the careless case; it cannot prove that a
+// secret is random, and a token from `privo token generate` is.
+func TestWeak(t *testing.T) {
+	const alphabet = "abcdefghijklmnopqrstuvwxyz234567"
+	for name, secret := range map[string]string{
+		"one symbol":                strings.Repeat("a", 52),
+		"two symbols":               strings.Repeat("ab", 26),
+		"a pattern of four":         strings.Repeat("k2q7", 13),
+		"the alphabet in order":     alphabet + alphabet[:20],
+		"the alphabet backwards":    "765432zyxwvutsrqponmlkjihgfedcba",
+		"a run of eight":            "w2k7mq4xz5dbn3rt6pjyvgqqqqqqqqhaecfus2l7o4i6c5e3f7h2",
+		"fifteen different symbols": strings.Repeat("abcdefghijklmno", 4)[:52],
+		"nothing":                   "",
+	} {
+		if !Weak(secret) {
+			t.Errorf("%s: %q was accepted", name, secret)
+		}
+	}
+	for name, secret := range map[string]string{
+		"a made-up random one":    "w2k7mq4xz5dbn3rt6pjyvghaecfus2l7o4i6c5e3f7h2d4g6b5n3",
+		"a run of seven is fine":  "w2k7mq4xz5dbn3rt6pjyvgqqqqqqqhaecfus2l7o4i6c5e3f7h2d",
+		"sixteen symbols is fine": strings.Repeat("w2k7mq4xz5dbn3rt", 4)[:52],
+	} {
+		if Weak(secret) {
+			t.Errorf("%s: %q was refused", name, secret)
+		}
+	}
+	// A token from New is never weak: a false alarm here would stop a first boot.
+	for i := 0; i < 2000; i++ {
+		tok, err := New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, secret, _ := Parse(tok.Plain)
+		if Weak(secret) {
+			t.Fatalf("a generated secret was refused: %q", secret)
+		}
+	}
+}

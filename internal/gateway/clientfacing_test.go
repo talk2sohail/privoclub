@@ -57,10 +57,12 @@ func TestClientFacing(t *testing.T) {
 		}
 	})
 	same := map[string]error{
-		"a refusal":          &refusal{msg: "Denied by policy"},
-		"server unavailable": fmt.Errorf("remote: %w", upstream.ErrUnavailable),
-		"a malformed reply":  fmt.Errorf("%w: contents[0] is null", errMalformedRead),
-		"a call timeout":     fmt.Errorf("%w (server %q, limit 1m0s)", errCallTimeout, "remote"),
+		"a refusal":           &refusal{msg: "Denied by policy"},
+		"server unavailable":  fmt.Errorf("remote: %w", upstream.ErrUnavailable),
+		"a malformed reply":   fmt.Errorf("%w: contents[0] is null", errMalformedRead),
+		"a malformed prompt":  malformed("prompts/get", "messages[1] is null"),
+		"a request for input": errNeedsInput,
+		"a call timeout":      fmt.Errorf("%w (server %q, limit 1m0s)", errCallTimeout, "remote"),
 	}
 	for name, err := range same {
 		t.Run(name+" passes through", func(t *testing.T) {

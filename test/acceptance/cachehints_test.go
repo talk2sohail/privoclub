@@ -32,8 +32,20 @@ func (g *gateway) rpc(token, method string, params map[string]any) map[string]an
 }
 
 // rpcAt is rpc for a given protocol version. Strict clients such as Claude Code
-// validate the raw JSON, so the wire format is what matters.
+// validate the raw JSON, so the wire format is what matters. An error answer
+// fails the test; rpcTry returns it.
 func (g *gateway) rpcAt(version, token, method string, params map[string]any) map[string]any {
+	g.t.Helper()
+	result, rpcErr := g.rpcTry(version, token, method, params)
+	if rpcErr != nil || result == nil {
+		g.t.Fatalf("%s: error %v, result %v", method, rpcErr, result)
+	}
+	return result
+}
+
+// rpcTry sends one JSON-RPC request and returns the "result" object of the
+// answer, or its "error" object when it is an error answer.
+func (g *gateway) rpcTry(version, token, method string, params map[string]any) (result, rpcErr map[string]any) {
 	g.t.Helper()
 	if version >= newProtocol {
 		withMeta := map[string]any{}
@@ -78,7 +90,9 @@ func (g *gateway) rpcAt(version, token, method string, params map[string]any) ma
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
+	// An error answer may come with a status of 400 (2026-07-28) and still
+	// be a JSON-RPC answer; anything else that is not 200 is a failure.
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusBadRequest {
 		g.t.Fatalf("%s: status %d: %s", method, resp.StatusCode, raw)
 	}
 	payload := raw
@@ -95,15 +109,15 @@ func (g *gateway) rpcAt(version, token, method string, params map[string]any) ma
 	}
 	var msg struct {
 		Result map[string]any `json:"result"`
-		Error  any            `json:"error"`
+		Error  map[string]any `json:"error"`
 	}
 	if err := json.Unmarshal(payload, &msg); err != nil {
-		g.t.Fatalf("%s: decode %q: %v", method, payload, err)
+		g.t.Fatalf("%s: status %d, decode %q: %v", method, resp.StatusCode, payload, err)
 	}
-	if msg.Error != nil || msg.Result == nil {
-		g.t.Fatalf("%s: error %v, result %v", method, msg.Error, msg.Result)
+	if resp.StatusCode != http.StatusOK && msg.Error == nil {
+		g.t.Fatalf("%s: status %d without a JSON-RPC error: %s", method, resp.StatusCode, raw)
 	}
-	return msg.Result
+	return msg.Result, msg.Error
 }
 
 // Found with Claude Code on 2026-10-29: its schema requires cacheScope to be

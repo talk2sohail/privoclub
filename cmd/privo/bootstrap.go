@@ -18,8 +18,9 @@ import (
 // read before the store is open and acted on after, because only the store can
 // say whether the organisation still needs one.
 type bootstrapInput struct {
-	token config.Secret
-	err   error // the file named by PRIVO_BOOTSTRAP_TOKEN_FILE cannot be read
+	token  config.Secret
+	source string // the variable the token came from, see config.BootstrapTokenSource
+	err    error  // the file named by PRIVO_BOOTSTRAP_TOKEN_FILE cannot be read
 }
 
 // bootstrapAtStartup installs the bootstrap token when there is one, and decides
@@ -42,6 +43,12 @@ func bootstrapAtStartup(ctx context.Context, st *store.Store, org store.OrgID, i
 	}
 	if in.token == "" {
 		return nil
+	}
+	if in.source == "PRIVO_BOOTSTRAP_TOKEN" {
+		// Removing it from the process environment keeps it from child
+		// processes but not from /proc/<pid>/environ (R-08, independent review
+		// 2026-10-29), so the file form is the one that keeps it out of there.
+		logger.Warn("bootstrap token given as PRIVO_BOOTSTRAP_TOKEN; prefer PRIVO_BOOTSTRAP_TOKEN_FILE: an environment variable stays readable in /proc/<pid>/environ for the life of the process")
 	}
 	return installBootstrap(ctx, st, org, in.token.Reveal(), logger)
 }
