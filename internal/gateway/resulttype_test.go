@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -153,7 +154,7 @@ func TestWithResultTypeFailsClosed(t *testing.T) {
 func TestWithResultTypePassesErrorsThrough(t *testing.T) {
 	want := errBoom{}
 	got, err := withResultType(&mcp.CallToolRequest{}, &mcp.CallToolResult{}, want)
-	if err != want || got != nil {
+	if !errors.Is(err, want) || got != nil {
 		t.Errorf("got %v, %v", got, err)
 	}
 }

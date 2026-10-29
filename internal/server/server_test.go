@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"privo.club/privo/internal/buildinfo"
 	"privo.club/privo/internal/health"
 )
 
@@ -56,8 +57,11 @@ func TestEndpoints(t *testing.T) {
 	}
 	code, body := get(t, base+"/version")
 	var v map[string]string
-	if code != http.StatusOK || json.Unmarshal([]byte(body), &v) != nil || v["version"] == "" {
-		t.Fatalf("/version = %d %q", code, body)
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &v) != nil || v["version"] != buildinfo.Version {
+		t.Fatalf("/version = %d %q, want version %q", code, body, buildinfo.Version)
+	}
+	if _, hash := v["commit"]; hash || len(v) != 2 {
+		t.Fatalf("/version = %q, want only version and go_version", body)
 	}
 	if code, _ := get(t, base+"/unknown"); code != http.StatusNotFound {
 		t.Fatalf("/unknown = %d", code)

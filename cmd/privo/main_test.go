@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"privo.club/privo/internal/buildinfo"
 )
 
 func TestVersion(t *testing.T) {
@@ -13,8 +15,8 @@ func TestVersion(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	var v map[string]string
-	if err := json.Unmarshal(out.Bytes(), &v); err != nil || v["version"] == "" {
-		t.Fatalf("output %q", out.String())
+	if err := json.Unmarshal(out.Bytes(), &v); err != nil || v["version"] != buildinfo.Version || v["commit"] != "" {
+		t.Fatalf("output %q, want version %q and no commit", out.String(), buildinfo.Version)
 	}
 }
 

@@ -4,10 +4,8 @@ WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
-ARG VERSION=dev COMMIT=none DATE=unknown
-RUN CGO_ENABLED=0 go build -trimpath \
-    -ldflags "-s -w -X privo.club/privo/internal/buildinfo.Version=${VERSION} -X privo.club/privo/internal/buildinfo.Commit=${COMMIT} -X privo.club/privo/internal/buildinfo.Date=${DATE}" \
-    -o /out/privo ./cmd/privo
+# The version comes from internal/buildinfo/VERSION, which is part of the source.
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/privo ./cmd/privo
 # The data dir must exist and belong to nonroot, or a fresh volume is root-owned.
 RUN mkdir -p /out/data
 

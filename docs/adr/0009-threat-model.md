@@ -31,6 +31,7 @@
 | Credential leak from storage | Envelope encryption with bound associated data (0003) |
 | Abuse and floods | Rate limits on every endpoint (0001, 0010) |
 | A hostile upstream breaking the protocol or exhausting the gateway (malformed messages, oversized replies, replies that never come, endless lists, change floods) | Recover wrappers on both sides of the gateway (`internal/safe`); limits on reply size, call time, list pages and bytes, refresh rate, and pruning of definitions no longer offered (`internal/upstream`, `PRIVO_UPSTREAM_*`); a reply that breaks a limit costs that server and no other (independent review R-01, R-02, R-04, 2026-10-29). A reply is checked inside the call, so one the gateway cannot relay is audited as an error; `requestState` and reserved `_meta` keys (the gateway's own `serverInfo` among them) are removed from what an upstream sends before it reaches the client (R-05, R-06, `internal/gateway/validate.go`) |
+| Fingerprinting through the unauthenticated `/version` | Accepted by the owner (2026-10-29): it returns the semantic version and the Go version and nothing else (no commit, build date, organisation or configuration), so a visitor learns which release runs and no more (`docs/versioning.md`) |
 
 ## Security operations
 

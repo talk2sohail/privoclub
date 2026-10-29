@@ -43,7 +43,7 @@ curl localhost:8080/livez
 | `PRIVO_BOOTSTRAP_TOKEN_FILE` / `PRIVO_BOOTSTRAP_TOKEN` | unset | First boot only: a token from `privo token generate`, installed once as the owner's control token (expires after 24h). Prefer the file form: the plain variable stays readable in `/proc/<pid>/environ` (a warning says so). Remove after first use |
 
 Endpoints: `/` (static landing page), `/mcp` (MCP gateway), `/api/v1/...`
-(admin API), `/livez`, `/readyz`, `/version`.
+(admin API), `/livez`, `/readyz`, `/version` (the semantic version, see `docs/versioning.md`).
 
 ## Tokens
 

@@ -37,6 +37,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -81,7 +82,26 @@ type gateway struct {
 	owner   string // control token: admin API
 	agent   string // gateway token for the same person: MCP
 	cmd     *exec.Cmd
-	logs    *bytes.Buffer
+	logs    *logBuffer
+}
+
+// logBuffer collects the gateway's output. The process writes to it from a copy
+// goroutine while tests read it, so it needs a lock (go test -race).
+type logBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *logBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *logBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func freePort(t *testing.T) int {
@@ -119,7 +139,7 @@ func newGateway(t *testing.T, extraEnv ...string) *gateway {
 		t:       t,
 		base:    fmt.Sprintf("http://127.0.0.1:%d", port),
 		dataDir: filepath.Join(dir, "data"),
-		logs:    &bytes.Buffer{},
+		logs:    &logBuffer{},
 	}
 	g.env = append(os.Environ(),
 		fmt.Sprintf("PRIVO_LISTEN=127.0.0.1:%d", port),

@@ -18,12 +18,14 @@ The repo holds two apps. Both deploy from `main` on talk2sohail/privoclub, using
 - `PRIVO_DATA_DIR=/data`
 - `PRIVO_LISTEN=:8080`
 - `PRIVO_PUBLIC_URL=https://app.privo.club`
-- `PRIVO_MASTER_KEY`: 32 random bytes, base64. Generated once with `openssl rand -base64 32` and set straight into Coolify.
+- `PRIVO_MASTER_KEY_FILE=/run/secrets/privo_master_key`: the key is not an environment variable. It is 32 random bytes, base64 (`openssl rand -base64 32`), held in a file mount (Coolify → privo-gateway → Persistent Storage → a file at `/run/secrets/privo_master_key`; Coolify keeps it on the host under the application's directory). The process reads the file at start; an unreadable or invalid file stops the start, so a wrong mount shows up at once and never as silently weaker protection.
 - `PRIVO_BOOTSTRAP_TOKEN`: first run only, see below. Delete it after you have your own token.
 
-> **Back up the master key.** Copy it from Coolify → privo-gateway → Environment Variables into your password manager. Without it, every stored credential in `/data` is unreadable. Never rotate it by just replacing the value: set the old one as `PRIVO_MASTER_KEY_PREVIOUS` first.
+> **Back up the master key.** Copy the file's content from Coolify → privo-gateway → Persistent Storage into your password manager. Without it, every stored credential in `/data` is unreadable. Never rotate it by just replacing the content: mount the old key as a second file and point `PRIVO_MASTER_KEY_PREVIOUS_FILE` at it first.
 
-Later: move the key to a file mount and use `PRIVO_MASTER_KEY_FILE`, since env vars stay readable in `/proc/<pid>/environ`.
+Why a file: an environment variable stays readable in `/proc/<pid>/environ` for the life of the process, and the gateway logs a warning when the key arrives that way. The file removes that copy; anyone with access to Coolify or the host can still read it, as before. This is the interim arrangement, to be streamlined with the admin UI (`docs/todo.md`).
+
+Moving an existing install from the variable to the file (done on 2026-10-29): add the file mount with the same content, set `PRIVO_MASTER_KEY_FILE`, deploy and check the app is healthy, delete `PRIVO_MASTER_KEY` (the normal and the preview entry), deploy again and check that the warning is gone from the logs. The file wins when both are set, so the first deploy is safe.
 
 ## First run: your first admin token
 

@@ -6,6 +6,7 @@ coverage.out
 
 # Local backups and data (never commit)
 /_backup-*/
+/_to_delete/
 
 # Landing page (site/) local files
 /site/node_modules/

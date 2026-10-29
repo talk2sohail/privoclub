@@ -1,9 +1,7 @@
 # Privo build targets. Requires Go 1.25+.
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
-DATE    ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-PKG     := privo.club/privo/internal/buildinfo
-LDFLAGS := -s -w -X $(PKG).Version=$(VERSION) -X $(PKG).Commit=$(COMMIT) -X $(PKG).Date=$(DATE)
+# The version is the semantic version in internal/buildinfo/VERSION (docs/versioning.md).
+VERSION := $(shell tr -d '[:space:]' < internal/buildinfo/VERSION)
+LDFLAGS := -s -w
 IMAGE   ?= privo:$(VERSION)
 
 .PHONY: all build test vet lint vuln acceptance image clean
@@ -31,7 +29,7 @@ acceptance:
 	go test -tags acceptance -count=1 -timeout 5m ./test/acceptance/...
 
 image:
-	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) --build-arg DATE=$(DATE) -t $(IMAGE) .
+	docker build -t $(IMAGE) .
 
 clean:
 	rm -rf bin
