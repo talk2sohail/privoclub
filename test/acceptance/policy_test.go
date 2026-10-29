@@ -26,7 +26,7 @@ func readyEcho(t *testing.T, g *gateway) {
 func TestPolicyDeniesByRole(t *testing.T) {
 	g := startGateway(t)
 	readyEcho(t, g)
-	member := g.issue("ada", "member")
+	member := g.issue("ada")
 
 	if code, _ := g.raw(http.MethodPost, "/api/v1/policies", member, map[string]any{"server": "echo", "tool": "echo", "subject": "role:member", "action": "deny"}); code != http.StatusUnauthorized {
 		t.Fatalf("member gateway token creating a policy: %d, want 401", code)
@@ -85,7 +85,7 @@ func TestApprovalIsBoundToArgumentsAndSingleUse(t *testing.T) {
 	g := startGateway(t)
 	readyEcho(t, g)
 	g.api(http.MethodPost, "/api/v1/policies", g.owner, map[string]any{"server": "echo", "tool": "echo", "action": "ask"}, http.StatusCreated)
-	member := g.issue("ada", "member")
+	member := g.issue("ada")
 	approver := g.issueControl("bob", "approver", "bob")
 	ms := g.connect(member)
 	g.eventually("member sees echo", 5*time.Second, func() bool { return slices.Contains(toolNames(t, ms), "echo__echo") })

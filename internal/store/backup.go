@@ -110,7 +110,7 @@ func Backup(ctx context.Context, dataDir, dst string) (err error) {
 		return err
 	}
 	_, err = st.r.ExecContext(ctx, `VACUUM INTO ?`, tmp)
-	_ = st.Close()
+	_ = st.Close() //nolint:contextcheck // Close releases the lease with its own bounded context
 	if err != nil {
 		return fmt.Errorf("store: snapshot: %w", err)
 	}
@@ -167,7 +167,7 @@ func verifyBackup(ctx context.Context, path string) error {
 	defer func() { _ = db.Close() }()
 	var res string
 	if err := db.QueryRowContext(ctx, `PRAGMA integrity_check`).Scan(&res); err != nil {
-		return fmt.Errorf("%w: %s: %v", ErrBackupInvalid, path, err)
+		return fmt.Errorf("%w: %s: %w", ErrBackupInvalid, path, err)
 	}
 	if res != "ok" {
 		return fmt.Errorf("%w: %s: integrity check says %q", ErrBackupInvalid, path, res)

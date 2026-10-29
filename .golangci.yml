@@ -22,6 +22,6 @@ linters:
   exclusions:
     rules:
       - path: _test\.go
-        linters: [gosec, noctx, bodyclose]
+        linters: [gosec, noctx, bodyclose, contextcheck]
 formatters:
   enable: [gofmt, goimports]

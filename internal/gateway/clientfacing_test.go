@@ -40,8 +40,9 @@ func TestClientFacing(t *testing.T) {
 	// formatted after it, URL and all. Found by the acceptance test.
 	t.Run("the SDK's own wrapper around a transport error is not an upstream answer", func(t *testing.T) {
 		for _, code := range []int64{-32001, -32003, -32004, -32005} {
-			raw := fmt.Errorf(`calling "tools/call": sending "tools/call": %w: %v`, &jsonrpc.Error{Code: code, Message: "rejected by transport"},
-				errors.New(`Post "http://127.0.0.1:1/mcp?key=SECRET-2": dial tcp 127.0.0.1:1: connect: connection refused`))
+			// The SDK formats the transport's error as text, so it is not wrapped here either.
+			transport := `Post "http://127.0.0.1:1/mcp?key=SECRET-2": dial tcp 127.0.0.1:1: connect: connection refused`
+			raw := fmt.Errorf(`calling "tools/call": sending "tools/call": %w: %s`, &jsonrpc.Error{Code: code, Message: "rejected by transport"}, transport)
 			got := g.clientFacing(c, raw)
 			if got == nil || strings.Contains(got.Error(), "SECRET-2") || strings.Contains(got.Error(), "127.0.0.1") {
 				t.Fatalf("code %d: client sees %v", code, got)
@@ -66,7 +67,7 @@ func TestClientFacing(t *testing.T) {
 	}
 	for name, err := range same {
 		t.Run(name+" passes through", func(t *testing.T) {
-			if got := g.clientFacing(c, err); !errors.Is(got, err) && got != err {
+			if got := g.clientFacing(c, err); !errors.Is(got, err) {
 				t.Fatalf("got %v, want the error unchanged", got)
 			}
 		})

@@ -146,9 +146,9 @@ func invalidParams(format string, args ...any) error {
 	return &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf(format, args...)}
 }
 
-// resourceNotFound is the MCP "resource not found" error (-32002).
+// resourceNotFound is the MCP "resource not found" error, which is -32602 since SEP-2164.
 func resourceNotFound(format string, args ...any) error {
-	return &jsonrpc.Error{Code: mcp.CodeResourceNotFound, Message: fmt.Sprintf(format, args...)}
+	return &jsonrpc.Error{Code: jsonrpc.CodeInvalidParams, Message: fmt.Sprintf(format, args...)}
 }
 
 // rpcError gives an error that leaves the gateway as the answer to a request a

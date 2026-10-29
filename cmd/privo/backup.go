@@ -58,7 +58,7 @@ func backupCmd(args []string, stdout, stderr io.Writer, getenv func(string) stri
 	dir, dst := "", ""
 	if to == "" {
 		dir = filepath.Join(cfg.DataDir, "backups")
-	} else if info, statErr := os.Stat(to); (statErr == nil && info.IsDir()) || strings.HasSuffix(to, "/") || strings.HasSuffix(to, string(filepath.Separator)) {
+	} else if info, statErr := os.Stat(to); (statErr == nil && info.IsDir()) || strings.HasSuffix(to, "/") || strings.HasSuffix(to, string(filepath.Separator)) { //nolint:gosec // operator-supplied path is the point
 		dir = to
 	} else {
 		dst = to
@@ -77,7 +77,7 @@ func backupCmd(args []string, stdout, stderr io.Writer, getenv func(string) stri
 		return 1
 	}
 	size := int64(0)
-	if info, err := os.Stat(dst); err == nil {
+	if info, err := os.Stat(dst); err == nil { //nolint:gosec // operator-supplied path is the point
 		size = info.Size()
 	}
 	_, _ = fmt.Fprintf(stdout, "backup written: %s (%d bytes)\n", dst, size)
@@ -159,7 +159,7 @@ func auditAdmin(ctx context.Context, dataDir string, stderr io.Writer, action, i
 		logger.Warn("could not write the audit event", "action", action, "err", err)
 		return
 	}
-	defer func() { _ = st.Close() }()
+	defer func() { _ = st.Close() }() //nolint:contextcheck // Close releases the lease with its own bounded context
 	org, err := st.OrgBySlug(ctx, DefaultOrgSlug)
 	if err != nil {
 		logger.Warn("could not write the audit event", "action", action, "err", err)

@@ -43,12 +43,12 @@ func TestBootstrapTokenFileMustBeRegular(t *testing.T) {
 		t.Errorf("a directory: err = %v", err)
 	}
 	tok, _ := token.New()
-	real := filepath.Join(dir, "real")
-	if err := os.WriteFile(real, []byte(tok.Plain+"\n"), 0o600); err != nil {
+	target := filepath.Join(dir, "real")
+	if err := os.WriteFile(target, []byte(tok.Plain+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	link := filepath.Join(dir, "link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
 	got, err := LoadBootstrapToken(env(map[string]string{"PRIVO_BOOTSTRAP_TOKEN_FILE": link}))

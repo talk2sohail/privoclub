@@ -176,8 +176,8 @@ func TestRPCErrorCodes(t *testing.T) {
 		"a plain error":  {errors.New("boom"), -32603, "boom"},
 		"a refusal":      {&refusal{msg: "Denied by policy"}, -32600, "Denied by policy"},
 		"bad parameters": {invalidParams("prompt %q is not available", "x"), -32602, `prompt "x" is not available`},
-		// SEP-2164 moved "resource not found" to -32602; the SDK keeps the value.
-		"a resource that is missing": {resourceNotFound("resource %q is not available", "u"), int64(mcp.CodeResourceNotFound), `resource "u" is not available`},
+		// SEP-2164 moved "resource not found" to -32602.
+		"a resource that is missing": {resourceNotFound("resource %q is not available", "u"), jsonrpc.CodeInvalidParams, `resource "u" is not available`},
 		"the upstream's own error":   {fmt.Errorf("wrapped: %w", &jsonrpc.Error{Code: -32042, Message: "its words"}), -32042, "its words"},
 		"a malformed reply":          {fmt.Errorf("%w: x", errMalformedReply), -32603, "malformed"},
 	} {

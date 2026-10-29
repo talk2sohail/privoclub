@@ -179,7 +179,7 @@ func TestBackupNeedsADatabase(t *testing.T) {
 	}
 }
 
-func backupOf(t *testing.T, s *Store, dir string) string {
+func backupOf(t *testing.T, dir string) string {
 	t.Helper()
 	dst := filepath.Join(t.TempDir(), "b.db")
 	if err := Backup(context.Background(), dir, dst); err != nil {
@@ -192,7 +192,7 @@ func TestRestoreRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s, dir := open(t)
 	org := seed(t, s, 4)
-	b := backupOf(t, s, dir)
+	b := backupOf(t, dir)
 
 	fresh := filepath.Join(t.TempDir(), "data")
 	moved, err := Restore(ctx, fresh, b, false)
@@ -222,7 +222,7 @@ func TestRestoreReplacesOnlyWithForceAndKeepsTheOldFiles(t *testing.T) {
 	ctx := context.Background()
 	a, adir := open(t)
 	seed(t, a, 2)
-	b := backupOf(t, a, adir)
+	b := backupOf(t, adir)
 
 	target := t.TempDir()
 	cur, err := Open(ctx, target)
@@ -273,7 +273,7 @@ func TestRestoreReplacesOnlyWithForceAndKeepsTheOldFiles(t *testing.T) {
 func TestRestoreRefusesALiveGateway(t *testing.T) {
 	s, dir := open(t) // holds the writer lease
 	seed(t, s, 1)
-	b := backupOf(t, s, dir)
+	b := backupOf(t, dir)
 	if _, err := Restore(context.Background(), dir, b, true); !errors.Is(err, ErrLeaseHeld) {
 		t.Fatalf("Restore onto a running gateway: err = %v, want ErrLeaseHeld", err)
 	}
@@ -286,7 +286,7 @@ func TestRestoreRefusesUnusableFilesAndChangesNothing(t *testing.T) {
 	ctx := context.Background()
 	src, sdir := open(t)
 	seed(t, src, 1)
-	good := backupOf(t, src, sdir)
+	good := backupOf(t, sdir)
 
 	target := t.TempDir()
 	cur, err := Open(ctx, target)

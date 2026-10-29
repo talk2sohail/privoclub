@@ -749,15 +749,15 @@ func RedactText(s string) string {
 var ErrResponseTooLarge = errors.New("upstream: reply is larger than the limit")
 
 // limitBodies returns a client whose replies fail with ErrResponseTooLarge once
-// they pass max bytes. The SDK reads a JSON reply with io.ReadAll, so without
+// they pass limit bytes. The SDK reads a JSON reply with io.ReadAll, so without
 // this an upstream decided how much memory one reply took (R-04). A JSON body
 // is counted as the SDK reads it, after decompression, and a reply that
-// announces more than max is refused before its body is read. An event stream
+// announces more than limit is refused before its body is read. An event stream
 // lasts as long as the call does, so it is counted per event (an event ends at
-// an empty line); the SDK's own cap is 16 MiB per event. max <= 0 turns the
+// an empty line); the SDK's own cap is 16 MiB per event. limit <= 0 turns the
 // limit off.
-func limitBodies(c *http.Client, max int64) *http.Client {
-	if max <= 0 {
+func limitBodies(c *http.Client, limit int64) *http.Client {
+	if limit <= 0 {
 		return c
 	}
 	cc := *c
@@ -765,7 +765,7 @@ func limitBodies(c *http.Client, max int64) *http.Client {
 	if next == nil {
 		next = http.DefaultTransport
 	}
-	cc.Transport = limitRT{next: next, max: max}
+	cc.Transport = limitRT{next: next, max: limit}
 	return &cc
 }
 

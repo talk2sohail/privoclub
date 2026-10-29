@@ -255,7 +255,7 @@ func TestPlanRevocationOnALiveSession(t *testing.T) {
 		t.Errorf("revocation took %s, want within 5s (ADR 0003)", took)
 	}
 
-	fresh := g.issue("temp2", "member")
+	fresh := g.issue("temp2")
 	s2 := g.connect(fresh)
 	g.eventually("a new token works", 5*time.Second, func() bool { return slices.Contains(toolNames(t, s2), "echo__echo") })
 	if got := callEcho(t, s2, "new"); got != "new" {

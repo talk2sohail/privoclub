@@ -43,7 +43,7 @@ func writeConfigFile(t *testing.T, content string) string {
 func TestConfigFileAloneConfiguresTheGateway(t *testing.T) {
 	g := newGateway(t)
 	listen := strings.TrimPrefix(g.base, "http://")
-	keyFile := envValue(g.env, "PRIVO_MASTER_KEY_FILE")
+	keyFile := masterKeyFileOf(g.env)
 	file := writeConfigFile(t, strings.Join([]string{
 		"# Privo, acceptance",
 		"listen: \"" + listen + "\"",

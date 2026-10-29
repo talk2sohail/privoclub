@@ -16,11 +16,11 @@ import (
 	"time"
 )
 
-// envValue returns the value an exec.Cmd would see for key: the last one wins.
-func envValue(env []string, key string) string {
+// masterKeyFileOf returns the PRIVO_MASTER_KEY_FILE an exec.Cmd would see: the last one wins.
+func masterKeyFileOf(env []string) string {
 	val := ""
 	for _, kv := range env {
-		if v, ok := strings.CutPrefix(kv, key+"="); ok {
+		if v, ok := strings.CutPrefix(kv, "PRIVO_MASTER_KEY_FILE="); ok {
 			val = v
 		}
 	}
@@ -48,7 +48,7 @@ func TestBackupAndRestoreDrill(t *testing.T) {
 	g := startGateway(t)
 	g.registerEcho("echo", nil, map[string]string{"DRILL_SECRET": secret})
 	g.acceptPins("echo")
-	member := g.issue("ada", "member")
+	member := g.issue("ada")
 	policy := idOfPolicy(t, g.api(http.MethodPost, "/api/v1/policies", g.owner,
 		map[string]any{"server": "echo", "tool": "echo", "subject": "role:member", "action": "deny"}, http.StatusCreated))
 	s := g.connect(g.agent)
@@ -74,7 +74,7 @@ func TestBackupAndRestoreDrill(t *testing.T) {
 
 	// Nothing secret is in the file: not the credential, not a token, not the key.
 	data, _ := os.ReadFile(file)
-	keyFile := envValue(g.env, "PRIVO_MASTER_KEY_FILE")
+	keyFile := masterKeyFileOf(g.env)
 	keyText, _ := os.ReadFile(keyFile)
 	rawKey, _ := base64.StdEncoding.DecodeString(strings.TrimSpace(string(keyText)))
 	for name, needle := range map[string]string{"upstream credential": secret, "owner token": g.owner, "agent token": g.agent, "member token": member,
@@ -148,7 +148,7 @@ func TestRestoreWithTheWrongKeyRefusesToStart(t *testing.T) {
 	if !strings.Contains(text, "master key") || !strings.Contains(text, "cannot unwrap") {
 		t.Errorf("the message does not name the problem: %q", text)
 	}
-	keyText, _ := os.ReadFile(envValue(other.env, "PRIVO_MASTER_KEY_FILE"))
+	keyText, _ := os.ReadFile(masterKeyFileOf(other.env))
 	if k := strings.TrimSpace(string(keyText)); k == "" || strings.Contains(text, k) {
 		t.Errorf("the master key appears in the output (or could not be read)")
 	}
@@ -169,8 +169,8 @@ func runWithin(cmd *exec.Cmd, d time.Duration) ([]byte, error) {
 		return []byte(buf.String()), err
 	case <-time.After(d):
 		_ = cmd.Process.Kill()
-		<-done
-		return []byte(buf.String()), errors.New("still running at the deadline")
+		killed := <-done
+		return []byte(buf.String()), errors.Join(errors.New("still running at the deadline"), killed)
 	}
 }
 
@@ -199,7 +199,7 @@ func TestScheduledBackupsKeepTheNewestAndRestore(t *testing.T) {
 	}
 
 	// Stop first so the directory stops changing, then inspect it.
-	keyFile := envValue(g.env, "PRIVO_MASTER_KEY_FILE")
+	keyFile := masterKeyFileOf(g.env)
 	g.stop()
 	dir := filepath.Join(g.dataDir, "backups")
 	files, err := filepath.Glob(filepath.Join(dir, "privo-*.db"))

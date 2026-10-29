@@ -156,7 +156,7 @@ func TestConfigShowReportsProblems(t *testing.T) {
 }
 
 func TestHealthcheckReadsTheListenAddressFromTheFile(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) }))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer srv.Close()
 	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
 	p := writeYAML(t, "listen: \"127.0.0.1:"+port+"\"\n")

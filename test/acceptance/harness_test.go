@@ -437,10 +437,10 @@ func call(t *testing.T, s *mcp.ClientSession, name string, args map[string]any) 
 	return text.Text, res.IsError
 }
 
-// issue creates a gateway token (for an AI client) and returns its secret.
-func (g *gateway) issue(name, role string) string {
+// issue creates a gateway token with the member role (for an AI client) and returns its secret.
+func (g *gateway) issue(name string) string {
 	g.t.Helper()
-	res := g.api(http.MethodPost, "/api/v1/tokens", g.owner, map[string]any{"name": name, "role": role, "kind": "gateway"}, http.StatusCreated)
+	res := g.api(http.MethodPost, "/api/v1/tokens", g.owner, map[string]any{"name": name, "role": "member", "kind": "gateway"}, http.StatusCreated)
 	tok, _ := res["token"].(string)
 	return tok
 }
