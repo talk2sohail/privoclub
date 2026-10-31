@@ -20,6 +20,7 @@ The repo holds two apps. Both deploy from `main` on talk2sohail/privoclub, using
 - `PRIVO_PUBLIC_URL=https://app.privo.club`
 - `PRIVO_MASTER_KEY_FILE=/run/secrets/privo_master_key`: the key is not an environment variable. It is 32 random bytes, base64 (`openssl rand -base64 32`), held in a file mount (Coolify → privo-gateway → Persistent Storage → a file at `/run/secrets/privo_master_key`; Coolify keeps it on the host under the application's directory). The process reads the file at start; an unreadable or invalid file stops the start, so a wrong mount shows up at once and never as silently weaker protection.
 - `PRIVO_BOOTSTRAP_TOKEN`: first run only, see below. Delete it after you have your own token.
+- `PRIVO_GITHUB_CLIENT_ID` and `PRIVO_GITHUB_CLIENT_SECRET_FILE=/run/secrets/privo_github_client_secret`: sign-in to the admin site, see "Sign in with GitHub" below. Optional; without them `/admin` answers 503.
 
 > **Back up the master key.** Copy the file's content from Coolify → privo-gateway → Persistent Storage into your password manager. Without it, every stored credential in `/data` is unreadable. Never rotate it by just replacing the content: mount the old key as a second file and point `PRIVO_MASTER_KEY_PREVIOUS_FILE` at it first.
 
@@ -73,6 +74,22 @@ To see that the install happened without a shell, read the admin events: `curl -
 Anyone who can read Coolify's environment can read the variable while it is set, as they can the master key, so keep step 2 to step 5 short.
 
 **If the 24 hours pass unused**, the bootstrap cannot run again. Use the host: `docker exec $(docker ps -qf name=f46equvu3pb9kmq0shusvojo) /privo token create --name owner --role owner --kind control` (the binary runs without a shell; this needs SSH to the server).
+
+## Sign in with GitHub (admin site)
+
+People approve calls at `https://app.privo.club/admin/approvals` with their GitHub account (ADR 0016). Nothing here is needed for the gateway itself; until it is set up, `/admin` answers 503 with the names of the missing settings.
+
+1. In GitHub, Settings > Developer settings > OAuth Apps > New OAuth App (an organisation's settings work too). Homepage URL `https://app.privo.club`, authorization callback URL `https://app.privo.club/auth/github/callback`. Leave device flow off. Copy the **Client ID**, then **Generate a new client secret** and copy it at once.
+2. In Coolify → privo-gateway → Persistent Storage, add a file mount at `/run/secrets/privo_github_client_secret` holding the client secret (one line). The secret is a file for the same reason as the master key: an environment variable stays readable in `/proc/<pid>/environ`. Store a copy in your password manager.
+3. In Environment Variables add `PRIVO_GITHUB_CLIENT_ID=<the Client ID>` and `PRIVO_GITHUB_CLIENT_SECRET_FILE=/run/secrets/privo_github_client_secret`. `PRIVO_PUBLIC_URL` must be `https://app.privo.club` with no path. Deploy and check the log: `admin site is on`.
+4. Print the setup link on the host (the binary runs without a shell): `docker exec $(docker ps -qf name=f46equvu3pb9kmq0shusvojo) /privo admin setup-link --person <the name your tokens carry>`. It prints `https://app.privo.club/admin/setup/privo_setup_...` once and stores only a hash.
+5. Open the link within an hour and choose **Continue with GitHub**. The GitHub account you sign in with becomes the owner. The link works once; a new link cancels the old one.
+
+Treat the setup link as a secret until it is used. It sits in the URL path, so a proxy's access log may record it; once claimed it is worthless, and unclaimed it expires after an hour.
+
+Later sign-ins: `https://app.privo.club/admin/signin`. Sessions end after 2 hours without a request or 12 hours in all (`PRIVO_SESSION_IDLE_TIMEOUT`, `PRIVO_SESSION_MAX_AGE`). With GitHub Enterprise Server, set `PRIVO_GITHUB_BASE_URL` and `PRIVO_GITHUB_API_URL`, and add its network to `PRIVO_EGRESS_ALLOW_CIDRS` if it is private.
+
+Privo cannot require two-factor authentication at GitHub; turn it on for the accounts that approve calls (an organisation can require it).
 
 ## Backups
 

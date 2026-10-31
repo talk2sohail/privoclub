@@ -21,6 +21,7 @@ import (
 	"privo.club/privo/internal/control"
 	"privo.club/privo/internal/egress"
 	"privo.club/privo/internal/gateway"
+	"privo.club/privo/internal/githubauth"
 	"privo.club/privo/internal/health"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/runner"
@@ -28,6 +29,7 @@ import (
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/upstream"
 	"privo.club/privo/internal/vault"
+	"privo.club/privo/internal/web"
 )
 
 // DefaultOrgSlug names the organisation a single-node install starts with.
@@ -48,6 +50,14 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 		return 2
 	}
 	bs.source = config.BootstrapTokenSource(getenv)
+	// The admin site's settings are read here, and only here and by `admin
+	// setup-link`, so a mistake in them cannot stop the healthcheck or the
+	// break-glass `token create` (R-03).
+	webCfg, err := config.LoadWeb(getenv)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "privo: invalid configuration:\n%v\n", err)
+		return 2
+	}
 	if bs.token != "" {
 		// Removed from the environment so that child processes (stdio servers)
 		// never inherit it. This does not remove it from /proc/<pid>/environ,
@@ -59,14 +69,14 @@ func serve(stderr io.Writer, getenv func(string) string) int {
 	logger := newLogger(stderr, cfg)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := runGateway(ctx, cfg, bs, getenv, logger); err != nil {
+	if err := runGateway(ctx, cfg, webCfg, bs, getenv, logger); err != nil {
 		logger.Error("privo stopped with error", "err", err)
 		return 1
 	}
 	return 0
 }
 
-func runGateway(ctx context.Context, cfg config.Config, bs bootstrapInput, getenv func(string) string, logger *slog.Logger) error {
+func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bootstrapInput, getenv func(string) string, logger *slog.Logger) error {
 	if getenv("PRIVO_MASTER_KEY") != "" {
 		logger.Warn("master key given as PRIVO_MASTER_KEY; prefer PRIVO_MASTER_KEY_FILE: an environment variable stays readable in /proc/<pid>/environ for the life of the process")
 	}
@@ -138,6 +148,12 @@ func runGateway(ctx context.Context, cfg config.Config, bs bootstrapInput, geten
 	api := &control.API{Store: st, Keys: kr, Auth: authn, Upstream: mgr, Audit: aw, Approval: approvals, Egress: policy, Logger: logger,
 		TokenTTL: cfg.TokenTTL}
 
+	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, approvals, logger)
+	siteCtx, stopSite := context.WithCancel(ctx)
+	siteDone := make(chan struct{})
+	go func() { site.Run(siteCtx, 10*time.Minute); close(siteDone) }()
+	defer func() { stopSite(); <-siteDone }() // before the store is closed
+
 	reg := health.NewRegistry(0)
 	reg.Register("database", st.Ping)
 	srv := server.New(server.Options{
@@ -145,6 +161,7 @@ func runGateway(ctx context.Context, cfg config.Config, bs bootstrapInput, geten
 		Routes: func(mux *http.ServeMux) {
 			mux.Handle("/mcp", gw.Handler())
 			api.Routes(mux)
+			site.Routes(mux)
 			mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				_ = json.NewEncoder(w).Encode(map[string]any{
@@ -225,4 +242,22 @@ func tokenCreate(args []string, stdout, stderr io.Writer, getenv func(string) st
 	_, _ = fmt.Fprintln(stdout, plain)
 	_, _ = fmt.Fprintln(stderr, "Store this token now; it cannot be shown again.")
 	return 0
+}
+
+// adminSite builds the admin website (ADR 0016). With anything missing it is
+// still returned, off: it answers 503 and says which settings to add.
+func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *store.Store, org store.OrgID, aw *audit.Writer, approvals *approval.Service, logger *slog.Logger) *web.Server {
+	opts := web.Options{Store: st, Org: org, Audit: aw, Logger: logger, Approval: approvals, PublicURL: cfg.PublicURL,
+		IdleTimeout: webCfg.IdleTimeout, MaxAge: webCfg.MaxAge, Missing: webCfg.Missing(cfg.PublicURL)}
+	if len(opts.Missing) == 0 {
+		opts.GitHub = &githubauth.Client{ClientID: webCfg.ClientID, ClientSecret: webCfg.ClientSecret.Reveal(), BaseURL: webCfg.BaseURL, APIURL: webCfg.APIURL,
+			HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1})}
+	}
+	site := web.New(opts)
+	if len(opts.Missing) > 0 {
+		logger.Info("admin site is off: sign-in with GitHub is not set up", "missing", opts.Missing)
+	} else {
+		logger.Info("admin site is on", "sign_in", webCfg.BaseURL.Host, "session_idle", webCfg.IdleTimeout.String(), "session_max_age", webCfg.MaxAge.String())
+	}
+	return site
 }

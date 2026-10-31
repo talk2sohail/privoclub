@@ -1,0 +1,27 @@
+{{define "base"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{{.Title}} · Privo</title>
+<link rel="stylesheet" href="/admin/assets/app.css">
+</head>
+<body>
+<header class="bar">
+  <a class="brand" href="/admin/">Privo</a>
+{{if .User}}
+  <nav><a href="/admin/approvals">Approvals</a></nav>
+  <form class="who" method="post" action="/admin/signout">
+    <span>{{.User.Name}}{{if ne .User.Name .User.Person}} <small>{{.User.Person}}</small>{{end}} <small>{{.User.Role}}</small></span>
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="link">Sign out</button>
+  </form>
+{{end}}
+</header>
+<main>
+{{template "content" .}}
+</main>
+</body>
+</html>
+{{end}}

@@ -248,11 +248,22 @@ var (
 	ErrNotPending   = errors.New("approval: not pending (already decided or expired)")
 )
 
-// Decider identifies the person deciding.
+// Decider identifies the person deciding. A control token sets TokenID; a
+// person signed in to the admin site (ADR 0016) has no token and sets UserID.
 type Decider struct {
 	TokenID string
+	UserID  string
 	Name    string
 	Person  string
+}
+
+// label is how the approver is recorded on the approval and on the call's audit
+// row: "name (token id)" for a token, "name (user id)" for a signed-in person.
+func (d Decider) label() string {
+	if d.TokenID == "" && d.UserID != "" {
+		return d.Name + " (user " + d.UserID + ")"
+	}
+	return d.Name + " (" + d.TokenID + ")"
 }
 
 // Decide approves or denies a pending approval.
@@ -261,7 +272,7 @@ func (s *Service) Decide(ctx context.Context, org store.OrgID, id string, by Dec
 	if err != nil {
 		return err
 	}
-	if by.TokenID == a.RequesterID || (by.Person != "" && by.Person == a.RequesterPerson) {
+	if (by.TokenID != "" && by.TokenID == a.RequesterID) || (by.Person != "" && by.Person == a.RequesterPerson) {
 		allow, err := s.Store.Setting(ctx, org, SettingAllowSelf, "false")
 		if err != nil {
 			return err
@@ -274,7 +285,7 @@ func (s *Service) Decide(ctx context.Context, org store.OrgID, id string, by Dec
 	if approve {
 		status = store.ApprovalApproved
 	}
-	ok, err := s.Store.DecideApproval(ctx, org, id, status, by.Name+" ("+by.TokenID+")", s.clock())
+	ok, err := s.Store.DecideApproval(ctx, org, id, status, by.label(), s.clock())
 	if err != nil {
 		return err
 	}

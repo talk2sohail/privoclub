@@ -10,11 +10,11 @@ commit hash.
 Where it shows:
 
 - `GET /version` (unauthenticated, by decision of the owner on 2026-10-29) and
-  `privo version` print `{"version": "0.2.0", "go_version": "go1.27.3"}`. They
+  `privo version` print `{"version": "0.3.0", "go_version": "go1.27.3"}`. They
   carry nothing else: no commit, build date, organisation or configuration.
 - The `version` field of every log line, and the `serverInfo` that Privo reports
   to AI clients and sends to upstream servers.
-- The image tag from `make image` (`privo:0.2.0`).
+- The image tag from `make image` (`privo:0.3.0`).
 
 ## What counts as public
 
@@ -46,7 +46,7 @@ ignored when versions are compared.
 - The change that earns a new version bumps `internal/buildinfo/VERSION` in the
   same commit, so the deployed `/version` says which behaviour is running.
   Not every commit bumps it; the version moves when a release is meant to.
-- The owner tags the commit `v<version>` (`v0.2.0`). The tag has the `v`, the
+- The owner tags the commit `v<version>` (`v0.3.0`). The tag has the `v`, the
   file does not.
 - `TestVersionIsSemver` in `internal/buildinfo` fails the build if the file is
   not a valid semantic version.

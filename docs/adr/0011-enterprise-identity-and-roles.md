@@ -2,6 +2,7 @@
 
 - Status: Accepted, 2026-10-28
 - Date: 2026-10-28
+- Amended by: 0016 (identity sequence point 1: GitHub sign-in comes first)
 
 ## Decision
 

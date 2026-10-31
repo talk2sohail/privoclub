@@ -49,6 +49,11 @@ curl localhost:8080/livez
 | `PRIVO_RUNNER` / `PRIVO_INSECURE_LOCAL_RUNNER` | unset | Stdio servers: empty refuses them; `local` runs them unisolated on this host and needs `PRIVO_INSECURE_LOCAL_RUNNER=i-understand` (development only, ADR 0007) |
 | `PRIVO_EGRESS_ALLOW_CIDRS` | unset | Internal networks remote servers may use (self-hosted only) |
 | `PRIVO_BOOTSTRAP_TOKEN_FILE` / `PRIVO_BOOTSTRAP_TOKEN` | unset | First boot only: a token from `privo token generate`, installed once as the owner's control token (expires after 24h). Prefer the file form: the plain variable stays readable in `/proc/<pid>/environ` (a warning says so). Remove after first use |
+| `PRIVO_GITHUB_CLIENT_ID` | unset | Client ID of the GitHub OAuth App that signs people in to the admin site (ADR 0016). Web sign-in is on only when this, the client secret and `PRIVO_PUBLIC_URL` are all set; otherwise `/admin` and `/auth` answer 503 |
+| `PRIVO_GITHUB_CLIENT_SECRET_FILE` / `PRIVO_GITHUB_CLIENT_SECRET` | unset | The OAuth App's client secret. Prefer the file form (a Coolify file mount); the plain variable is never accepted in the config file |
+| `PRIVO_GITHUB_BASE_URL` / `PRIVO_GITHUB_API_URL` | `https://github.com` / `https://api.github.com` | Where people sign in and where the profile is read; set both for GitHub Enterprise Server (https unless loopback; a private address needs `PRIVO_EGRESS_ALLOW_CIDRS`) |
+| `PRIVO_SESSION_IDLE_TIMEOUT` | `2h` | A browser session ends after this long without a request (1m to 24h) |
+| `PRIVO_SESSION_MAX_AGE` | `12h` | A browser session ends this long after sign-in whatever happens (5m to 720h) |
 
 ### Configuration file
 
@@ -78,6 +83,33 @@ file is read once at start; restart to change a setting. In a container use
 
 Endpoints: `/` (static landing page), `/mcp` (MCP gateway), `/api/v1/...`
 (admin API), `/livez`, `/readyz`, `/version` (the semantic version, see `docs/versioning.md`).
+
+## Admin site: sign in with GitHub
+
+People approve calls in a browser, with their GitHub account and no token
+(ADR 0016). It is off until you set `PRIVO_GITHUB_CLIENT_ID`,
+`PRIVO_GITHUB_CLIENT_SECRET` (or `_FILE`) and `PRIVO_PUBLIC_URL`; until then
+`/admin` answers 503 and names what is missing.
+
+1. In GitHub, create an OAuth App (Settings > Developer settings). Its
+   authorization callback URL is `<PRIVO_PUBLIC_URL>/auth/github/callback`.
+   Privo asks for no scope.
+2. Give Privo the client ID and the client secret, restart, and print a setup
+   link next to the data directory:
+
+   ```sh
+   privo admin setup-link [--person NAME]
+   ```
+
+   Open the link within an hour, sign in with the GitHub account that should own
+   this Privo, and you are in. The link works once. `--person` is the name your
+   tokens carry (default: your GitHub login in lowercase); self-approval is
+   refused between tokens and sessions of the same person.
+3. `/admin/approvals` lists the calls waiting for a decision, with their
+   arguments. Owners, admins and approvers can approve or deny.
+
+Only people who were added can sign in; any other GitHub account sees a plain
+refusal. See `docs/deploy-coolify.md` for the Coolify steps.
 
 ## Tokens
 

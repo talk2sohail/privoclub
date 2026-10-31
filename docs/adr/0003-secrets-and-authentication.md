@@ -3,6 +3,7 @@
 - Status: Accepted (revision 2, after the 2026-10-28 review), 2026-10-28
 - Date: 2026-10-28
 - Related: 0008 egress, 0009 threat model, 0011 enterprise identity
+- Amended by: 0016 (the first sign-in provider is GitHub; Google and Microsoft follow)
 
 ## Context
 

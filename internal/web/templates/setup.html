@@ -1,0 +1,11 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>Set up Privo</h1>
+  <p>This link makes the GitHub account you sign in with the <strong>owner</strong> of this Privo. It works once, and it expires at {{.Expires}}.</p>
+  <p>Use the GitHub account you want to keep as the owner.</p>
+  <form method="post" action="/auth/github/start">
+    <input type="hidden" name="setup_token" value="{{.SetupToken}}">
+    <button type="submit" class="primary">Continue with GitHub</button>
+  </form>
+</section>
+{{end}}

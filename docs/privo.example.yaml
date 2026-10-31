@@ -13,7 +13,8 @@
 # file. The file is read once, at start: restart to change a setting.
 #
 # Secrets do not belong here and are refused: use master_key_file,
-# master_key_previous_file and bootstrap_token_file to name files that hold them.
+# master_key_previous_file, bootstrap_token_file and github_client_secret_file
+# to name files that hold them.
 # A typo, a repeated key or a list is an error, not a silent default.
 
 # Where the gateway listens, and where its database and state live.
@@ -59,3 +60,16 @@
 #backup_interval: 24h
 #backup_keep: 7
 #backup_dir: ./data/backups
+
+# Signing in to the admin site with GitHub (ADR 0016). Create an OAuth App in
+# GitHub (callback URL: <public_url>/auth/github/callback), put its client ID
+# here and its secret in a file. Web sign-in is on only when the ID, the secret
+# and public_url are all set.
+#github_client_id: Iv1.0123456789abcdef
+#github_client_secret_file: /run/secrets/privo_github_client_secret
+# GitHub Enterprise Server only (a private address also needs egress_allow_cidrs).
+#github_base_url: https://github.com
+#github_api_url: https://api.github.com
+# How long a browser session lasts: idle, and in total.
+#session_idle_timeout: 2h
+#session_max_age: 12h

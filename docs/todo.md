@@ -70,7 +70,7 @@ ADRs: 0001, 0004
 - [x] Security review of milestone 1: 4 high, 4 medium, 4 low findings, all fixed (docs/reviews/2026-10-28-milestone-1-security-review.md)
 - [ ] Tests for the admin API (token revocation ranks, header validation) and refresh coalescing
 - [x] `/version` stays unauthenticated (owner's decision, 2026-10-29). It now shows only the semantic version and the Go version, no commit or build date (see the next item)
-- [x] Versioning follows semver (owner's decision, 2026-10-29): the version is the line in `internal/buildinfo/VERSION` (now `0.2.0`), embedded in the binary, so Coolify builds report it without build arguments; `/version` and `privo version` return `{version, go_version}` and no longer a commit hash or build date; the ldflags and Dockerfile build arguments for version, commit and date are gone. Rules for bumping are in `docs/versioning.md`. Tests: `internal/buildinfo` `TestVersionIsSemver`, `TestSemverGrammar`, `TestGetShape`; `internal/server` `TestEndpoints`; `cmd/privo` `TestVersion`
+- [x] Versioning follows semver (owner's decision, 2026-10-29): the version is the line in `internal/buildinfo/VERSION` (now `0.3.0`), embedded in the binary, so Coolify builds report it without build arguments; `/version` and `privo version` return `{version, go_version}` and no longer a commit hash or build date; the ldflags and Dockerfile build arguments for version, commit and date are gone. Rules for bumping are in `docs/versioning.md`. Tests: `internal/buildinfo` `TestVersionIsSemver`, `TestSemverGrammar`, `TestGetShape`; `internal/server` `TestEndpoints`; `cmd/privo` `TestVersion`
 - [x] The master key moved from the `PRIVO_MASTER_KEY` variable to a file mount (owner's decision, 2026-10-29): `PRIVO_MASTER_KEY_FILE=/run/secrets/privo_master_key` on Coolify, the variable deleted, both deploys healthy, the "master key given as PRIVO_MASTER_KEY" warning gone. Steps and the password-manager backup note are in `docs/deploy-coolify.md`. To be streamlined with the admin UI
 - [x] CI lint fixed (2026-10-29): `errorlint` flagged `err != want` in `internal/gateway/resulttype_test.go` (now `errors.Is`); it was the only finding. While checking, `go test -race` on the acceptance suite showed 23 data races in the harness (the gateway's log buffer was read by the test while the process wrote it): `logBuffer` in `test/acceptance/harness_test.go` now has a lock, and the suite passes under `-race`. `/_to_delete/` is in `.gitignore`
 - [x] The acceptance job in `.github/workflows/ci.yml` is a real gate (owner's go-ahead, 2026-10-29): `continue-on-error` and the stale "allowed to fail until F02" comments (workflow, Makefile) removed; the suite passes, also under `-race`
@@ -112,12 +112,149 @@ ADRs: 0003
 - [ ] Tests: tamper, swap, rotation, lost-key behaviour
 
 ## F05. Admin sign-in and organisations
-Status: Not started
-ADRs: 0003
+Status: In progress (first slice built and tested: GitHub sign-in and the web approvals page; independent review and the Coolify run open)
+ADRs: 0003, 0011, 0014, 0016
 
-- [ ] First-boot setup link (until then, F24's `PRIVO_BOOTSTRAP_TOKEN` gives the first owner token)
-- [ ] OIDC (Google, Microsoft); magic-link fallback
-- [ ] Orgs, members, roles, groups, invites
+### First slice: goal
+
+A person opens the admin site in a browser, signs in with GitHub, sees the calls
+waiting for approval with their full arguments, and approves or denies them,
+with no control token. The first owner is created with a one-hour setup link
+that `privo admin setup-link` prints. Not in this slice: invites and member
+management, Google and Microsoft sign-in, magic links, using a session on
+`/api/v1` (the admin API stays token-only), step-up re-authentication, the rest
+of the UI (F14).
+
+### First slice: acceptance
+
+1. **Off unless configured.** Web sign-in needs `PRIVO_GITHUB_CLIENT_ID`,
+   `PRIVO_GITHUB_CLIENT_SECRET` (or `_FILE`) and `PRIVO_PUBLIC_URL` (without a
+   path: the site cannot run under a prefix). Without all of them, every
+   `/admin` and `/auth` route answers 503 with a page naming the missing
+   settings (never values); nothing else changes. A mistake in the web settings
+   stops `serve` (exit 2) but not `healthcheck` or `token create` (R-03).
+2. **Setup link.** `privo admin setup-link [--person NAME]` needs
+   `PRIVO_PUBLIC_URL`, prints `<public url>/admin/setup/<token>` once, stores
+   only the SHA-256 of the token, lives 1 hour, works once, and retires older
+   unclaimed links. Audited as `setup_link.create` (actor `cli`). It says what
+   is missing when GitHub is not configured yet.
+3. **Claim.** The link is claimed only after a successful GitHub login, in one
+   transaction: create the owner user, bind the identity (provider `github`,
+   numeric GitHub id), consume the link, write `setup.claim`. The owner's person
+   name is the one on the link (`--person`), else the lowercased GitHub login.
+   If the GitHub id is already a member, or the person name is taken, the claim
+   is refused and the link stays usable. Of two concurrent claims exactly one
+   wins. Every way a link can be unusable (unknown, malformed, expired, used,
+   replaced) shows the same page.
+4. **Sign-in.** `state` (256 bits) and PKCE S256 are bound to the browser by a
+   short-lived cookie holding a second 256-bit nonce; the stored state is keyed
+   to both, so a callback from another browser finds nothing and does not use
+   the real one up. The state is single use (deleted as it is read) and lives 10
+   minutes. No scope is requested; `allow_signup=false`. Only `id`, `login` and
+   `name` are read from `GET /user`; the GitHub token is never stored. An
+   unknown or disabled account sees one generic page and `signin.denied` is
+   audited. A failed exchange leaves a setup link unconsumed. What GitHub said
+   in an error is never repeated.
+5. **Sessions.** A 256-bit random secret in a cookie, stored hashed, new at
+   every login. `__Host-privo_session` (Secure, Path=/) on https;
+   `privo_session` without Secure only for a loopback `PRIVO_PUBLIC_URL`;
+   HttpOnly, SameSite=Lax. Idle timeout 2 h and absolute 12 h (settings). The
+   live user row is read on every request, so a role change or a disabled user
+   takes effect at once. Sign-out deletes the row.
+6. **CSRF.** Every POST needs a same-origin `Origin` (or, without `Origin`,
+   `Sec-Fetch-Site: same-origin`); with neither it is refused. After sign-in,
+   POSTs also need the session's CSRF token in the body (not the URL). Anything
+   else is 403 and nothing happens. The redirect URI and the origin come from
+   `PRIVO_PUBLIC_URL`, never from the Host header.
+7. **Approvals page.** `/admin/approvals` lists pending approvals with their
+   arguments for roles that may decide (owner, admin, approver); Approve and
+   Deny call `approval.Service.Decide`, so self-approval, single use and "not
+   pending" behave exactly as on the API. Other roles get 403. Views and
+   decisions are audited with the user as actor, and the approver is recorded
+   on the call's audit row. An approver must see what they allow: when the
+   arguments cannot be decrypted or are longer than 4 KiB, the page offers Deny
+   only.
+8. **Pages.** `html/template` escaping, no inline script or style, CSP
+   `default-src 'none'; style-src 'self'; form-action 'self' <GitHub base
+   origin>; frame-ancestors 'none'; base-uri 'none'` (Chrome applies
+   `form-action` to the redirect after a form post, so the sign-in form may go on
+   to GitHub), `Cache-Control: no-store`, `Referrer-Policy: same-origin` (not
+   `no-referrer`: browsers then post forms with `Origin: null`),
+   `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`.
+9. **Bounded.** At most 500 unexpired sign-in states (503 beyond); expired
+   states, setup links and sessions are pruned every 10 minutes; request bodies
+   are capped at 8 KiB; at most 50 approvals are shown; GitHub's answers are
+   capped at 256 KiB and 15 s.
+10. **No secrets in logs or audit.** Codes, states, cookies, CSRF tokens, setup
+    tokens and the client secret never appear in a log line, an audit row, an
+    error page or an API response; the database holds only hashes of session
+    secrets, setup tokens and states.
+11. **Settings documented.** Every new setting is in the registry, the README
+    table and `docs/privo.example.yaml` (the registry tests enforce this).
+
+### First slice: tasks and the tests that name them
+
+- [x] Spec and ADR 0016 (this section)
+- [x] Settings: client id, client secret (+ `_FILE`), GitHub base and API URLs, session idle timeout and max age (`internal/config`, loaded by `LoadWeb`, not by `Load`)
+  - tests: `TestWebSettingsDefaults`, `TestWebSettingsValues`, `TestWebSettingsLimits`, `TestWebURLsAllowLoopbackHTTP`, `TestWebSignInNeedsAllThree`, `TestGitHubSecretFromFile`, `TestLoadIgnoresWebSettings`, registry tests
+- [x] Store: migration `00004_sign_in.sql` (`users`, `identities`, `sessions`, `setup_links`, `oauth_states`), every table with `org_id`
+  - tests: `TestSetupLinkSingleUseAndExpiry`, `TestSetupLinkNewOneRetiresOld`, `TestClaimUsesTheLinksPersonFirst`, `TestClaimRacesHaveOneWinner`, `TestClaimRefusedForExistingIdentityKeepsLink`, `TestIdentityUniquePerProvider`, `TestSessionExpiry`, `TestTouchSessionWritesAtMostOncePerMinute`, `TestSessionReadsLiveUser`, `TestCreateAndDeleteSession`, `TestOAuthStateSingleUse`, `TestOAuthStateCap`, `TestPruneSignIn`, `TestSignInSchemaHasNoSecretColumns`, `TestSignInTablesAreIsolatedPerOrg`
+- [x] Approvals: record a web decider (`approval.Decider.UserID`)
+  - tests: `TestDecideRecordsUser`, `TestDecideSelfApprovalByPersonForUsers`, `TestEmptyTokenIDIsNotTheRequester`, `TestDecideUnknownApproval`
+- [x] GitHub client (`internal/githubauth`) through the egress client: authorization URL, code exchange, `GET /user`
+  - tests: `TestChallengeMatchesTheRFCExample`, `TestNewVerifier`, `TestAuthorizeURL`, `TestExchangeSendsSecretVerifierRedirect`, `TestExchangeFailures`, `TestResponsesAreBounded`, `TestRequestsTimeOut`, `TestUser`, `TestUserRefusesWhatIsNotAProfile`, `TestDisplayNameIsCleaned`, `TestRedirectsAreNotFollowed`, `TestTransportErrorsDoNotPrintURLs`
+- [x] `internal/web`: sessions, CSRF, sign-in and setup flow, approvals page
+  - tests: `TestDisabledWithoutConfiguration`, `TestPublicURLWithAPathDisablesTheSite`, `TestSetupTokenFormat`, `TestSetupFlowCreatesOwner`, `TestSetupLinkPersonOverridesLogin`, `TestSetupFailedExchangeKeepsLink`, `TestSetupRefusedForExistingMemberKeepsLink`, `TestSetupPersonTakenKeepsLink`, `TestStartWithBadSetupToken`, `TestSignInPage`, `TestSignInOfAMember`, `TestStateCookieRequired`, `TestStateReplayRefused`, `TestStateExpired`, `TestCallbackErrorsAndBounds`, `TestUnknownAccountGenericDenial`, `TestExchangeFailureAndGitHubDown`, `TestStartCapReturns503`, `TestCookieFlagsHTTPS`, `TestCookieFlagsLoopback`, `TestSessionRotatedOnLogin`, `TestIdleAndAbsoluteExpiry`, `TestRoleChangeAppliesAtOnce`, `TestSignOutDeletesSession`, `TestCSRFMissingWrongCrossOrigin`, `TestOriginComesFromThePublicURLNotTheHost`, `TestSignInStartNeedsASameOriginPost`, `TestWrongMethodsAreRefused`, `TestMemberCannotSeeOrDecideApprovals`, `TestApproveAndDeny`, `TestSelfApprovalBlocked`, `TestEscapesWhatOthersControl`, `TestLongArgumentsAreShortened`, `TestUnreadableArgumentsCanOnlyBeDenied`, `TestSecurityHeaders`, `TestSessionSecretNotStored`, `TestNothingSecretInLogsOrAudit`, `TestExpiredStatesArePrunedOnStart`, `TestPruneRemovesWhatCannotBeUsed`, `TestRunPrunesNowAndStopsWithItsContext`
+- [x] CLI `privo admin setup-link`
+  - tests: `TestSetupLinkPrintsOnceStoresHash`, `TestSetupLinkAudited`, `TestSetupLinkPersonFlag`, `TestSetupLinkNeedsPublicURL`, `TestSetupLinkRejectsAPublicURLWithAPath`, `TestSetupLinkWarnsWhenGitHubIsNotConfigured`, `TestSetupLinkRejectsBadWebSettings`, `TestAdminUsage`, `TestAdminReadsTheConfigurationFile`
+- [x] Wired into `serve` (settings loaded there only; pruning every 10 minutes); version 0.3.0; README, deploy guide, example file
+  - tests: `TestServeRejectsBadWebSettings`, `TestWebSettingsDoNotBreakOtherCommands`
+- [x] Acceptance with the real binary and a fake GitHub that checks the client secret, redirect URI and PKCE: `TestWebSetupAndApprovals` (setup link, sign in, an `ask` call from a real MCP client, approve in the browser flow, the call succeeds, the audit names the approver, a stranger is refused, sign-out, no secret in the logs), `TestWebDisabledByDefault`
+- [ ] Independent review of the finished slice (auth, sessions, CSRF: required by CLAUDE.md; run when the owner says go)
+- [ ] On Coolify: create the GitHub OAuth App, mount the client secret, set the two variables, deploy, run `privo admin setup-link`, claim it, approve one real call (owner's steps; `docs/deploy-coolify.md`)
+
+### First slice: how it was checked
+
+Besides the tests above, the security checks were broken on purpose, one at a
+time, in a scratch copy (by hand on 2026-10-30; the script is not kept): the CSRF
+comparison, the CSRF token read from the URL, the origin check (always true, and
+taken from the Host header), the fetch-metadata fallback, the cookie nonce, the
+cookie flags and the `__Host-` prefix, both role checks, `html/template`
+swapped for `text/template`, self-approval by person, the idle timeout, the
+disabled-user check, the generic denial page, the CSP and its `form-action`, the
+redirect URI taken from the Host header, Approve offered for shortened or
+unreadable arguments, the identity keyed by login, sign-out without a CSRF token,
+the state cap. Each made at least one test fail. One mutation survived by
+design: dropping the shape check on the `state` parameter changes nothing,
+because an ill-formed state finds no row either.
+
+### First slice: threat note
+
+Assets: the ability to approve calls (an approved call runs with the org's
+credentials), the session cookie, the setup link, the GitHub client secret.
+Attackers: an AI agent or hostile upstream server (cannot reach a browser
+session: `/mcp` and `/admin` are separate surfaces, and the agent's token is a
+gateway token); a website the approver visits (CSRF, login CSRF, clickjacking);
+someone who finds a setup link in a proxy log; someone with a GitHub account
+who is not a member; a stolen session cookie; a tool name, argument or GitHub
+profile name written to inject markup.
+Mitigations: see the acceptance points above and ADR 0016.
+Residual risks (recorded in ADR 0016): the setup token travels in a URL path
+(single use and the one hour limit it); GitHub accounts may lack MFA and Privo
+cannot require it; a GitHub login can change, so identity is the numeric id;
+the link between a person's web user and their gateway tokens is the `person`
+label an administrator chose (verified linking arrives with members); no
+step-up before approving high-risk calls yet; the CSRF token and the PKCE
+verifier are stored in the clear for the life of a session and ten minutes.
+
+### Later in F05
+
+- [ ] Orgs, members, roles, groups, invites (invites must not bind by GitHub login)
+- [ ] Google and Microsoft OIDC; magic-link fallback
+- [ ] Restrict sign-in by GitHub organisation membership (`read:org`)
+- [ ] Step-up re-authentication for high-risk actions
+- [ ] Sessions accepted by the admin API for the UI (F14)
+- [ ] Approvals page: page through more than 50 pending approvals; show decided ones
 
 ## F06. Client authentication (OAuth server and personal tokens)
 Status: In progress
@@ -174,7 +311,8 @@ ADRs: 0005
 - [x] Limits: 20 pending approvals and 5 held calls per requester
 - [x] Approval restored if the call cannot start; approver recorded on the call's audit row
 - [ ] Input-required (URL elicitation) for 2026-07-28 clients
-- [ ] Web approval page with sessions, CSRF and step-up (needs F05)
+- [x] Web approval page with sessions and CSRF (F05 first slice, ADR 0016)
+- [ ] Step-up re-authentication before high-risk approvals (F05 later)
 - [ ] Slack with signing verification and linked identities; email
 - [ ] Scoped temporary grants from an approval, batching, approver dashboard
 - [ ] Withdraw endpoint for requesters
@@ -305,7 +443,7 @@ Goal: a stolen database plus every Privo key cannot decrypt a person's upstream 
 
 ## F24. First-deploy readiness
 Status: In progress (code done, tested; Coolify settings and independent review open)
-ADRs: 0003, 0010 (no new ADR: the bootstrap token is an interim measure until the F05 first-boot setup link replaces it)
+ADRs: 0003, 0010 (no new ADR: the bootstrap token is an interim measure; the F05 setup link, `privo admin setup-link`, is the first-boot path for a person, ADR 0016)
 
 Goal: a fresh Coolify deploy (distroless image, no shell, so no web terminal and
 no `privo token create` from the Coolify UI) goes from "running" to "the owner

@@ -53,6 +53,13 @@ var Settings = []Setting{
 	{Name: "PRIVO_BACKUP_INTERVAL"},
 	{Name: "PRIVO_BACKUP_KEEP"},
 	{Name: "PRIVO_BACKUP_DIR"},
+	{Name: "PRIVO_GITHUB_CLIENT_ID"},
+	{Name: "PRIVO_GITHUB_CLIENT_SECRET", Secret: true},
+	{Name: "PRIVO_GITHUB_CLIENT_SECRET_FILE"},
+	{Name: "PRIVO_GITHUB_BASE_URL"},
+	{Name: "PRIVO_GITHUB_API_URL"},
+	{Name: "PRIVO_SESSION_IDLE_TIMEOUT"},
+	{Name: "PRIVO_SESSION_MAX_AGE"},
 }
 
 // Lookup returns the registered setting with the given variable name.

@@ -1,0 +1,13 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>{{.Heading}}</h1>
+{{range .Lines}}  <p>{{.}}</p>
+{{end}}
+{{if .List}}  <ul>
+{{range .List}}    <li><code>{{.}}</code></li>
+{{end}}  </ul>
+{{end}}
+{{with .Link}}  <p><a href="{{.Href}}">{{.Text}}</a></p>
+{{end}}
+</section>
+{{end}}

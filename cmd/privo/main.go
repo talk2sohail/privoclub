@@ -10,6 +10,7 @@
 //	privo backup        write a consistent snapshot of the database (the gateway may be running)
 //	privo restore       put a snapshot in place (the gateway must be stopped)
 //	privo config show   print every setting with its effective value and where it came from
+//	privo admin setup-link  print a one-time URL that makes the first person to sign in with GitHub the owner
 //
 // Settings come from the environment and, optionally, a configuration file
 // named by --config FILE (before the command) or PRIVO_CONFIG_FILE (ADR 0015).
@@ -35,11 +36,11 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
 }
 
-const usage = "usage: privo [--config FILE] [serve|version|healthcheck|token create|token generate|backup|restore|config show]"
+const usage = "usage: privo [--config FILE] [serve|version|healthcheck|token create|token generate|backup|restore|config show|admin setup-link]"
 
 // configCommands are the commands that read settings, and so the configuration
 // file. version, help and token generate touch nothing and never read it.
-var configCommands = map[string]bool{"serve": true, "healthcheck": true, "token": true, "backup": true, "restore": true, "config": true}
+var configCommands = map[string]bool{"serve": true, "healthcheck": true, "token": true, "backup": true, "restore": true, "config": true, "admin": true}
 
 func run(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	path, args, err := configFlag(args)
@@ -92,6 +93,8 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return backupCmd(args[1:], stdout, stderr, getenv)
 	case "restore":
 		return restoreCmd(args[1:], stdout, stderr, getenv)
+	case "admin":
+		return adminCmd(args[1:], stdout, stderr, getenv)
 	default: // config
 		return configCmd(args[1:], stdout, stderr, src)
 	}
