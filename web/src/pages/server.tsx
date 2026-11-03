@@ -190,7 +190,7 @@ function Access({ srv }: { srv: ServerView }) {
       {teams.data && (
         <>
           <p class="meta">People see this server's tools only when they are in one of its teams. Rules and approvals still apply to them.</p>
-          <TeamPicker teams={teams.data.teams} chosen={current} onChange={setChosen} />
+          <TeamPicker teams={teams.data.teams} chosen={current} onChange={setChosen} legend="Teams" />
           <div class="actions">
             <button type="button" class="primary" disabled={busy || !changed} onClick={save}>
               Save

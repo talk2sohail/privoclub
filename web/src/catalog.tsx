@@ -15,11 +15,21 @@ export function signInLabel(e: CatalogEntry): string {
 }
 
 /** TeamPicker: checkboxes for "everyone" and each team. */
-export function TeamPicker({ teams, chosen, onChange }: { teams: Team[]; chosen: string[]; onChange: (t: string[]) => void }) {
+export function TeamPicker({
+  teams,
+  chosen,
+  onChange,
+  legend = "Who can use it",
+}: {
+  teams: Team[];
+  chosen: string[];
+  onChange: (t: string[]) => void;
+  legend?: string;
+}) {
   const toggle = (slug: string, on: boolean) => onChange(on ? [...chosen, slug].sort() : chosen.filter((t) => t !== slug));
   return (
     <fieldset>
-      <legend>Who can use it</legend>
+      <legend>{legend}</legend>
       {teams.map((t) => (
         <label class="inline" key={t.slug}>
           <input type="checkbox" checked={chosen.includes(t.slug)} onChange={(e) => toggle(t.slug, (e.currentTarget as HTMLInputElement).checked)} />{" "}
