@@ -622,3 +622,60 @@ func TestDynamicRegistrationRetriedWhenRejected(t *testing.T) {
 		t.Fatalf("admin-registered client: %d, registered %d", cb.StatusCode, e2.as.registered)
 	}
 }
+
+// F26 review R-01: a person sees and connects only the servers their teams
+// reach; a server outside them answers like one that does not exist, and a
+// connection started before the server left their teams stores nothing.
+// Admins connect any server: the first one provides its tool list.
+func TestConnectFollowsTeams(t *testing.T) {
+	ctx := context.Background()
+	e := newConnEnv(t)
+	b, u := e.signedIn(ada, "ada", store.RoleMember)
+	ob, _ := e.signedIn(ghUser{ID: 1, Login: "boss"}, "boss", store.RoleOwner)
+	if err := e.st.CreateTeam(ctx, e.org, store.Team{Slug: "designers", Name: "Designers", CreatedAt: e.clock.now()}, e.event("team.create:designers")); err != nil {
+		t.Fatal(err)
+	}
+
+	// The page is open and the connection started while linear is everyone's.
+	p := b.get("/connect/linear")
+	start := b.post("/connect/linear/start", url.Values{"csrf": {csrfOf(t, p.Body)}})
+	if start.StatusCode != http.StatusSeeOther {
+		t.Fatalf("start: %d %s", start.StatusCode, start.Body)
+	}
+	if err := e.st.SetServerTeams(ctx, e.org, e.osrv.ID, []string{"designers"}, e.event("server.teams=designers")); err != nil {
+		t.Fatal(err)
+	}
+	code, state := e.as.authorize(start.Header.Get("Location"), "ada")
+	if cb := b.get("/connect/callback?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(state) + "&iss=" + url.QueryEscape(e.as.srv.URL)); cb.StatusCode == http.StatusSeeOther {
+		t.Fatalf("a connection finished for a server outside her teams: %q", cb.Header.Get("Location"))
+	}
+	if _, err := e.grant(u.ID); err == nil {
+		t.Fatal("a grant was stored for a server outside her teams")
+	}
+
+	// Now outside her teams: not listed, and the page answers like an unknown server.
+	if mine := myConnectionsOf(t, b); len(mine) != 0 {
+		t.Fatalf("ada lists %+v", mine)
+	}
+	hidden, unknown := b.get("/connect/linear"), b.get("/connect/nosuch")
+	if hidden.StatusCode != http.StatusNotFound || hidden.StatusCode != unknown.StatusCode || strings.Contains(hidden.Body, "linear") {
+		t.Fatalf("outside her teams: %d, unknown: %d\n%s", hidden.StatusCode, unknown.StatusCode, hidden.Body)
+	}
+	if res := b.post("/connect/linear/start", url.Values{"csrf": {b.csrf()}}); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("start outside her teams: %d", res.StatusCode)
+	}
+
+	// The owner, in no team, still connects it; Ada joins and can again.
+	if cb := e.connect(ob, "boss"); cb.StatusCode != http.StatusSeeOther {
+		t.Fatalf("owner connect: %d %s", cb.StatusCode, cb.Body)
+	}
+	if err := e.st.AddTeamMember(ctx, e.org, "designers", u.ID, e.clock.now(), e.event("team.member.add:designers:ada")); err != nil {
+		t.Fatal(err)
+	}
+	if mine := myConnectionsOf(t, b); len(mine) != 1 || mine[0].Alias != "linear" {
+		t.Fatalf("ada in designers lists %+v", mine)
+	}
+	if cb := e.connect(b, "ada"); cb.StatusCode != http.StatusSeeOther {
+		t.Fatalf("ada in designers: %d %s", cb.StatusCode, cb.Body)
+	}
+}

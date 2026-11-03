@@ -63,6 +63,7 @@ describe("servers", () => {
     at("/admin/servers");
     const srv = await start(session("owner"), {
       "GET /admin/api/v1/servers": { servers: [{ alias: "deepwiki", status: "up", target: "https://mcp.deepwiki.com/mcp", items: { tool: 3 }, pending_review: 2 }] },
+      "GET /admin/api/v1/teams": { teams: [{ slug: "everyone", name: "Everyone", description: "", profile: "", built_in: true, members: [], servers: [] }], profiles: [] },
       "POST /admin/api/v1/servers": () => [201, { server: { alias: "linear" } }],
       "GET /admin/api/v1/servers/linear/pins": { pins: [] },
     });
@@ -74,7 +75,7 @@ describe("servers", () => {
     fireEvent.input(screen.getByPlaceholderText("Bearer sk-…"), { target: { value: "Bearer s3cret" } });
     fireEvent.click(screen.getByRole("button", { name: "Add server" }));
     await waitFor(() => expect(window.location.pathname).toBe("/admin/servers/linear"));
-    expect(srv.writes()[0]!.body).toEqual({ alias: "linear", transport: "http", url: "https://mcp.linear.app/mcp", headers: { Authorization: "Bearer s3cret" } });
+    expect(srv.writes()[0]!.body).toEqual({ alias: "linear", transport: "http", url: "https://mcp.linear.app/mcp", teams: ["everyone"], headers: { Authorization: "Bearer s3cret" } });
     expect(screen.getByRole("status").textContent).toContain("Server added");
   });
 
@@ -345,5 +346,32 @@ describe("server access", () => {
     expect(save.disabled).toBe(false);
     fireEvent.click(save);
     await waitFor(() => expect(srv.writes()[0]).toMatchObject({ method: "PATCH", url: "/admin/api/v1/servers/notion", body: { teams: ["designers"] } }));
+  });
+});
+
+describe("review fixes (F26)", () => {
+  it("warns about a server nobody can use", async () => {
+    at("/admin/servers");
+    await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [{ alias: "orphan", status: "up", target: "", items: {}, pending_review: 0, teams: [] }] },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "GET /admin/api/v1/catalog": catalogAnswer,
+    });
+    const cell = await screen.findByText("nobody");
+    expect(cell.className).toBe("warn-text");
+  });
+
+  it("does not add a server while the teams cannot be read", async () => {
+    at("/admin/servers");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [] },
+      "GET /admin/api/v1/teams": () => [500, { error: "teams are down" }],
+      "GET /admin/api/v1/catalog": catalogAnswer,
+    });
+    await screen.findByText("teams are down");
+    expect((screen.getByRole("button", { name: "Add server" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getAllByRole("button", { name: "Add" })[0]!);
+    expect((screen.getByRole("button", { name: "Add Figma" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(srv.writes()).toHaveLength(0);
   });
 });

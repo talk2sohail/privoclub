@@ -288,3 +288,43 @@ func TestMyTools(t *testing.T) {
 	// Auditors do not use the gateway.
 	e.call(t, otto, http.MethodGet, "/api/v1/me/tools", nil, http.StatusForbidden)
 }
+
+// F26 review R-02, R-04, R-06, R-07.
+func TestTeamsReviewFixes(t *testing.T) {
+	e := newSessionEnv(t)
+	_, admin := e.user(t, "adam", store.RoleAdmin)
+	e.seedServer(t, "figma", []string{})
+	e.call(t, admin, http.MethodPost, "/api/v1/teams", map[string]any{"slug": "designers", "name": "Designers"}, http.StatusCreated)
+
+	// R-02: a rule for a team that does not exist is refused.
+	e.call(t, admin, http.MethodPost, "/api/v1/policies", map[string]any{"server": "*", "tool": "*", "subject": "team:finance", "action": "allow"}, http.StatusUnprocessableEntity)
+	e.call(t, admin, http.MethodPost, "/api/v1/policies", map[string]any{"server": "*", "tool": "*", "subject": "team:designers", "action": "ask"}, http.StatusCreated)
+
+	// R-04: admins see an empty list for a server nobody reaches.
+	list := e.call(t, admin, http.MethodGet, "/api/v1/servers", nil, http.StatusOK)
+	raw, _ := list["servers"].([]any)
+	srv, _ := raw[0].(map[string]any)
+	if teams, ok := srv["teams"].([]any); !ok || len(teams) != 0 {
+		t.Fatalf("a server without teams shows %v to admins, want []", srv["teams"])
+	}
+
+	// R-06: unknown teams are 404 or 422, never 500, and are caught before
+	// any outbound work.
+	e.call(t, admin, http.MethodPost, "/api/v1/teams/nope/servers", map[string]any{"alias": "figma"}, http.StatusNotFound)
+	e.call(t, admin, http.MethodPost, "/api/v1/teams/designers/servers", map[string]any{"alias": "nope"}, http.StatusNotFound)
+	out := e.call(t, admin, http.MethodPost, "/api/v1/servers", map[string]any{"alias": "ghost", "transport": "http", "url": "https://203.0.113.9/mcp", "teams": []string{"nope"}}, http.StatusUnprocessableEntity)
+	if !strings.Contains(fmt.Sprint(out["error"]), `no team "nope"`) {
+		t.Fatalf("unknown team on create: %v", out)
+	}
+
+	// R-07: names a person cannot read, or that read like another team's.
+	for _, bad := range []string{"x y", "ㅤㅤ", "", "á́́", "designers", "EVERYONE", "   "} {
+		e.call(t, admin, http.MethodPost, "/api/v1/teams", map[string]any{"name": bad, "slug": "other"}, map[bool]int{true: http.StatusConflict, false: http.StatusUnprocessableEntity}[bad == "designers" || bad == "EVERYONE"])
+	}
+	e.call(t, admin, http.MethodPost, "/api/v1/teams", map[string]any{"name": "Ünïcode Désign 2", "slug": "other"}, http.StatusCreated)
+	e.call(t, admin, http.MethodPatch, "/api/v1/teams/other", map[string]any{"name": "DESIGNERS"}, http.StatusConflict)
+	e.call(t, admin, http.MethodPatch, "/api/v1/teams/designers", map[string]any{"name": "designers"}, http.StatusOK) // its own name, other case
+	long := strings.Repeat("é", 64)
+	e.call(t, admin, http.MethodPost, "/api/v1/teams", map[string]any{"name": long, "slug": "long"}, http.StatusCreated) // 64 characters, 128 bytes
+	e.call(t, admin, http.MethodPost, "/api/v1/teams", map[string]any{"name": long + "é", "slug": "longer"}, http.StatusUnprocessableEntity)
+}

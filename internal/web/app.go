@@ -320,7 +320,7 @@ func (s *Server) myConnections(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	servers, err := s.oauthServers(r.Context())
+	servers, err := s.oauthServers(r.Context(), u)
 	var grants []store.Grant
 	if err == nil {
 		grants, err = s.o.Store.ListGrants(r.Context(), s.o.Org, u.ID)

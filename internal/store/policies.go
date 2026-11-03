@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 )
 
@@ -28,10 +29,17 @@ type Policy struct {
 	ExpiresAt *time.Time
 }
 
-// CreatePolicies inserts rules atomically.
+// CreatePolicies inserts rules atomically. A rule for "team:<slug>" needs the
+// team to exist (ErrUnknownTeam), checked in the same transaction, so a team
+// created later never inherits a rule written for a name (F26 review R-02).
 func (s *Store) CreatePolicies(ctx context.Context, org OrgID, ps ...Policy) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		for _, p := range ps {
+			if team, ok := strings.CutPrefix(p.Subject, "team:"); ok {
+				if err := checkTeams(ctx, tx, org, []string{team}); err != nil {
+					return err
+				}
+			}
 			var exp any
 			if p.ExpiresAt != nil {
 				exp = ts(*p.ExpiresAt)

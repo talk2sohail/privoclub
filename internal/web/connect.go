@@ -122,18 +122,41 @@ func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, st store.O
 
 // ---- connections
 
-func (s *Server) oauthServers(ctx context.Context) ([]store.Server, error) {
+func (s *Server) oauthServers(ctx context.Context, u store.User) ([]store.Server, error) {
 	all, err := s.o.Store.ListServers(ctx, s.o.Org)
 	if err != nil {
 		return nil, err
 	}
 	var out []store.Server
 	for _, srv := range all {
-		if srv.Config.Auth == store.AuthOAuth && srv.Config.OAuth != nil {
+		if srv.Config.Auth != store.AuthOAuth || srv.Config.OAuth == nil {
+			continue
+		}
+		ok, err := s.mayConnect(ctx, u, srv)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			out = append(out, srv)
 		}
 	}
 	return out, nil
+}
+
+// mayConnect reports whether u may connect their account to srv: a server
+// their teams reach (ADR 0020), or any server for those who manage servers,
+// since the first admin to connect provides the server's tool list. Anyone
+// else is told the server does not exist, so teams cannot be probed, and
+// holds no grant for a server they cannot use.
+func (s *Server) mayConnect(ctx context.Context, u store.User, srv store.Server) (bool, error) {
+	if s.principal(u).Can(auth.PermManageServers) {
+		return true, nil
+	}
+	acc, err := s.o.Store.AccessFor(ctx, s.o.Org, u.ID)
+	if err != nil {
+		return false, err
+	}
+	return acc.Reaches(srv.ID), nil
 }
 
 func hostOf(raw string) string {
@@ -165,6 +188,12 @@ func (s *Server) connectTarget(w http.ResponseWriter, r *http.Request, sess stor
 	srv, err := s.o.Store.ServerByAlias(r.Context(), s.o.Org, alias)
 	if err == nil && (srv.Config.Auth != store.AuthOAuth || srv.Config.OAuth == nil) {
 		err = store.ErrNotFound
+	}
+	if err == nil {
+		var ok bool
+		if ok, err = s.mayConnect(r.Context(), u, srv); err == nil && !ok {
+			err = store.ErrNotFound
+		}
 	}
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
@@ -263,7 +292,11 @@ func (s *Server) connectCallbackHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	srv, err := s.o.Store.ServerByID(r.Context(), s.o.Org, st.ServerID)
-	if err != nil || srv.Config.Auth != store.AuthOAuth || srv.Config.OAuth == nil || srv.Config.OAuth.Issuer != st.Issuer {
+	may := false
+	if err == nil {
+		may, err = s.mayConnect(r.Context(), u, srv) // teams may have changed since the start
+	}
+	if err != nil || !may || srv.Config.Auth != store.AuthOAuth || srv.Config.OAuth == nil || srv.Config.OAuth.Issuer != st.Issuer {
 		s.connectFailed(w, http.StatusConflict, "The server changed while you were signing in. Start again.")
 		return
 	}

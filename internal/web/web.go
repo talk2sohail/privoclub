@@ -72,6 +72,8 @@ type Store interface {
 	ServerByAlias(ctx context.Context, org store.OrgID, alias string) (store.Server, error)
 	ServerByID(ctx context.Context, org store.OrgID, id string) (store.Server, error)
 	ListGrants(ctx context.Context, org store.OrgID, userID string) ([]store.Grant, error)
+	// Teams (ADR 0020): which servers a person reaches.
+	AccessFor(ctx context.Context, org store.OrgID, userID string) (store.Access, error)
 }
 
 // Auditor writes admin audit events.

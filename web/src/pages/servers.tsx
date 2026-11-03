@@ -20,6 +20,9 @@ export function Servers({ session }: PageProps) {
   const list = useData<{ servers: ServerView[] }>("/v1/servers");
   const teamsData = useData<{ teams: Team[] }>(session.can.teams ? "/v1/teams" : null);
   const teams = teamsData.data?.teams ?? [];
+  // Adding waits for the teams, so a server is never opened to everyone just
+  // because the picker had not loaded (F26 review R-05).
+  const teamsReady = !session.can.teams || teamsData.data !== undefined;
   const servers = list.data?.servers;
   return (
     <>
@@ -72,14 +75,25 @@ export function Servers({ session }: PageProps) {
           </table>
         </div>
       )}
-      <FromCatalog teams={teams} />
-      <AddServer canOAuth={session.can.oauth_servers} teams={teams} />
+      <ErrorLine text={teamsData.error} />
+      <FromCatalog teams={teams} ready={teamsReady} />
+      <AddServer canOAuth={session.can.oauth_servers} teams={teams} ready={teamsReady} />
     </>
   );
 }
 
 /** FromCatalog lists the catalog by profile; one entry at a time opens its form. */
-export function FromCatalog({ teams, profile, initialTeams }: { teams: Team[]; profile?: string; initialTeams?: string[] }) {
+export function FromCatalog({
+  teams,
+  profile,
+  initialTeams,
+  ready = true,
+}: {
+  teams: Team[];
+  profile?: string;
+  initialTeams?: string[];
+  ready?: boolean;
+}) {
   const cat = useData<Catalog>("/v1/catalog");
   const [filter, setFilter] = useState(profile ?? "");
   const [open, setOpen] = useState("");
@@ -129,6 +143,7 @@ export function FromCatalog({ teams, profile, initialTeams }: { teams: Team[]; p
                   initialTeams={initialTeams ?? ["everyone"]}
                   callbackURL={data.callback_url}
                   oauthAvailable={data.oauth_available}
+                  ready={ready}
                   onCancel={() => setOpen("")}
                 />
               )}
@@ -141,7 +156,7 @@ export function FromCatalog({ teams, profile, initialTeams }: { teams: Team[]; p
   );
 }
 
-function AddServer({ canOAuth, teams }: { canOAuth: boolean; teams: Team[] }) {
+function AddServer({ canOAuth, teams, ready }: { canOAuth: boolean; teams: Team[]; ready: boolean }) {
   const [authMode, setAuthMode] = useState("none");
   const [chosen, setChosen] = useState<string[]>(["everyone"]);
   const [busy, run] = useAction();
@@ -151,6 +166,7 @@ function AddServer({ canOAuth, teams }: { canOAuth: boolean; teams: Team[] }) {
     const alias = (f.alias ?? "").trim();
     const body: Record<string, unknown> = { alias, transport: f.transport, url: (f.url ?? "").trim() };
     if (teams.length > 0) body.teams = chosen;
+    if (!ready) return;
     if (authMode === "header") {
       body.headers = { [(f.header_name ?? "").trim() || "Authorization"]: f.header_value ?? "" };
     } else if (authMode === "oauth") {
@@ -222,8 +238,9 @@ function AddServer({ canOAuth, teams }: { canOAuth: boolean; teams: Team[] }) {
           </details>
         )}
         {teams.length > 0 && <TeamPicker teams={teams} chosen={chosen} onChange={setChosen} />}
+        {!ready && <p class="meta">Loading teams…</p>}
         <div class="actions">
-          <button type="submit" class="primary" disabled={busy}>
+          <button type="submit" class="primary" disabled={busy || !ready}>
             {busy ? "Adding…" : "Add server"}
           </button>
         </div>

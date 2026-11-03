@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/catalog"
@@ -89,14 +90,38 @@ func (a *API) listTeams(w http.ResponseWriter, r *http.Request, p auth.Principal
 	return nil
 }
 
-// plainText reports whether s is one line of 1 to limit characters without
-// control or format characters (which could hide text in the app and logs).
+// plainText reports whether s is one line of at most limit characters that a
+// person can read: no control, format, line or paragraph separator,
+// private-use or unassigned characters (they hide or reorder text in the app
+// and the logs), no more than two combining marks in a row, and, unless empty
+// is allowed, at least one letter or digit, so a name cannot look blank
+// (F26 review R-07).
 func plainText(s string, limit int, empty bool) bool {
-	if (!empty && s == "") || len(s) > limit {
+	if utf8.RuneCountInString(s) > limit || !utf8.ValidString(s) {
 		return false
 	}
-	return !strings.ContainsFunc(s, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) })
+	visible, marks := false, 0
+	for _, r := range s {
+		switch {
+		case unicode.IsControl(r), unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp, unicode.Co), !unicode.IsGraphic(r) && r != ' ':
+			return false
+		case unicode.Is(unicode.Mn, r):
+			if marks++; marks > 2 {
+				return false
+			}
+			continue
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			if !hangulFiller(r) {
+				visible = true
+			}
+		}
+		marks = 0
+	}
+	return visible || (empty && s == "")
 }
+
+// hangulFiller reports the Hangul fillers, letters that draw nothing.
+func hangulFiller(r rune) bool { return r == 0x115F || r == 0x1160 || r == 0x3164 || r == 0xFFA0 }
 
 // slugFrom makes a team slug out of a name: "Product managers" is
 // "product-managers".
@@ -117,6 +142,26 @@ func slugFrom(name string) string {
 		}
 	}
 	return strings.Trim(b.String(), "-")
+}
+
+// nameTaken refuses a team name that reads like another team's, ignoring
+// case, or like the built-in team's, so the access picker and a person's
+// "Your teams" line cannot mislead (F26 review R-07). except is the team
+// being renamed.
+func (a *API) nameTaken(ctx context.Context, org store.OrgID, name, except string) error {
+	if strings.EqualFold(name, everyoneName) {
+		return errorf(http.StatusConflict, "%q is the name of the built-in team of every member", everyoneName)
+	}
+	teams, err := a.Store.ListTeams(ctx, org)
+	if err != nil {
+		return err
+	}
+	for _, t := range teams {
+		if t.Slug != except && strings.EqualFold(t.Name, name) {
+			return errorf(http.StatusConflict, "a team named %q already exists", t.Name)
+		}
+	}
+	return nil
 }
 
 func validProfile(p string) bool {
@@ -155,6 +200,9 @@ func (a *API) createTeam(w http.ResponseWriter, r *http.Request, p auth.Principa
 	}
 	if !validProfile(req.Profile) {
 		return errorf(http.StatusUnprocessableEntity, "unknown profile %q", req.Profile)
+	}
+	if err := a.nameTaken(r.Context(), p.OrgID, name, ""); err != nil {
+		return err
 	}
 	t := store.Team{Slug: slug, Name: name, Description: desc, Profile: req.Profile, CreatedAt: time.Now()}
 	if err := a.Store.CreateTeam(r.Context(), p.OrgID, t, event(p, "team.create:"+slug, "")); err != nil {
@@ -207,6 +255,9 @@ func (a *API) patchTeam(w http.ResponseWriter, r *http.Request, p auth.Principal
 	if !plainText(name, 64, false) || !plainText(desc, 280, true) {
 		return errorf(http.StatusUnprocessableEntity, "a team needs a name of at most 64 characters and a description of at most 280, on one line each")
 	}
+	if err := a.nameTaken(r.Context(), p.OrgID, name, t.Slug); err != nil {
+		return err
+	}
 	if err := a.Store.UpdateTeam(r.Context(), p.OrgID, t.Slug, name, desc, event(p, "team.update:"+t.Slug, "")); err != nil {
 		return err
 	}
@@ -251,8 +302,11 @@ func (a *API) addTeamMember(w http.ResponseWriter, r *http.Request, p auth.Princ
 		return err
 	}
 	if err := a.Store.AddTeamMember(r.Context(), p.OrgID, t.Slug, u.ID, time.Now(), event(p, "team.member.add:"+t.Slug+":"+u.Person, "")); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
 			return errorf(http.StatusNotFound, "no member %q", req.Person)
+		case errors.Is(err, store.ErrUnknownTeam):
+			return errorf(http.StatusNotFound, "no team %q", t.Slug)
 		}
 		return err
 	}
@@ -311,6 +365,12 @@ func (a *API) addTeamServer(w http.ResponseWriter, r *http.Request, p auth.Princ
 		return err
 	}
 	if err := a.Store.AddServerTeam(r.Context(), p.OrgID, s.ID, slug, event(p, "server.team.add:"+slug, s.Alias)); err != nil {
+		switch {
+		case errors.Is(err, store.ErrNotFound):
+			return errorf(http.StatusNotFound, "no server named %q", s.Alias)
+		case errors.Is(err, store.ErrUnknownTeam):
+			return errorf(http.StatusNotFound, "no team %q", slug)
+		}
 		return err
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"team": slug, "server": s.Alias})

@@ -39,12 +39,14 @@ export function CatalogAdd({
   callbackURL,
   oauthAvailable,
   onCancel,
+  ready = true,
 }: {
   entry: CatalogEntry;
   teams: Team[];
   initialTeams: string[];
   callbackURL: string;
   oauthAvailable: boolean;
+  ready?: boolean;
   onCancel: () => void;
 }) {
   const [chosen, setChosen] = useState<string[]>(initialTeams);
@@ -110,7 +112,8 @@ export function CatalogAdd({
       {entry.auth === "oauth" && !ownApp && <p class="meta">Privo registers itself with {entry.name}. Each person connects their own account once.</p>}
       {entry.auth === "none" && <p class="meta">No sign-in: everyone who can use it shares it.</p>}
       <div class="actions">
-        <button type="submit" class="primary" disabled={busy || blocked}>
+        {!ready && <p class="meta">Loading teams…</p>}
+        <button type="submit" class="primary" disabled={busy || blocked || !ready}>
           {busy ? "Adding…" : "Add " + entry.name}
         </button>
         <button type="button" class="link" onClick={onCancel}>

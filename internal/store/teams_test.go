@@ -323,3 +323,26 @@ func TestMigrationGivesExistingServersEveryone(t *testing.T) {
 		t.Fatal("an existing server is not reachable by everyone after the migration")
 	}
 }
+
+// F26 review R-02: a rule can only name a team that exists, so a team made
+// later never inherits a rule written for its name.
+func TestRuleNeedsAnExistingTeam(t *testing.T) {
+	ctx := context.Background()
+	s, org := signinOrg(t)
+	rule := Policy{ID: "p1", Server: "*", Tool: "*", Subject: "team:finance", Action: ActionAllow, CreatedBy: "t", CreatedAt: t0}
+	if err := s.CreatePolicies(ctx, org, rule); !errors.Is(err, ErrUnknownTeam) {
+		t.Fatalf("rule for a team that does not exist: %v", err)
+	}
+	everyone := rule
+	everyone.ID, everyone.Subject = "p2", "team:everyone"
+	if err := s.CreatePolicies(ctx, org, everyone); err != nil {
+		t.Fatalf("team:everyone: %v", err)
+	}
+	mkTeam(t, s, org, "finance")
+	if rules, _ := s.ListPolicies(ctx, org); len(rules) != 1 {
+		t.Fatalf("the new team inherited a rule: %+v", rules)
+	}
+	if err := s.CreatePolicies(ctx, org, rule); err != nil {
+		t.Fatalf("rule for an existing team: %v", err)
+	}
+}

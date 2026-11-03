@@ -196,8 +196,9 @@ type serverView struct {
 	Auth         string `json:"auth,omitempty"`
 	Registration string `json:"registration,omitempty"`
 	ConnectURL   string `json:"connect_url,omitempty"`
-	// Teams that reach the server (ADR 0020); shown to admins only.
-	Teams []string `json:"teams,omitempty"`
+	// Teams that reach the server (ADR 0020); shown to admins only, and
+	// always to them, so an empty list ("nobody") is visible (F26 R-04).
+	Teams *[]string `json:"teams,omitempty"`
 }
 
 // view describes a server. Members and auditors see neither the full target
@@ -206,7 +207,8 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams 
 	admin := p.Can(auth.PermManageServers)
 	v := serverView{ID: s.ID, Alias: s.Alias, Transport: s.Transport, Enabled: s.Enabled, Status: upstream.StatusConnecting, Items: map[string]int{}}
 	if admin {
-		v.Teams = append([]string{}, teams...)
+		t := append([]string{}, teams...)
+		v.Teams = &t
 	}
 	switch {
 	case s.Transport == "stdio" && admin:
@@ -300,6 +302,18 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 			return err
 		}
 		srv.Teams = teams
+		// Fast path before any outbound work (discovery, registration at the
+		// provider); the store checks again inside its transaction (F26 R-06).
+		for _, t := range teams {
+			if t == store.TeamEveryone {
+				continue
+			}
+			if _, err := a.Store.TeamBySlug(ctx, p.OrgID, t); errors.Is(err, store.ErrNotFound) {
+				return errorf(http.StatusUnprocessableEntity, "there is no team %q", t)
+			} else if err != nil {
+				return err
+			}
+		}
 	}
 	secrets := map[string]string{}
 	if req.OAuth != nil && req.Transport != "http" && req.Transport != "sse" {
@@ -863,6 +877,9 @@ func (a *API) createPolicy(w http.ResponseWriter, r *http.Request, p auth.Princi
 		pol.ExpiresAt = &exp
 	}
 	if err := a.Store.CreatePolicies(r.Context(), p.OrgID, pol); err != nil {
+		if errors.Is(err, store.ErrUnknownTeam) {
+			return errorf(http.StatusUnprocessableEntity, "there is no team %q", strings.TrimPrefix(pol.Subject, "team:"))
+		}
 		return err
 	}
 	a.adminEvent(r.Context(), p, fmt.Sprintf("policy.create:%s %s %s %s", pol.Action, pol.Server, pol.Tool, pol.Subject), pol.Server)
