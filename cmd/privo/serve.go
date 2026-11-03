@@ -17,17 +17,20 @@ import (
 	"privo.club/privo/internal/approval"
 	"privo.club/privo/internal/audit"
 	"privo.club/privo/internal/auth"
+	"privo.club/privo/internal/buildinfo"
 	"privo.club/privo/internal/config"
 	"privo.club/privo/internal/control"
 	"privo.club/privo/internal/egress"
 	"privo.club/privo/internal/gateway"
 	"privo.club/privo/internal/githubauth"
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/health"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/server"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/upstream"
+	"privo.club/privo/internal/upstreamauth"
 	"privo.club/privo/internal/vault"
 	"privo.club/privo/internal/web"
 )
@@ -118,8 +121,19 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 		logger.Warn("PRIVO_RUNNER=local runs stdio servers on this host without isolation; use only for development and tests")
 		rn = runner.Local{}
 	}
+	// Servers where each person uses their own account (ADR 0017) need the
+	// admin site: people connect their accounts there.
+	var oauthClient *upstreamauth.Client
+	var grantSvc *grants.Service
+	var grantSource upstream.GrantSource
+	if len(webCfg.Missing(cfg.PublicURL)) == 0 && cfg.PublicURL.Path == "" {
+		oauthClient = &upstreamauth.Client{HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1}), UserAgent: "privo/" + buildinfo.Version}
+		grantSvc = &grants.Service{Store: st, Keys: kr, Auth: oauthClient, PublicURL: cfg.PublicURL, Logger: logger}
+		grantSource = grantSvc
+	}
 	mgr := upstream.New(upstream.Options{Store: st, Keys: kr, Runner: rn, HTTPClient: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true}),
-		RetryBase: cfg.RetryBase, RetryMax: cfg.RetryMax, RefreshGap: cfg.RefreshGap, MaxResponseBytes: cfg.MaxResponseBytes, Logger: logger})
+		RetryBase: cfg.RetryBase, RetryMax: cfg.RetryMax, RefreshGap: cfg.RefreshGap, MaxResponseBytes: cfg.MaxResponseBytes, Logger: logger,
+		Grants: grantSource})
 	defer mgr.Close()
 	if err := mgr.Sync(ctx, org.ID); err != nil {
 		return err
@@ -146,9 +160,12 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 	gw := &gateway.Gateway{Store: st, Upstream: mgr, Keys: kr, Audit: aw, Auth: authn, Approval: approvals, Logger: logger,
 		ResourceMetadataURL: prm, BaseURL: base, CallTimeout: cfg.CallTimeout}
 	api := &control.API{Store: st, Keys: kr, Auth: authn, Upstream: mgr, Audit: aw, Approval: approvals, Egress: policy, Logger: logger,
-		TokenTTL: cfg.TokenTTL}
+		TokenTTL: cfg.TokenTTL, OAuth: oauthClient, Grants: grantSvc}
+	if grantSvc != nil {
+		api.PublicURL = cfg.PublicURL
+	}
 
-	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, approvals, logger)
+	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, approvals, logger, siteConnections{grants: grantSvc, oauth: oauthClient, upstream: mgr, api: api})
 	siteCtx, stopSite := context.WithCancel(ctx)
 	siteDone := make(chan struct{})
 	go func() { site.Run(siteCtx, 10*time.Minute); close(siteDone) }()
@@ -246,9 +263,24 @@ func tokenCreate(args []string, stdout, stderr io.Writer, getenv func(string) st
 
 // adminSite builds the admin website (ADR 0016). With anything missing it is
 // still returned, off: it answers 503 and says which settings to add.
-func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *store.Store, org store.OrgID, aw *audit.Writer, approvals *approval.Service, logger *slog.Logger) *web.Server {
+// siteConnections is what the admin site needs for people's upstream
+// connections; with grants nil the connect pages are not served.
+type siteConnections struct {
+	grants   *grants.Service
+	oauth    *upstreamauth.Client
+	upstream *upstream.Manager
+	api      *control.API // the admin pages call it in process (ADR 0018)
+}
+
+func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *store.Store, org store.OrgID, aw *audit.Writer, approvals *approval.Service, logger *slog.Logger, conn siteConnections) *web.Server {
 	opts := web.Options{Store: st, Org: org, Audit: aw, Logger: logger, Approval: approvals, PublicURL: cfg.PublicURL,
 		IdleTimeout: webCfg.IdleTimeout, MaxAge: webCfg.MaxAge, Missing: webCfg.Missing(cfg.PublicURL)}
+	if conn.grants != nil && conn.oauth != nil && conn.upstream != nil {
+		opts.Grants, opts.OAuth, opts.Upstream = conn.grants, conn.oauth, conn.upstream
+	}
+	if conn.api != nil {
+		opts.API = conn.api
+	}
 	if len(opts.Missing) == 0 {
 		opts.GitHub = &githubauth.Client{ClientID: webCfg.ClientID, ClientSecret: webCfg.ClientSecret.Reveal(), BaseURL: webCfg.BaseURL, APIURL: webCfg.APIURL,
 			HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1})}

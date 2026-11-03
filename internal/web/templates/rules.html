@@ -1,0 +1,59 @@
+{{define "content"}}
+<h1>Rules</h1>
+{{with .Flash}}<p class="flash {{.Class}}" role="status">{{.Text}}</p>{{end}}
+<p class="meta">Rules decide what happens when an AI client calls a tool: <strong>allow</strong> it, <strong>ask</strong> a person to approve it first, or <strong>deny</strong> it. The most specific matching rule wins.</p>
+
+<section class="card">
+  <h2>When no rule matches</h2>
+  <form method="post" action="/admin/rules/default" class="row">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <select name="default" aria-label="Default action">
+      <option value="allow"{{if eq .Page.Default "allow"}} selected{{end}}>allow</option>
+      <option value="ask"{{if eq .Page.Default "ask"}} selected{{end}}>ask for approval</option>
+      <option value="deny"{{if eq .Page.Default "deny"}} selected{{end}}>deny</option>
+    </select>
+    <button type="submit">Save</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Rules</h2>
+{{if .Page.Rules}}  <table class="list">
+    <thead><tr><th>Server</th><th>Tool</th><th>Who</th><th>Action</th><th>Note</th><th></th></tr></thead>
+    <tbody>
+{{range .Page.Rules}}      <tr><td>{{.Server}}</td><td><code>{{.Tool}}</code></td><td>{{.Subject}}</td><td><span class="action {{.Action}}">{{.Action}}</span></td><td>{{.Note}}{{if .Expires}} <small class="meta">until {{.Expires}}</small>{{end}}</td>
+        <td><form method="post" action="/admin/rules/{{.ID}}/delete"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="link">Delete</button></form></td></tr>
+{{end}}    </tbody>
+  </table>
+{{else}}  <p class="empty">No rules yet: every call gets the default above.</p>{{end}}
+</section>
+
+<section class="card">
+  <h2>Add a rule</h2>
+  <form method="post" action="/admin/rules" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Server
+      <select name="server">
+        <option value="*">every server</option>
+{{range .Page.Servers}}        <option value="{{.Alias}}">{{.Alias}}</option>
+{{end}}      </select></label>
+    <label>Tool <small class="meta">a name as the server calls it, or * for all, or a pattern like delete_*</small>
+      <input name="tool" value="*"></label>
+    <label>Who
+      <select name="subject">
+        <option value="*">everyone</option>
+        <option value="role:member">members</option>
+        <option value="role:admin">admins</option>
+        <option value="role:owner">owners</option>
+      </select></label>
+    <label>Action
+      <select name="action">
+        <option value="ask">ask for approval</option>
+        <option value="deny">deny</option>
+        <option value="allow">allow</option>
+      </select></label>
+    <label>Note <small class="meta">optional, why this rule exists</small> <input name="note" maxlength="500"></label>
+    <div class="actions"><button type="submit" class="primary">Add rule</button></div>
+  </form>
+</section>
+{{end}}

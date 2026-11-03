@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/egress"
 	"privo.club/privo/internal/gateway"
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/policy"
@@ -30,6 +32,7 @@ import (
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/token"
 	"privo.club/privo/internal/upstream"
+	"privo.club/privo/internal/upstreamauth"
 	"privo.club/privo/internal/vault"
 )
 
@@ -45,6 +48,14 @@ type API struct {
 	Logger   *slog.Logger
 	// TokenTTL is the default personal token lifetime.
 	TokenTTL time.Duration
+
+	// Upstream OAuth (ADR 0017): discovery and registration, the grants, and
+	// the public URL the callback and the links are built from. Without them
+	// servers cannot use each person's own account.
+	OAuth     *upstreamauth.Client
+	Grants    *grants.Service
+	PublicURL *url.URL
+	in        internal // the mux of in-process calls (Serve)
 }
 
 // ConnectWait bounds how long registration waits for the first connection.
@@ -55,28 +66,35 @@ var sha256Re = regexp.MustCompile(`^[0-9a-f]{64}$`)
 var nameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]{0,63}$`)
 
 // Routes mounts the API on mux.
-func (a *API) Routes(mux *http.ServeMux) {
-	mux.Handle("GET /api/v1/servers", a.with(auth.PermReadServers, a.listServers))
-	mux.Handle("POST /api/v1/servers", a.with(auth.PermManageServers, a.createServer))
-	mux.Handle("PATCH /api/v1/servers/{alias}", a.with(auth.PermManageServers, a.patchServer))
-	mux.Handle("DELETE /api/v1/servers/{alias}", a.with(auth.PermManageServers, a.deleteServer))
-	mux.Handle("GET /api/v1/servers/{alias}/pins", a.with(auth.PermManageServers, a.listPins))
-	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", a.with(auth.PermManageServers, a.acceptPins))
-	mux.Handle("GET /api/v1/tokens", a.with(auth.PermManageTokens, a.listTokens))
-	mux.Handle("POST /api/v1/tokens", a.with(auth.PermManageTokens, a.createToken))
-	mux.Handle("DELETE /api/v1/tokens/{id}", a.with(auth.PermManageTokens, a.revokeToken))
-	mux.Handle("GET /api/v1/policies", a.with(auth.PermManagePolicy, a.listPolicies))
-	mux.Handle("POST /api/v1/policies", a.with(auth.PermManagePolicy, a.createPolicy))
-	mux.Handle("DELETE /api/v1/policies/{id}", a.with(auth.PermManagePolicy, a.deletePolicy))
-	mux.Handle("POST /api/v1/servers/{alias}/policy:preset", a.with(auth.PermManagePolicy, a.applyPreset))
-	mux.Handle("PATCH /api/v1/settings/policy", a.with(auth.PermManagePolicy, a.patchPolicySettings))
-	mux.Handle("GET /api/v1/approvals", a.with(auth.PermDecide, a.listApprovals))
-	mux.Handle("GET /api/v1/approvals/{id}", a.with(auth.PermDecide, a.getApproval))
-	mux.Handle("POST /api/v1/approvals/{id}/approve", a.with(auth.PermDecide, a.decide(true)))
-	mux.Handle("POST /api/v1/approvals/{id}/deny", a.with(auth.PermDecide, a.decide(false)))
-	mux.Handle("PATCH /api/v1/settings/approvals", a.with(auth.PermManagePolicy, a.patchApprovalSettings))
-	mux.Handle("GET /api/v1/audit/events", a.with(auth.PermReadAudit, a.listAudit))
-	mux.Handle("PATCH /api/v1/settings/audit", a.with(auth.PermManageAudit, a.patchAuditSettings))
+func (a *API) Routes(mux *http.ServeMux) { a.register(mux, a.with) }
+
+// register mounts every route on mux, each wrapped by wrap.
+func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) http.Handler) {
+	a.registerMembers(mux, wrap)
+	mux.Handle("GET /api/v1/servers", wrap(auth.PermReadServers, a.listServers))
+	mux.Handle("POST /api/v1/servers", wrap(auth.PermManageServers, a.createServer))
+	mux.Handle("PATCH /api/v1/servers/{alias}", wrap(auth.PermManageServers, a.patchServer))
+	mux.Handle("DELETE /api/v1/servers/{alias}", wrap(auth.PermManageServers, a.deleteServer))
+	mux.Handle("GET /api/v1/servers/{alias}/pins", wrap(auth.PermManageServers, a.listPins))
+	mux.Handle("GET /api/v1/servers/{alias}/connections", wrap(auth.PermManageServers, a.listConnections))
+	mux.Handle("DELETE /api/v1/servers/{alias}/connections/{person}", wrap(auth.PermManageServers, a.deleteConnection))
+	mux.Handle("POST /api/v1/invites", wrap(auth.PermManageTokens, a.createInvite))
+	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", wrap(auth.PermManageServers, a.acceptPins))
+	mux.Handle("GET /api/v1/tokens", wrap(auth.PermManageTokens, a.listTokens))
+	mux.Handle("POST /api/v1/tokens", wrap(auth.PermManageTokens, a.createToken))
+	mux.Handle("DELETE /api/v1/tokens/{id}", wrap(auth.PermManageTokens, a.revokeToken))
+	mux.Handle("GET /api/v1/policies", wrap(auth.PermManagePolicy, a.listPolicies))
+	mux.Handle("POST /api/v1/policies", wrap(auth.PermManagePolicy, a.createPolicy))
+	mux.Handle("DELETE /api/v1/policies/{id}", wrap(auth.PermManagePolicy, a.deletePolicy))
+	mux.Handle("POST /api/v1/servers/{alias}/policy:preset", wrap(auth.PermManagePolicy, a.applyPreset))
+	mux.Handle("PATCH /api/v1/settings/policy", wrap(auth.PermManagePolicy, a.patchPolicySettings))
+	mux.Handle("GET /api/v1/approvals", wrap(auth.PermDecide, a.listApprovals))
+	mux.Handle("GET /api/v1/approvals/{id}", wrap(auth.PermDecide, a.getApproval))
+	mux.Handle("POST /api/v1/approvals/{id}/approve", wrap(auth.PermDecide, a.decide(true)))
+	mux.Handle("POST /api/v1/approvals/{id}/deny", wrap(auth.PermDecide, a.decide(false)))
+	mux.Handle("PATCH /api/v1/settings/approvals", wrap(auth.PermManagePolicy, a.patchApprovalSettings))
+	mux.Handle("GET /api/v1/audit/events", wrap(auth.PermReadAudit, a.listAudit))
+	mux.Handle("PATCH /api/v1/settings/audit", wrap(auth.PermManageAudit, a.patchAuditSettings))
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, p auth.Principal) error
@@ -111,21 +129,27 @@ func (a *API) with(perm auth.Permission, h handler) http.Handler {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "this is a gateway token; the admin API needs a control token"})
 			return
 		}
-		if !p.Can(perm) {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "your role cannot do this"})
+		a.run(perm, h, w, r, p)
+	})
+}
+
+// run checks the permission and runs the handler as p, turning its error into
+// a JSON answer. Token requests and in-process calls (Serve) share it.
+func (a *API) run(perm auth.Permission, h handler, w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	if !p.Can(perm) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "your role cannot do this"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	if err := h(w, r, p); err != nil {
+		var he *httpError
+		if errors.As(err, &he) {
+			writeJSON(w, he.status, map[string]string{"error": he.msg})
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
-		if err := h(w, r, p); err != nil {
-			var he *httpError
-			if errors.As(err, &he) {
-				writeJSON(w, he.status, map[string]string{"error": he.msg})
-				return
-			}
-			a.Logger.Error("admin api", "path", r.URL.Path, "err", err)
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-		}
-	})
+		a.Logger.Error("admin api", "path", r.URL.Path, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -148,7 +172,7 @@ func decode(r *http.Request, v any) error {
 }
 
 func (a *API) adminEvent(ctx context.Context, p auth.Principal, action, server string) {
-	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.TokenID, Server: server, Action: action, Decision: "allow", Outcome: "ok"}
+	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(), Server: server, Action: action, Decision: "allow", Outcome: "ok"}
 	if err := a.Audit.Admin(ctx, p.OrgID, ev); err != nil {
 		a.Logger.Error("audit admin event", "action", action, "err", err)
 	}
@@ -166,6 +190,11 @@ type serverView struct {
 	Target    string         `json:"target"`
 	Items     map[string]int `json:"items"`
 	Pending   int            `json:"pending_review"`
+	// Auth is "oauth" when each person uses their own account; ConnectURL is
+	// where they connect it.
+	Auth         string `json:"auth,omitempty"`
+	Registration string `json:"registration,omitempty"`
+	ConnectURL   string `json:"connect_url,omitempty"`
 }
 
 // view describes a server. Members and auditors see neither the full target
@@ -181,6 +210,12 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server) server
 	}
 	if !s.Enabled {
 		v.Status = upstream.StatusDisabled
+	}
+	if s.Config.Auth == store.AuthOAuth {
+		v.Auth, v.ConnectURL = store.AuthOAuth, a.connectURL(s.Alias)
+		if s.Config.OAuth != nil && admin {
+			v.Registration = s.Config.OAuth.Registration
+		}
 	}
 	if st, ok := a.Upstream.State(s.ID); ok {
 		v.Status = st.Status
@@ -222,6 +257,8 @@ type createServerReq struct {
 	URL     string            `json:"url"`
 	Headers map[string]string `json:"headers"`
 	Env     map[string]string `json:"env"`
+	// OAuth makes every call run with the caller's own account (ADR 0017).
+	OAuth *oauthReq `json:"oauth"`
 }
 
 func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -235,6 +272,12 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	}
 	srv := store.Server{OrgID: p.OrgID, ID: ids.New(), Alias: req.Alias, Transport: req.Transport, Enabled: true, CreatedAt: time.Now()}
 	secrets := map[string]string{}
+	if req.OAuth != nil && req.Transport != "http" && req.Transport != "sse" {
+		return errorf(http.StatusUnprocessableEntity, "only http and sse servers can use each person's own account (oauth)")
+	}
+	if req.OAuth != nil && len(req.Headers) > 0 {
+		return errorf(http.StatusUnprocessableEntity, "a server that uses each person's own account (oauth) takes no static headers")
+	}
 	switch req.Transport {
 	case "stdio":
 		if req.Command == nil || !strings.HasPrefix(req.Command.Path, "/") || !sha256Re.MatchString(req.Command.SHA256) {
@@ -277,6 +320,20 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err != nil {
 		return err
 	}
+	if req.OAuth != nil {
+		o, secret, err := a.configureOAuth(ctx, srv, req.OAuth)
+		if err != nil {
+			return err
+		}
+		srv.Config.Auth, srv.Config.OAuth = store.AuthOAuth, &o
+		if secret != "" {
+			c, err := a.Grants.SealClientSecret(ctx, p.OrgID, srv.ID, secret)
+			if err != nil {
+				return err
+			}
+			creds = append(creds, c)
+		}
+	}
 	if err := a.Store.CreateServer(ctx, srv, creds); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return errorf(http.StatusConflict, "a server named %q already exists", req.Alias)
@@ -284,6 +341,9 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 		return err
 	}
 	a.adminEvent(ctx, p, "server.create", srv.Alias)
+	if srv.Config.OAuth != nil {
+		a.adminEvent(ctx, p, "server.oauth_register:"+srv.Alias+":"+srv.Config.OAuth.Registration, srv.Alias)
+	}
 	if err := a.Upstream.Sync(ctx, p.OrgID); err != nil {
 		return err
 	}
@@ -892,7 +952,7 @@ func (a *API) getApproval(w http.ResponseWriter, r *http.Request, p auth.Princip
 func (a *API) decide(approve bool) handler {
 	return func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("id")
-		err := a.Approval.Decide(r.Context(), p.OrgID, id, approval.Decider{TokenID: p.TokenID, Name: p.Name, Person: p.Person}, approve)
+		err := a.Approval.Decide(r.Context(), p.OrgID, id, approval.Decider{TokenID: p.TokenID, UserID: p.UserID, Name: p.Name, Person: p.Person}, approve)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			return errorf(http.StatusNotFound, "no approval %q", id)

@@ -11,8 +11,10 @@ import (
 const (
 	ProviderGitHub = "github"
 
-	PurposeSignIn = "signin"
-	PurposeSetup  = "setup"
+	PurposeSignIn  = "signin"
+	PurposeSetup   = "setup"
+	PurposeInvite  = "invite"  // claiming an invite (ADR 0017)
+	PurposeConnect = "connect" // connecting an upstream account (ADR 0017)
 )
 
 // maxSetupLinkTTL caps a setup link whatever the caller asks for.
@@ -41,6 +43,7 @@ type User struct {
 	Role        string
 	CreatedAt   time.Time
 	DisabledAt  *time.Time
+	Login       string // the GitHub login snapshot; filled by ListUsers only
 }
 
 // Session is a browser session. ID is the hex SHA-256 of the cookie secret;
@@ -140,9 +143,7 @@ type Claim struct {
 // ErrIdentityExists when the identity is already a member and ErrConflict when
 // the person name is taken.
 func (s *Store) ClaimSetup(ctx context.Context, org OrgID, c Claim, ev AuditEvent) (User, error) {
-	ev.Phase = "admin"
-	u := User{OrgID: org, ID: c.UserID, Person: c.Person, DisplayName: c.DisplayName, Role: RoleOwner, CreatedAt: c.Now}
-	err := s.tx(ctx, func(tx *sql.Tx) error {
+	return s.claim(ctx, org, c, ev, func(tx *sql.Tx, u *User) error {
 		var linkPerson string
 		err := tx.QueryRowContext(ctx, `
 			UPDATE setup_links SET claimed_at = ?, claimed_by = ?
@@ -157,9 +158,24 @@ func (s *Store) ClaimSetup(ctx context.Context, org OrgID, c Claim, ev AuditEven
 		}
 		// A person named on the link (privo admin setup-link --person) wins over
 		// the caller's fallback, which is the lowercased GitHub login.
-		u.Person = c.Person
+		u.Role = RoleOwner
 		if linkPerson != "" {
 			u.Person = linkPerson
+		}
+		return nil
+	})
+}
+
+// claim is the part of a setup or invite claim after the link was consumed by
+// consume (which sets the role and may set the person): it refuses an identity
+// that is already a member, creates the user, binds the identity, starts the
+// session and writes ev, all in one transaction.
+func (s *Store) claim(ctx context.Context, org OrgID, c Claim, ev AuditEvent, consume func(*sql.Tx, *User) error) (User, error) {
+	ev.Phase = "admin"
+	u := User{OrgID: org, ID: c.UserID, Person: c.Person, DisplayName: c.DisplayName, CreatedAt: c.Now}
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		if err := consume(tx, &u); err != nil {
+			return err
 		}
 		var one int
 		switch err := tx.QueryRowContext(ctx, `SELECT 1 FROM identities WHERE org_id = ? AND provider = ? AND subject = ?`,
@@ -312,6 +328,11 @@ func (s *Store) SetUserRole(ctx context.Context, org OrgID, userID, role string,
 		if n, _ := res.RowsAffected(); n != 1 {
 			return ErrNotFound
 		}
+		if !catalogRole(role) {
+			if err := dropCatalogGrants(ctx, tx, org, userID); err != nil {
+				return err
+			}
+		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
 	})
 }
@@ -332,6 +353,9 @@ func (s *Store) DisableUser(ctx context.Context, org OrgID, userID string, now t
 		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE org_id = ? AND user_id = ?`, org, userID); err != nil {
 			return err
 		}
+		if err := deleteUserGrants(ctx, tx, org, userID); err != nil {
+			return err
+		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
 	})
 }
@@ -342,15 +366,27 @@ type OAuthState struct {
 	Hash        string
 	Purpose     string
 	SetupLinkID string
+	InviteID    string
 	Verifier    string // PKCE code verifier
-	ExpiresAt   time.Time
+	// For PurposeConnect: who started it, from which session, for which
+	// server, and the authorization server expected to answer.
+	UserID    string
+	SessionID string
+	ServerID  string
+	Issuer    string
+	// ReturnTo is a local path to go back to after signing in; the web
+	// layer accepts only fixed shapes.
+	ReturnTo  string
+	ExpiresAt time.Time
 }
 
 // CreateOAuthState stores a sign-in in flight. It first deletes expired rows,
 // then refuses with ErrTooManyStates when limit unexpired ones exist, so
 // unauthenticated requests cannot fill the disk.
 func (s *Store) CreateOAuthState(ctx context.Context, org OrgID, st OAuthState, now time.Time, limit int) error {
-	if st.Purpose != PurposeSignIn && st.Purpose != PurposeSetup {
+	switch st.Purpose {
+	case PurposeSignIn, PurposeSetup, PurposeInvite, PurposeConnect:
+	default:
 		return errors.New("store: unknown sign-in purpose")
 	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
@@ -365,9 +401,9 @@ func (s *Store) CreateOAuthState(ctx context.Context, org OrgID, st OAuthState, 
 			return ErrTooManyStates
 		}
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO oauth_states (org_id, state_hash, purpose, setup_link_id, verifier, created_at, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			org, st.Hash, st.Purpose, st.SetupLinkID, st.Verifier, ts(now), ts(st.ExpiresAt))
+			INSERT INTO oauth_states (org_id, state_hash, purpose, setup_link_id, invite_id, verifier, user_id, session_id, server_id, issuer, return_to, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			org, st.Hash, st.Purpose, st.SetupLinkID, st.InviteID, st.Verifier, st.UserID, st.SessionID, st.ServerID, st.Issuer, st.ReturnTo, ts(now), ts(st.ExpiresAt))
 		return mapErr(err)
 	})
 }
@@ -380,8 +416,8 @@ func (s *Store) UseOAuthState(ctx context.Context, org OrgID, hash string, now t
 	var expires string
 	err := s.w.QueryRowContext(ctx, `
 		DELETE FROM oauth_states WHERE org_id = ? AND state_hash = ? AND expires_at > ?
-		RETURNING purpose, setup_link_id, verifier, expires_at`, org, hash, ts(now)).
-		Scan(&st.Purpose, &st.SetupLinkID, &st.Verifier, &expires)
+		RETURNING purpose, setup_link_id, invite_id, verifier, user_id, session_id, server_id, issuer, return_to, expires_at`, org, hash, ts(now)).
+		Scan(&st.Purpose, &st.SetupLinkID, &st.InviteID, &st.Verifier, &st.UserID, &st.SessionID, &st.ServerID, &st.Issuer, &st.ReturnTo, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		return OAuthState{}, ErrNotFound
 	}
@@ -404,6 +440,7 @@ func (s *Store) PruneSignIn(ctx context.Context, org OrgID, now time.Time, idle 
 			{`DELETE FROM sessions WHERE org_id = ? AND (expires_at <= ? OR last_seen_at <= ?)`, []any{org, ts(now), ts(now.Add(-idle))}},
 			{`DELETE FROM oauth_states WHERE org_id = ? AND expires_at <= ?`, []any{org, ts(now)}},
 			{`DELETE FROM setup_links WHERE org_id = ? AND claimed_at IS NULL AND (retired_at IS NOT NULL OR expires_at <= ?)`, []any{org, ts(now)}},
+			{`DELETE FROM invites WHERE org_id = ? AND claimed_at IS NULL AND (retired_at IS NOT NULL OR expires_at <= ?)`, []any{org, ts(now)}},
 		} {
 			if _, err := tx.ExecContext(ctx, q.sql, q.args...); err != nil {
 				return err

@@ -1,0 +1,55 @@
+{{define "content"}}
+<h1>Tokens</h1>
+{{with .Flash}}<p class="flash {{.Class}}" role="status">{{.Text}}</p>{{end}}
+{{with .Page.Created}}<section class="card highlight">
+  <h2>{{.Name}}</h2>
+  <p>Copy the token now. It is shown only once{{if .Expires}} and works until {{.Expires}}{{end}}.</p>
+  <pre class="args">{{.Token}}</pre>
+{{if eq .Kind "gateway"}}  <p>Add Privo to Claude Code with:</p>
+  <pre class="args">{{.Command}}</pre>
+  <p class="meta">Other AI clients: MCP server URL <code>{{$.Page.MCPURL}}</code>, header <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+{{end}}</section>{{end}}
+
+{{if .Page.UsesGateway}}<section class="card">
+  <h2>Your AI clients</h2>
+  <p class="meta">Each AI client (Claude Code on your laptop, Cursor, …) gets its own token, so you can revoke one without the others. Calls run as you.</p>
+{{if .Page.Mine}}  <table class="list">
+    <thead><tr><th>Name</th><th>Created</th><th>Expires</th><th></th></tr></thead>
+    <tbody>
+{{range .Page.Mine}}      <tr><td>{{.Name}}</td><td>{{.Created}}</td><td>{{.Expires}}</td>
+        <td><form method="post" action="/admin/tokens/mine/{{.ID}}/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="link">Revoke</button></form></td></tr>
+{{end}}    </tbody>
+  </table>
+{{else}}  <p class="empty">None yet.</p>{{end}}
+  <form method="post" action="/admin/tokens/mine" class="row">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input name="name" required maxlength="64" placeholder="claude-code-laptop" aria-label="Name of the AI client">
+    <button type="submit" class="primary">Create token</button>
+  </form>
+</section>{{end}}
+
+{{if .Page.ManagesTokens}}<section class="card">
+  <h2>All tokens</h2>
+{{if .Page.All}}  <table class="list">
+    <thead><tr><th>Person</th><th>Name</th><th>Kind</th><th>Role</th><th>Expires</th><th></th></tr></thead>
+    <tbody>
+{{range .Page.All}}      <tr><td>{{.Person}}</td><td>{{.Name}}</td><td>{{if eq .Kind "gateway"}}AI client{{else}}API{{end}}</td><td>{{.Role}}</td><td>{{.Expires}}</td>
+        <td><form method="post" action="/admin/tokens/{{.ID}}/revoke"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="link">Revoke</button></form></td></tr>
+{{end}}    </tbody>
+  </table>
+{{else}}  <p class="empty">No tokens.</p>{{end}}
+  <details>
+    <summary>Create an API token (for scripts and automation)</summary>
+    <form method="post" action="/admin/tokens" class="stack">
+      <input type="hidden" name="csrf" value="{{.CSRF}}">
+      <label>Name <input name="name" required maxlength="64"></label>
+      <label>Person <small class="meta">who it acts for</small> <input name="person" maxlength="128"></label>
+      <label>Role
+        <select name="role">
+{{range .Page.Roles}}          <option value="{{.}}"{{if eq . "auditor"}} selected{{end}}>{{.}}</option>
+{{end}}        </select></label>
+      <div class="actions"><button type="submit">Create API token</button></div>
+    </form>
+  </details>
+</section>{{end}}
+{{end}}

@@ -21,6 +21,16 @@ type Principal struct {
 	Role    string
 	Kind    string // gateway | control
 	Person  string // the person the token belongs to
+	UserID  string // set for a signed-in person (kind "session"), ADR 0018
+}
+
+// ActorID is how audit records name the principal: the token id, or
+// "user:<id>" for a signed-in person.
+func (p Principal) ActorID() string {
+	if p.TokenID == "" && p.UserID != "" {
+		return "user:" + p.UserID
+	}
+	return p.TokenID
 }
 
 // Permission is something a role may do.
@@ -36,13 +46,14 @@ const (
 	PermReadServers   Permission = "servers.read"
 	PermManagePolicy  Permission = "policy.manage"
 	PermDecide        Permission = "approvals.decide"
+	PermManageMembers Permission = "members.manage"
 )
 
 var grants = map[string]map[Permission]bool{
 	store.RoleOwner: {PermUseGateway: true, PermManageServers: true, PermManageTokens: true, PermReadAudit: true, PermManageAudit: true,
-		PermReadServers: true, PermManagePolicy: true, PermDecide: true},
+		PermReadServers: true, PermManagePolicy: true, PermDecide: true, PermManageMembers: true},
 	store.RoleAdmin: {PermUseGateway: true, PermManageServers: true, PermManageTokens: true, PermReadAudit: true, PermManageAudit: true,
-		PermReadServers: true, PermManagePolicy: true, PermDecide: true},
+		PermReadServers: true, PermManagePolicy: true, PermDecide: true, PermManageMembers: true},
 	store.RoleAuditor: {PermReadAudit: true, PermReadServers: true},
 	// Approvers decide approvals; they do not run tools, so a token that can
 	// approve is never in an AI client's hands.

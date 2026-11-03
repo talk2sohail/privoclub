@@ -24,6 +24,7 @@ import (
 	"privo.club/privo/internal/approval"
 	"privo.club/privo/internal/audit"
 	"privo.club/privo/internal/githubauth"
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/store"
@@ -260,6 +261,12 @@ type env struct {
 	clock     *clock
 	pub       string
 	logs      *syncBuffer
+	keys      *keyring.Keyring
+	// set by newConnEnv (ADR 0017)
+	as   *fakeAS
+	ups  *fakeUpstreams
+	svc  *grants.Service
+	osrv store.Server
 }
 
 type syncBuffer struct {
@@ -282,6 +289,11 @@ func (s *syncBuffer) String() string {
 type envOpt func(*Options)
 
 func newEnv(t *testing.T, opts ...envOpt) *env {
+	t.Helper()
+	return newEnvWith(t, false, opts...)
+}
+
+func newEnvWith(t *testing.T, conn bool, opts ...envOpt) *env {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -316,13 +328,21 @@ func newEnv(t *testing.T, opts ...envOpt) *env {
 		GitHub:    &githubauth.Client{ClientID: ghClientID, ClientSecret: ghClientSecret, BaseURL: gu, APIURL: au, HTTP: gh.srv.Client()},
 		PublicURL: pu, IdleTimeout: 2 * time.Hour, MaxAge: 12 * time.Hour,
 	}
+	var cx *connParts
+	if conn {
+		cx = newConnParts(t, st, org.ID, kr, pu, clk, logger)
+		o.Grants, o.OAuth, o.Upstream = cx.svc, cx.oauth, cx.ups
+	}
 	for _, f := range opts {
 		f(&o)
 	}
 	srv := New(o)
 	mux := http.NewServeMux()
 	srv.Routes(mux)
-	e := &env{t: t, st: st, org: org.ID, dataDir: dir, approvals: svc, audit: aw, gh: gh, srv: srv, handler: mux, clock: clk, logs: logs}
+	e := &env{t: t, st: st, org: org.ID, dataDir: dir, approvals: svc, audit: aw, gh: gh, srv: srv, handler: mux, clock: clk, logs: logs, keys: kr}
+	if cx != nil {
+		e.as, e.ups, e.svc, e.osrv = cx.as, cx.ups, cx.svc, cx.srv
+	}
 	if o.PublicURL != nil {
 		e.pub = strings.TrimSuffix(o.PublicURL.String(), "/")
 	}

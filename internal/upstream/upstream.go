@@ -92,6 +92,11 @@ type Options struct {
 	MaxLoadBytes     int           // definitions of one load together: default 8 MiB
 	MaxPages         int           // pages of one list: default 100
 	RefreshGap       time.Duration // least time between two refreshes of one server: default 5 s
+
+	// Grants hands out upstream OAuth tokens (ADR 0017); nil refuses oauth servers.
+	Grants   GrantSource
+	PoolIdle time.Duration // a per-person session closes after this long unused: default 5 min
+	PoolCap  int           // per-person sessions kept at most: default 500
 }
 
 // Manager supervises upstream connections for every org.
@@ -101,6 +106,11 @@ type Manager struct {
 	syncMu  sync.Mutex // serialises Sync so a stale snapshot never wins
 	mu      sync.Mutex
 	entries map[string]*entry // by server id
+
+	poolMu     sync.Mutex
+	pool       map[poolKey]*pooled
+	connecting map[poolKey]*pending
+	reaperStop chan struct{}
 }
 
 type entry struct {
@@ -111,6 +121,7 @@ type entry struct {
 	mu      sync.Mutex
 	state   ServerState
 	session *mcp.ClientSession
+	kick    chan struct{} // ends the wait before the next connection attempt
 
 	loading  atomic.Bool  // a refresh is running
 	dirty    atomic.Bool  // another refresh was requested meanwhile
@@ -142,6 +153,12 @@ func New(o Options) *Manager {
 	}
 	if o.Logger == nil {
 		o.Logger = slog.Default()
+	}
+	if o.PoolIdle <= 0 {
+		o.PoolIdle = DefaultPoolIdle
+	}
+	if o.PoolCap <= 0 {
+		o.PoolCap = DefaultPoolCap
 	}
 	return &Manager{opts: o, entries: map[string]*entry{}}
 }
@@ -176,7 +193,7 @@ func (m *Manager) Sync(ctx context.Context, org store.OrgID) error {
 		if _, ok := m.entries[id]; ok {
 			continue
 		}
-		e := &entry{org: org, srv: s, done: make(chan struct{})}
+		e := &entry{org: org, srv: s, done: make(chan struct{}), kick: make(chan struct{}, 1)}
 		m.entries[id] = e
 		if !s.Enabled {
 			e.state.Status = StatusDisabled
@@ -192,6 +209,7 @@ func (m *Manager) Sync(ctx context.Context, org store.OrgID) error {
 
 	for _, e := range stop {
 		e.stop()
+		m.ClosePerson(e.srv.ID, "")
 	}
 	return nil
 }
@@ -208,6 +226,7 @@ func (m *Manager) Close() {
 	for _, e := range all {
 		e.stop()
 	}
+	m.closePool()
 }
 
 func (e *entry) stop() {
@@ -324,6 +343,8 @@ func (m *Manager) supervise(ctx context.Context, e *entry) {
 		case <-ctx.Done():
 			return
 		case <-time.After(delay):
+		case <-e.kick:
+			attempt = 0
 		}
 	}
 }
@@ -343,7 +364,12 @@ func (m *Manager) connect(ctx context.Context, e *entry) (*mcp.ClientSession, co
 	if err != nil {
 		return nil, nil, err
 	}
-	transport, err := m.transport(ctx, e.srv, env, headers)
+	var transport mcp.Transport
+	if e.srv.Config.Auth == store.AuthOAuth {
+		transport, err = m.catalogTransport(ctx, e)
+	} else {
+		transport, err = m.transport(ctx, e.srv, env, headers)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -626,6 +652,11 @@ func (m *Manager) secrets(ctx context.Context, e *entry) (map[string]string, map
 	}
 	env, headers := map[string]string{}, map[string]string{}
 	for _, c := range creds {
+		// Only static secrets: people's grants and client secrets are not
+		// decrypted here (ADR 0017).
+		if !strings.HasPrefix(c.Purpose, "env:") && !strings.HasPrefix(c.Purpose, "header:") {
+			continue
+		}
 		dek, err := m.opts.Keys.DEK(ctx, e.org, c.KeyVersion)
 		if err != nil {
 			return nil, nil, err
@@ -660,17 +691,69 @@ func (m *Manager) transport(ctx context.Context, srv store.Server, env, headers 
 		}
 		return &mcp.CommandTransport{Command: cmd}, nil
 	case "http", "sse":
-		client, err := originLocked(m.opts.HTTPClient, srv.Config.URL, headers)
-		if err != nil {
-			return nil, err
-		}
-		client = limitBodies(client, m.opts.MaxResponseBytes)
-		if srv.Transport == "sse" {
-			return &mcp.SSEClientTransport{Endpoint: srv.Config.URL, HTTPClient: client}, nil
-		}
-		return &mcp.StreamableClientTransport{Endpoint: srv.Config.URL, HTTPClient: client, DisableStandaloneSSE: true, MaxRetries: -1}, nil
+		return m.httpTransport(srv, headers, nil)
 	}
 	return nil, fmt.Errorf("unknown transport %q", srv.Transport)
+}
+
+// httpTransport is the transport of a remote server: origin-locked, bounded,
+// and with a bearer token from auth when it is set.
+func (m *Manager) httpTransport(srv store.Server, headers map[string]string, auth *bearer) (mcp.Transport, error) {
+	if srv.Transport != "http" && srv.Transport != "sse" {
+		return nil, fmt.Errorf("transport %q cannot use OAuth", srv.Transport)
+	}
+	base := m.opts.HTTPClient
+	if base == nil {
+		base = http.DefaultClient
+	}
+	if auth != nil {
+		c := *base
+		next := c.Transport
+		if next == nil {
+			next = http.DefaultTransport
+		}
+		c.Transport = bearerRT{next: next, auth: auth}
+		base = &c
+	}
+	client, err := originLocked(base, srv.Config.URL, headers)
+	if err != nil {
+		return nil, err
+	}
+	client = limitBodies(client, m.opts.MaxResponseBytes)
+	if srv.Transport == "sse" {
+		return &mcp.SSEClientTransport{Endpoint: srv.Config.URL, HTTPClient: client}, nil
+	}
+	return &mcp.StreamableClientTransport{Endpoint: srv.Config.URL, HTTPClient: client, DisableStandaloneSSE: true, MaxRetries: -1}, nil
+}
+
+// catalogTransport is the transport an oauth server's catalog is loaded with:
+// the catalog grant's token, refreshed as needed.
+func (m *Manager) catalogTransport(ctx context.Context, e *entry) (mcp.Transport, error) {
+	if m.opts.Grants == nil {
+		return nil, errors.New("upstream OAuth is not available in this process")
+	}
+	if _, _, err := m.opts.Grants.CatalogAccessToken(ctx, e.org, e.srv); err != nil {
+		return nil, fmt.Errorf("the tool list needs an administrator's connected account (/connect/%s on the admin site): %w", e.srv.Alias, err)
+	}
+	var owner atomic.Value
+	org, srv := e.org, e.srv
+	auth := &bearer{
+		token: func(c context.Context) (string, error) {
+			uid, tok, err := m.opts.Grants.CatalogAccessToken(c, org, srv)
+			if err == nil {
+				owner.Store(uid)
+			}
+			return tok, err
+		},
+		refresh: func(c context.Context, old string) (string, error) {
+			uid, _ := owner.Load().(string)
+			if uid == "" {
+				return "", errors.New("no catalog grant")
+			}
+			return m.opts.Grants.RefreshAfterReject(c, org, srv, uid, old)
+		},
+	}
+	return m.httpTransport(e.srv, nil, auth)
 }
 
 // originLocked returns a client that only talks to the registered server's

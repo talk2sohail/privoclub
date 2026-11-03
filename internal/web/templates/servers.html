@@ -1,0 +1,51 @@
+{{define "content"}}
+<h1>Servers</h1>
+{{with .Flash}}<p class="flash {{.Class}}" role="status">{{.Text}}</p>{{end}}
+<p class="meta">MCP servers your team's AI clients reach through Privo.</p>
+{{if .Page.Servers}}
+<table class="list">
+  <thead><tr><th>Name</th><th>Status</th><th>Tools</th><th>Sign-in</th></tr></thead>
+  <tbody>
+{{range .Page.Servers}}    <tr>
+      <td><a href="/admin/servers/{{.Alias}}"><strong>{{.Alias}}</strong></a><br><small class="meta">{{.Target}}</small></td>
+      <td><span class="status {{.Status}}">{{.Status}}</span></td>
+      <td>{{.Tools}}{{if .Pending}} <a class="badge" href="/admin/servers/{{.Alias}}">{{.Pending}} to review</a>{{end}}</td>
+      <td>{{if eq .Auth "oauth"}}each person's own account{{else}}shared{{end}}</td>
+    </tr>
+{{end}}  </tbody>
+</table>
+{{else}}<p class="empty">No servers yet. Add the first one below.</p>{{end}}
+
+<section class="card">
+  <h2>Add a server</h2>
+  <form method="post" action="/admin/servers" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Name <small class="meta">lowercase letters, digits and dashes; AI clients see tools as name__tool</small>
+      <input name="alias" required pattern="[a-z][a-z0-9\-]{1,15}" value="{{index .Page.Form "alias"}}" placeholder="deepwiki"></label>
+    <label>Server URL
+      <input name="url" type="url" required value="{{index .Page.Form "url"}}" placeholder="https://mcp.example.com/mcp"></label>
+    <label>Transport
+      <select name="transport">
+        <option value="http"{{if ne (index .Page.Form "transport") "sse"}} selected{{end}}>Streamable HTTP (most servers)</option>
+        <option value="sse"{{if eq (index .Page.Form "transport") "sse"}} selected{{end}}>SSE (older servers)</option>
+      </select></label>
+    <fieldset>
+      <legend>How Privo signs in to it</legend>
+      <label class="inline"><input type="radio" name="auth" value="none"{{if or (eq (index .Page.Form "auth") "none") (eq (index .Page.Form "auth") "")}} checked{{end}}> No sign-in needed</label>
+      <label class="inline"><input type="radio" name="auth" value="header"{{if eq (index .Page.Form "auth") "header"}} checked{{end}}> A shared API key (sent as a header)</label>
+{{if .Page.CanOAuth}}      <label class="inline"><input type="radio" name="auth" value="oauth"{{if eq (index .Page.Form "auth") "oauth"}} checked{{end}}> Each person's own account (OAuth: GitHub, Linear, Notion…)</label>
+{{end}}    </fieldset>
+    <details>
+      <summary>API key header</summary>
+      <label>Header name <input name="header_name" value="{{index .Page.Form "header_name"}}" placeholder="Authorization"></label>
+      <label>Header value <small class="meta">stored encrypted, never shown again</small> <input name="header_value" type="password" autocomplete="off" placeholder="Bearer sk-…"></label>
+    </details>
+{{if .Page.CanOAuth}}    <details>
+      <summary>OAuth app (only if the provider needs one, like GitHub)</summary>
+      <label>Client ID <input name="client_id" value="{{index .Page.Form "client_id"}}"></label>
+      <label>Client secret <input name="client_secret" type="password" autocomplete="off"></label>
+    </details>
+{{end}}    <div class="actions"><button type="submit" class="primary">Add server</button></div>
+  </form>
+</section>
+{{end}}

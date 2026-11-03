@@ -28,6 +28,7 @@ import (
 	"privo.club/privo/internal/githubauth"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/upstreamauth"
 )
 
 //go:embed templates/*.html assets/app.css
@@ -64,6 +65,14 @@ type Store interface {
 	DeleteSession(ctx context.Context, org store.OrgID, hash string, ev store.AuditEvent) error
 	PruneSignIn(ctx context.Context, org store.OrgID, now time.Time, idle time.Duration) error
 	ListApprovals(ctx context.Context, org store.OrgID, status string, limit int) ([]store.Approval, error)
+
+	// Invites and upstream connections (ADR 0017).
+	Invite(ctx context.Context, org store.OrgID, secretHash string, now time.Time) (store.Invite, error)
+	ClaimInvite(ctx context.Context, org store.OrgID, c store.Claim, ev store.AuditEvent) (store.User, error)
+	ListServers(ctx context.Context, org store.OrgID) ([]store.Server, error)
+	ServerByAlias(ctx context.Context, org store.OrgID, alias string) (store.Server, error)
+	ServerByID(ctx context.Context, org store.OrgID, id string) (store.Server, error)
+	ListGrants(ctx context.Context, org store.OrgID, userID string) ([]store.Grant, error)
 }
 
 // Auditor writes admin audit events.
@@ -94,6 +103,16 @@ type Options struct {
 	// Missing names what is not configured. A Server with anything missing
 	// answers every request with 503 and says what to set.
 	Missing []string
+
+	// Upstream connections (ADR 0017); without all three the connect pages
+	// are not served.
+	Grants   Grants
+	OAuth    *upstreamauth.Client
+	Upstream Upstreams
+
+	// API is the admin API in process (ADR 0018); without it the admin
+	// pages (servers, rules, people, tokens, activity) are not served.
+	API API
 }
 
 // Server is the admin website.
@@ -108,6 +127,7 @@ type Server struct {
 	secure                     bool
 	csp                        string
 	callback                   string
+	connectCallback            string
 	missing                    []string
 	sessionCookie, stateCookie string
 }
@@ -131,7 +151,8 @@ func New(o Options) *Server {
 	if s.o.StateCap <= 0 {
 		s.o.StateCap = DefaultStateCap
 	}
-	for _, name := range []string{"signin", "setup", "message", "approvals"} {
+	for _, name := range []string{"signin", "setup", "message", "approvals", "invite", "connect", "connections",
+		"servers", "server", "rules", "people", "tokens", "activity"} {
 		s.tmpl[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+name+".html"))
 	}
 
@@ -143,6 +164,7 @@ func New(o Options) *Server {
 		s.origin = originOf(u)
 		s.secure = u.Scheme == "https"
 		s.callback = s.origin + "/auth/github/callback"
+		s.connectCallback = upstreamauth.CallbackURL(&url.URL{Scheme: u.Scheme, Host: u.Host})
 	}
 	if o.GitHub != nil && o.GitHub.BaseURL != nil {
 		// Chrome applies form-action to the redirect that follows a form post,
@@ -181,6 +203,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 		off := s.wrap(s.disabled)
 		mux.Handle("/admin/", off)
 		mux.Handle("/auth/", off)
+		mux.Handle("/connect/", off)
 		return
 	}
 	mux.Handle("GET /admin/assets/app.css", s.wrap(s.stylesheet))
@@ -193,6 +216,38 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /admin/approvals/{id}/approve", s.wrap(s.decide(true)))
 	mux.Handle("POST /admin/approvals/{id}/deny", s.wrap(s.decide(false)))
 	mux.Handle("POST /admin/signout", s.wrap(s.signOut))
+	mux.Handle("GET /admin/invite/{token}", s.wrap(s.invitePage))
+	if s.connections() {
+		mux.Handle("GET /admin/connections", s.wrap(s.connectionsPage))
+		mux.Handle("POST /admin/connections/{alias}/disconnect", s.wrap(s.disconnect))
+		mux.Handle("GET /connect/callback", s.wrap(s.connectCallbackHandler))
+		mux.Handle("GET /connect/{alias}", s.wrap(s.connectPage))
+		mux.Handle("POST /connect/{alias}/start", s.wrap(s.connectStart))
+		mux.Handle("GET /oauth/client-metadata.json", http.HandlerFunc(s.clientMetadata))
+	}
+	if s.uiEnabled() {
+		mux.Handle("GET /admin/servers", s.wrap(s.serversPage))
+		mux.Handle("POST /admin/servers", s.wrap(s.addServer))
+		mux.Handle("GET /admin/servers/{alias}", s.wrap(s.serverPage))
+		mux.Handle("POST /admin/servers/{alias}/accept", s.wrap(s.acceptTools))
+		mux.Handle("POST /admin/servers/{alias}/enabled", s.wrap(s.setServerEnabled))
+		mux.Handle("POST /admin/servers/{alias}/delete", s.wrap(s.deleteServer))
+		mux.Handle("POST /admin/servers/{alias}/connections/{person}/remove", s.wrap(s.removeConnection))
+		mux.Handle("GET /admin/rules", s.wrap(s.rulesPage))
+		mux.Handle("POST /admin/rules", s.wrap(s.addRule))
+		mux.Handle("POST /admin/rules/default", s.wrap(s.setDefaultRule))
+		mux.Handle("POST /admin/rules/{id}/delete", s.wrap(s.deleteRule))
+		mux.Handle("GET /admin/people", s.wrap(s.peoplePage))
+		mux.Handle("POST /admin/people/invite", s.wrap(s.invitePerson))
+		mux.Handle("POST /admin/people/{person}/role", s.wrap(s.setRole))
+		mux.Handle("POST /admin/people/{person}/remove", s.wrap(s.removePerson))
+		mux.Handle("GET /admin/tokens", s.wrap(s.tokensPage))
+		mux.Handle("POST /admin/tokens", s.wrap(s.createToken))
+		mux.Handle("POST /admin/tokens/mine", s.wrap(s.createMyToken))
+		mux.Handle("POST /admin/tokens/mine/{id}/revoke", s.wrap(s.revokeToken(true)))
+		mux.Handle("POST /admin/tokens/{id}/revoke", s.wrap(s.revokeToken(false)))
+		mux.Handle("GET /admin/activity", s.wrap(s.activityPage))
+	}
 }
 
 // Prune deletes sessions, sign-ins in flight and setup links that can no longer
@@ -264,9 +319,28 @@ type pageData struct {
 
 	// approvals page
 	Approvals []approvalView
+
+	// sign-in, invite, connect and connections pages
+	ReturnTo           string
+	InviteToken        string
+	Person, Role       string
+	Server, AuthHost   string
+	Scopes             string
+	Connections        []connectionView
+	CanConnect         bool
+	ConnectionsEnabled bool
+
+	// admin pages (ADR 0018)
+	UIEnabled bool
+	Page      map[string]any
 }
 
-type userView struct{ Name, Person, Role string }
+type userView struct {
+	Name, Person, Role string
+	CanDecide          bool // shows the approvals link
+	// what the navigation shows (ADR 0018)
+	CanServers, CanRules, CanPeople, CanTokens, CanActivity, UsesGateway bool
+}
 
 type flash struct{ Class, Text string }
 
@@ -280,6 +354,8 @@ type approvalView struct {
 }
 
 func (s *Server) render(w http.ResponseWriter, status int, name string, d pageData) {
+	d.ConnectionsEnabled = s.connections()
+	d.UIEnabled = s.uiEnabled()
 	var buf bytes.Buffer
 	if err := s.tmpl[name].ExecuteTemplate(&buf, "base", d); err != nil {
 		s.log.Error("web: render", "page", name, "err", err)
@@ -320,19 +396,26 @@ func (s *Server) stylesheet(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) home(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.session(r); ok {
-		redirect(w, "/admin/approvals")
+	if _, u, ok := s.session(r); ok {
+		redirect(w, s.landing(u))
 		return
 	}
 	redirect(w, "/admin/signin")
 }
 
 func (s *Server) signInPage(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.session(r); ok {
-		redirect(w, "/admin/approvals")
+	next := r.URL.Query().Get("next")
+	if !returnToRe.MatchString(next) || !s.connections() {
+		next = ""
+	}
+	if _, u, ok := s.session(r); ok {
+		if next == "" {
+			next = s.landing(u)
+		}
+		redirect(w, next)
 		return
 	}
-	s.render(w, http.StatusOK, "signin", pageData{Title: "Sign in"})
+	s.render(w, http.StatusOK, "signin", pageData{Title: "Sign in", ReturnTo: next})
 }
 
 // ---- cookies, sessions and request checks
@@ -369,11 +452,15 @@ func (s *Server) session(r *http.Request) (store.Session, store.User, bool) {
 
 // principal is who a signed-in person is, in the terms the permission table uses.
 func (s *Server) principal(u store.User) auth.Principal {
-	return auth.Principal{OrgID: s.o.Org, Name: u.Person, Role: u.Role, Kind: kindSession, Person: u.Person}
+	return auth.Principal{OrgID: s.o.Org, Name: u.Person, Role: u.Role, Kind: kindSession, Person: u.Person, UserID: u.ID}
 }
 
 func view(u store.User) *userView {
-	return &userView{Name: u.DisplayName, Person: u.Person, Role: u.Role}
+	p := auth.Principal{Role: u.Role}
+	return &userView{Name: u.DisplayName, Person: u.Person, Role: u.Role,
+		CanDecide: p.Can(auth.PermDecide), CanServers: p.Can(auth.PermManageServers), CanRules: p.Can(auth.PermManagePolicy),
+		CanPeople: p.Can(auth.PermManageMembers), CanTokens: p.Can(auth.PermUseGateway) || p.Can(auth.PermManageTokens),
+		CanActivity: p.Can(auth.PermReadAudit), UsesGateway: p.Can(auth.PermUseGateway)}
 }
 
 // sameOrigin accepts a request that comes from this site's own pages. The

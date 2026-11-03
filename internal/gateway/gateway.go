@@ -18,8 +18,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -30,6 +32,7 @@ import (
 	"privo.club/privo/internal/audit"
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/buildinfo"
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/policy"
@@ -53,6 +56,7 @@ type Store interface {
 	PinStatuses(ctx context.Context, org store.OrgID, serverID string) (map[store.PinKey]string, error)
 	Setting(ctx context.Context, org store.OrgID, key, def string) (string, error)
 	ListPolicies(ctx context.Context, org store.OrgID) ([]store.Policy, error)
+	UserByPerson(ctx context.Context, org store.OrgID, person string) (store.User, error)
 }
 
 // Gateway is the MCP data plane.
@@ -371,7 +375,7 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	}
 
 	outcome := "error"
-	session, err := g.Upstream.Session(c.p.OrgID, c.item.ServerID)
+	session, err := g.session(ctx, c)
 	if err == nil {
 		outcome, err = g.callUpstream(ctx, c, session, do)
 	}
@@ -381,6 +385,48 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 		g.Logger.Error("audit completion not queued", "err", aerr)
 	}
 	return g.clientFacing(c, err)
+}
+
+// session picks the upstream session for a call: the server's shared one, or,
+// for a server where each person uses their own account (ADR 0017), one that
+// carries the caller's own grant. It never falls back to someone else's.
+func (g *Gateway) session(ctx context.Context, c call) (*mcp.ClientSession, error) {
+	if !g.Upstream.PerPerson(c.item.ServerID) {
+		return g.Upstream.Session(c.p.OrgID, c.item.ServerID)
+	}
+	if c.p.Person == "" {
+		return nil, noAccount(c.item.Alias)
+	}
+	u, err := g.Store.UserByPerson(ctx, c.p.OrgID, c.p.Person)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
+		return nil, noAccount(c.item.Alias)
+	}
+	if err != nil {
+		return nil, err
+	}
+	s, err := g.Upstream.PersonSession(ctx, c.p.OrgID, c.item.ServerID, u.ID)
+	if errors.Is(err, grants.ErrNotConnected) {
+		return nil, g.connectFirst(c.item.Alias)
+	}
+	return s, err
+}
+
+// accountError is a call that needs the person to act in the browser first. Its
+// text is fixed and safe to show to the AI client and the person.
+type accountError struct{ msg string }
+
+func (e *accountError) Error() string { return e.msg }
+
+func noAccount(alias string) error {
+	return &accountError{fmt.Sprintf("%q runs with each person's own account, and this token's person has no Privo account. Ask an administrator for an invite (privo admin invite).", alias)}
+}
+
+func (g *Gateway) connectFirst(alias string) error {
+	if g.BaseURL == "" {
+		return &accountError{fmt.Sprintf("Connect your %s account on the Privo admin site first, then try again.", alias)}
+	}
+	link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias)
+	return &accountError{fmt.Sprintf("Connect your %s account first: open %s in your browser, then try again.", alias, link)}
 }
 
 // errCallTimeout means the upstream did not answer within Gateway.CallTimeout.
@@ -436,7 +482,8 @@ func (g *Gateway) clientFacing(c call, err error) error {
 		g.Logger.Warn("upstream sent a reply the gateway does not relay", "server", c.item.Alias, "action", c.action, "err", err)
 		return err
 	}
-	if errors.As(err, &r) || errors.Is(err, upstream.ErrUnavailable) || errors.Is(err, errCallTimeout) {
+	var acct *accountError
+	if errors.As(err, &r) || errors.As(err, &acct) || errors.Is(err, upstream.ErrUnavailable) || errors.Is(err, errCallTimeout) {
 		return err
 	}
 	g.Logger.Warn("upstream call failed", "server", c.item.Alias, "action", c.action, "err", upstream.RedactText(err.Error()))
@@ -505,8 +552,12 @@ func (g *Gateway) callTool(ctx context.Context, p auth.Principal, params *mcp.Ca
 		// not as a protocol error.
 		text := "call failed: " + err.Error()
 		var r *refusal
-		if errors.As(err, &r) {
+		var acct *accountError
+		switch {
+		case errors.As(err, &r):
 			text = r.msg
+		case errors.As(err, &acct):
+			text = acct.msg
 		}
 		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: text}}}, nil //nolint:nilerr // see comment above
 	}

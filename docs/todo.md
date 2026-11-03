@@ -70,7 +70,7 @@ ADRs: 0001, 0004
 - [x] Security review of milestone 1: 4 high, 4 medium, 4 low findings, all fixed (docs/reviews/2026-10-28-milestone-1-security-review.md)
 - [ ] Tests for the admin API (token revocation ranks, header validation) and refresh coalescing
 - [x] `/version` stays unauthenticated (owner's decision, 2026-10-29). It now shows only the semantic version and the Go version, no commit or build date (see the next item)
-- [x] Versioning follows semver (owner's decision, 2026-10-29): the version is the line in `internal/buildinfo/VERSION` (now `0.3.0`), embedded in the binary, so Coolify builds report it without build arguments; `/version` and `privo version` return `{version, go_version}` and no longer a commit hash or build date; the ldflags and Dockerfile build arguments for version, commit and date are gone. Rules for bumping are in `docs/versioning.md`. Tests: `internal/buildinfo` `TestVersionIsSemver`, `TestSemverGrammar`, `TestGetShape`; `internal/server` `TestEndpoints`; `cmd/privo` `TestVersion`
+- [x] Versioning follows semver (owner's decision, 2026-10-29): the version is the line in `internal/buildinfo/VERSION` (now `0.5.0`), embedded in the binary, so Coolify builds report it without build arguments; `/version` and `privo version` return `{version, go_version}` and no longer a commit hash or build date; the ldflags and Dockerfile build arguments for version, commit and date are gone. Rules for bumping are in `docs/versioning.md`. Tests: `internal/buildinfo` `TestVersionIsSemver`, `TestSemverGrammar`, `TestGetShape`; `internal/server` `TestEndpoints`; `cmd/privo` `TestVersion`
 - [x] The master key moved from the `PRIVO_MASTER_KEY` variable to a file mount (owner's decision, 2026-10-29): `PRIVO_MASTER_KEY_FILE=/run/secrets/privo_master_key` on Coolify, the variable deleted, both deploys healthy, the "master key given as PRIVO_MASTER_KEY" warning gone. Steps and the password-manager backup note are in `docs/deploy-coolify.md`. To be streamlined with the admin UI
 - [x] CI lint fixed (2026-10-29): `errorlint` flagged `err != want` in `internal/gateway/resulttype_test.go` (now `errors.Is`); it was the only finding. While checking, `go test -race` on the acceptance suite showed 23 data races in the harness (the gateway's log buffer was read by the test while the process wrote it): `logBuffer` in `test/acceptance/harness_test.go` now has a lock, and the suite passes under `-race`. `/_to_delete/` is in `.gitignore`
 - [x] The acceptance job in `.github/workflows/ci.yml` is a real gate (owner's go-ahead, 2026-10-29): `continue-on-error` and the stale "allowed to fail until F02" comments (workflow, Makefile) removed; the suite passes, also under `-race`
@@ -249,7 +249,7 @@ verifier are stored in the clear for the life of a session and ten minutes.
 
 ### Later in F05
 
-- [ ] Orgs, members, roles, groups, invites (invites must not bind by GitHub login)
+- [ ] Orgs, members, roles, groups (invites came with F07: `privo admin invite`, bound by the numeric GitHub id; a members page and role changes in the browser are still to do)
 - [ ] Google and Microsoft OIDC; magic-link fallback
 - [ ] Restrict sign-in by GitHub organisation membership (`read:org`)
 - [ ] Step-up re-authentication for high-risk actions
@@ -268,12 +268,106 @@ ADRs: 0003
 - [ ] Tests with real clients: Claude Code, Cursor, Amp, Codex
 
 ## F07. Upstream OAuth broker
-Status: Not started
-ADRs: 0003
+Status: In progress (first slice built and tested 2026-11-01: each person connects their own account; independent review open)
+ADRs: 0003, 0017
 
-- [ ] Per-user connect flow, refresh, rotation
-- [ ] Shared credentials chosen by admins
-- [ ] "Connect your account" error with link
+### First slice: goal
+
+An admin adds a remote MCP server that uses OAuth (GitHub, Linear, Notion,
+Atlassian, Sentry) and connects their own account so Privo can read its tools.
+Each teammate, invited with a link, connects their own account once in the
+browser. From then on every tool call on that server runs with the caller's own
+upstream grant, refreshed by Privo, so upstream permissions and the audit stay
+honest. A call by someone who has not connected fails with a link to connect.
+Not in this slice: URL-mode elicitation and input-required, shared org-wide
+credentials, scope step-up, an admin view of everyone's connections in the
+browser.
+
+### First slice: acceptance
+
+1. **Auth mode.** A server is `auth: none` (unchanged behaviour) or
+   `auth: oauth` (http and sse only). The API accepts a client id, a write-only
+   client secret, scopes and an expected issuer; it never returns the secret.
+2. **Discovery** (ADR 0017 point 2) runs when the server is added or changed,
+   through the egress client; a server whose resource metadata names another
+   resource, whose issuer differs from where it was fetched, or whose AS lacks
+   S256 is refused with a message that names the problem.
+3. **Registration** in the spec's order: admin credentials, then a client ID
+   metadata document served at `/oauth/client-metadata.json`, then dynamic
+   registration (secret in the vault); with none, the API says what to supply.
+4. **Connect flow.** `/connect/<alias>` needs a session; the page names the
+   user, server, AS host and scopes; a CSRF-protected POST starts it; `state`
+   is single use, 10 minutes, bound to the session and a cookie nonce; the
+   request carries `resource`, scopes and S256; the callback needs the same
+   session, checks `iss`, exchanges the code with the verifier and `resource`,
+   and stores nothing on any error. The CSP of the connect page allows the AS
+   origin in `form-action`.
+5. **Grants** are encrypted per org, server and user, bound to that owner and
+   server, never returned or logged.
+6. **Calls** run with the caller's own grant on a pooled per-person session
+   (5 minutes idle, at most 500). The bearer token goes only to the server's
+   origin. No grant: a tool error with the connect link. No user for the
+   person: a tool error that says to ask for an invite. Never another person's
+   grant.
+7. **Refresh** before expiry and once after `invalid_token`; single-flight;
+   row-version compare-and-swap; `invalid_grant` drops the grant and the next
+   call gets the link.
+8. **Disconnect** (own, or any through the API by an admin): revocation when
+   offered, grant deleted, sessions closed. Disabling a user or deleting a
+   server deletes the grants.
+9. **Invites:** `privo admin invite` and `POST /api/v1/invites`, single use, 72
+   hours, hash stored, role set by the link, account bound by numeric id.
+10. **Audit:** `invite.create`, `invite.claim`, `server.oauth_register:<alias>`,
+    `upstream.connect:<alias>`, `upstream.disconnect:<alias>`,
+    `upstream.grant_lost:<alias>`.
+
+### First slice: tasks and the tests that name them
+
+- [x] Spec and ADR 0017 (this section)
+- [x] Store: migration `00005_upstream_oauth.sql` (`invites`, `upstream_grants` with one catalog grant per server, connect and invite fields and `return_to` on `oauth_states`); tokens and client secrets are credentials (`oauth`, `oauth:client`); a server's OAuth settings live in its config (`ServerConfig.Auth`, `ServerOAuth`)
+  - tests: `TestInviteSingleUseRoleAndExpiry`, `TestInviteBindsTheAccountNotTheLogin`, `TestGrantOnePerServerAndUser`, `TestCatalogGrantFirstManagerAndPromotion`, `TestGrantCompareAndSwap`, `TestDisableUserDeletesGrants`, `TestDeleteServerDeletesGrants`, `TestServerOAuthConfigAndClientSecret`, `TestConnectStateCarriesUserSessionServerIssuer`, `TestPruneRemovesDeadInvites`, `TestUpstreamOAuthTablesIsolatedPerOrg`, `TestUpstreamOAuthSchemaHasNoSecretColumns`
+- [x] Discovery, registration and token requests (`internal/upstreamauth`), every request through the egress client, bounded, no redirects followed
+  - tests: `TestResourceMetadataFromWWWAuthenticate`, `TestResourceMetadataWellKnownFallback`, `TestResourceMismatchRefused`, `TestAuthServerMetadataRFC8414ThenOIDC`, `TestIssuerMismatchRefused`, `TestAuthServerWithoutS256Refused`, `TestDiscoveryRefusesPrivateAddressesAndOtherHosts`, `TestDiscoveryAnswersAreBounded`, `TestRegistrationOrder`, `TestNoRegistrationPathNamesWhatToSupply`, `TestClientMetadataDocument`, `TestDynamicRegistration`, `TestAuthorizeURLCarriesResourceScopesAndS256`, `TestExchangeSendsVerifierResourceAndClientAuth`, `TestRefreshSendsResourceAndKeepsOldRefreshToken`, `TestTokenErrorsAreClassifiedAndNotRepeated`, `TestRevoke`, `TestTokenNeverPrints`, `TestParseBearer`
+- [x] Grant service (`internal/grants`): seal, hand out, refresh single-flight with compare-and-swap, disconnect, register again
+  - tests: `TestNotConnected`, `TestSaveSealsBoundToOwnerAndServer`, `TestRefreshBeforeExpiry`, `TestRefreshOnceAfterInvalidToken`, `TestConcurrentRefreshIsSingleFlight`, `TestRefreshSurvivesCallerCancel`, `TestInvalidGrantDropsTheGrant`, `TestRaceLoserReadsTheWinnersToken`, `TestDisconnectRevokesAndDeletes`, `TestClientSecretAndCIMDEndpoint`, `TestTokensNeverInLogsAuditOrErrors`
+- [x] Admin API: `oauth` on new http/sse servers (`auth`, `registration`, `connect_url` in the server view), `POST /api/v1/invites`, `GET /api/v1/servers/{alias}/connections`, `DELETE /api/v1/servers/{alias}/connections/{person}` (covered by the acceptance tests below)
+- [x] Web: invite page and claim, connect flow, connections page, sign-in that returns to a connect link, client ID metadata document (`internal/web`)
+  - tests: `TestConnectNeedsASession`, `TestSignInReturnsToTheConnectPage`, `TestConnectPageNamesUserServerHostAndScopes`, `TestConnectCSPAllowsOnlyThatAuthServer`, `TestConnectStartNeedsCSRFAndSameOrigin`, `TestConnectSuccessStoresAnEncryptedGrant`, `TestConnectStateSingleUseExpiresAndBoundToBrowser`, `TestConnectCallbackNeedsTheSameSession`, `TestConnectIssMismatchRefused`, `TestConnectErrorStoresNothing`, `TestConnectionsPageListsOwnGrantsOnly`, `TestDisconnectRevokesAndDeletes`, `TestInviteClaimCreatesMemberWithRole`, `TestInviteRefusedForExistingMember`, `TestClientMetadataDocumentIsServed`, `TestMembersLandOnConnectionsApproversOnApprovals`, `TestDynamicRegistrationRetriedWhenRejected`, `TestNavShowsApprovalsOnlyToDeciders`
+- [x] Data plane: per-person sessions and token injection (`internal/upstream`, `internal/gateway`)
+  - tests: `TestCatalogReadWithTheAdminsGrant`, `TestCatalogWaitsForAnAdminAndKickBringsItUp`, `TestCallUsesTheCallersGrant`, `TestCallNeverUsesAnotherPersonsGrant`, `TestDisconnectStopsAPooledSessionAtOnce`, `TestRefreshOnceAfterInvalidTokenOnTheWire`, `TestBearerOnlySentToTheServerOrigin`, `TestSessionPoolIdleCloseAndCap`, `TestConcurrentFirstCallsShareOneConnection`, `TestNoGrantGivesTheConnectLink`, `TestNoUserGivesTheInviteMessage`
+- [x] CLI `privo admin invite`
+  - tests: `TestInvitePrintsOnceStoresHash`, `TestInviteAudited`, `TestInviteNeedsPersonAndValidRole`
+- [x] Acceptance with the real binary and a fixture that is both an MCP server needing a bearer token (its tool answers with the token's subject) and its authorization server (PKCE, `resource`, redirect URI, rotating refresh tokens): `TestUpstreamOAuthTwoPeople` (admin adds the server and connects, invites a member, the member's first call gets the link, the member connects, each person's call reaches the upstream as themselves, a stranger is told to ask for an invite, refresh after the upstream drops the access tokens, the connections list, disconnect by the person and by an admin, audit, no code or token in the logs), `TestUpstreamOAuthPreRegisteredClient`, `TestUpstreamOAuthDynamicRegistration` (with the refused configurations and roles)
+- [x] Real browser run (headless Chromium, 2026-11-01): owner setup, connect (the post-then-redirect to the authorization server passes the CSP), invite claimed on a phone-sized screen, connect, disconnect, a used invite is 404, a member gets 403 on approvals; no CSP or console errors besides that 403. Led to hiding the approvals link from people who cannot decide.
+- [x] Docs: README (invites, servers where each person uses their own account), ADR 0017 (registration per server, token requests without `x/oauth2`, what building found), version 0.4.0
+- [ ] Scope step-up: `TestInsufficientScopeNamesTheScope` was planned; a 403 `insufficient_scope` ends in the gateway's generic failure message today (later in F07)
+- [ ] Independent review (auth, secrets, tenancy, the request pipeline: required by CLAUDE.md)
+
+### First slice: threat note
+
+Assets: every person's upstream tokens (they reach the person's GitHub, Notion,
+Linear data); the registration secrets; the binding between a Privo person and
+an upstream account.
+Attackers: a website the person visits (login CSRF into the connect flow, so
+the victim's Privo account gets the attacker's upstream account, or the other
+way round); a malicious or compromised authorization server (mix-up: sending a
+code meant for another AS, SSRF through metadata URLs, huge answers); a hostile
+upstream MCP server (trying to make Privo send the bearer elsewhere); another
+member of the org (using someone else's grant); an AI agent (tool arguments
+that try to reach the connect flow, which needs a browser session).
+Mitigations: ADR 0017 points 2 to 8 and the acceptance points above.
+Residual risks: the catalog is read with an admin's grant; upstream tokens are
+as safe as the master key; Privo cannot always tell which upstream account a
+person connected; the connect link travels through AI clients in error text
+until URL elicitation lands.
+
+### Later in F07
+
+- [ ] URL-mode elicitation (2025-11-25) and input-required (2026-07-28) for the connect link
+- [ ] Shared org-wide credentials, only by explicit admin choice and with a policy limiting the tools
+- [ ] Scope step-up on `insufficient_scope`
+- [ ] Admin page of everyone's connections
+- [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ## F08. Toolsets
 Status: Not started
@@ -350,9 +444,50 @@ ADRs: 0007
 - [ ] Isolated network; egress allow-list proxy
 
 ## F14. Admin UI
-Status: Not started
+Status: In progress (first slice built 2026-11-03: every admin step without curl; independent review open)
+ADRs: 0016, 0017, 0018
 
-- [ ] Servers, people, toolsets, policies, approvals, audit screens
+### First slice: goal
+
+After claiming the setup link, the owner does everything in the browser: adds
+a server, reviews its tools, sets rules, invites people, gives each AI client
+a token, and reads what happened. As simple as possible: plain pages, one
+form per task, no script.
+
+### First slice: acceptance
+
+1. Pages call the admin API in process as the signed-in person (ADR 0018); a
+   page can do exactly what the person's role can do through the API, and every
+   action is audited with the person as actor (`user:<id>`).
+2. Navigation shows only the pages the role can use.
+3. Every form posts with the session's CSRF token and passes the origin check;
+   errors from the API are shown on the page in plain words.
+4. Everything an upstream or a person controls (tool names and descriptions,
+   server errors, names) is escaped; no inline script or style anywhere.
+5. Tokens are shown once, on the page that created them, with the MCP address
+   and a ready-to-paste command for Claude Code.
+6. Members: owners alone grant or change owner and admin; nobody changes their
+   own role or removes themselves; the last owner cannot be demoted. Removing a
+   member ends their sessions, deletes their upstream grants and revokes every
+   active token that carries their person.
+
+### First slice: tasks and the tests that name them
+
+- [x] Spec and ADR 0018 (this section); CLAUDE.md stack line
+- [x] `control.API.Serve` for session principals; `auth.Principal.UserID` and `ActorID()` (audit actor `user:<id>`); `auth.PermManageMembers` (owners, admins)
+  - tests: `TestServeRunsHandlersAsTheSessionUser`, `TestServeChecksPermissions`, `TestServeAuditsTheUser`, `TestServeIsNotReachableOverHTTP`
+- [x] Members and own-token endpoints (`/api/v1/members`, `/api/v1/me/tokens`); `store.ListUsers`; removing a member also closes their pooled upstream sessions
+  - tests: `TestMembersRoleRules`, `TestLastOwnerCannotBeRemovedOrDemoted`, `TestRemoveMemberRevokesTokensSessionsAndGrants`, `TestMyTokensAreOnlyMine`
+- [x] Pages: servers, server, rules, people, tokens, activity; owners and admins land on Servers, members on Tokens, auditors on Activity
+  - tests: `TestNavByRole`, `TestPagesNeedSignInAndRole`, `TestServersPageListsAndAdds` (API errors shown, secrets never echoed), `TestServerPageReviewsTools`, `TestUpstreamTextIsEscaped`, `TestRulesPage`, `TestPeoplePage`, `TestTokensPageShowsTheTokenOnce`, `TestActivityPage`, `TestEveryFormNeedsCSRF`, `TestManagersLandOnServers`, `TestMembersLandOnTokens`
+- [x] Acceptance through the real binary with a browser-like client: `TestAdminUIFromScratch` (setup link, add a server, accept its tool, add an ask rule, invite a member, the member makes their token, the call waits, approve, activity, remove the member and their token stops working)
+- [x] Real browser walkthrough from an empty install (Chromium, 2026-11-03): no console or CSP errors; it led to an escaped `pattern` attribute (Chrome compiles it with the `v` flag), shorter decision and approver text in Activity, and members landing on Tokens
+- [x] Docs: README, deploy guide, `docs/manual-test.md` (the test plan, browser only); version 0.5.0
+
+### Later in F14
+
+- [ ] Toolsets (F08), context-cost report (F17), policy presets in the page
+- [ ] Re-enabling a removed member; editing a server
 
 ## F15. Coolify deployment
 Status: Not started

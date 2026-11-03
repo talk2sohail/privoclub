@@ -87,9 +87,18 @@ People approve calls at `https://app.privo.club/admin/approvals` with their GitH
 
 Treat the setup link as a secret until it is used. It sits in the URL path, so a proxy's access log may record it; once claimed it is worthless, and unclaimed it expires after an hour.
 
-Later sign-ins: `https://app.privo.club/admin/signin`. Sessions end after 2 hours without a request or 12 hours in all (`PRIVO_SESSION_IDLE_TIMEOUT`, `PRIVO_SESSION_MAX_AGE`). With GitHub Enterprise Server, set `PRIVO_GITHUB_BASE_URL` and `PRIVO_GITHUB_API_URL`, and add its network to `PRIVO_EGRESS_ALLOW_CIDRS` if it is private.
+After the claim, everything else is in the browser: add servers, rules, invite people, and make your AI client's token on **Tokens** (no curl, no bootstrap token needed). Later sign-ins: `https://app.privo.club/admin/signin`. Sessions end after 2 hours without a request or 12 hours in all (`PRIVO_SESSION_IDLE_TIMEOUT`, `PRIVO_SESSION_MAX_AGE`). With GitHub Enterprise Server, set `PRIVO_GITHUB_BASE_URL` and `PRIVO_GITHUB_API_URL`, and add its network to `PRIVO_EGRESS_ALLOW_CIDRS` if it is private.
 
 Privo cannot require two-factor authentication at GitHub; turn it on for the accounts that approve calls (an organisation can require it).
+
+## Servers where each person uses their own account
+
+Nothing new to configure: once sign-in with GitHub works, add a remote server with `"oauth": {}` (README, "Servers where each person uses their own account"). Two things depend on the deployment:
+
+- Privo's client ID metadata document is served at `https://app.privo.club/oauth/client-metadata.json`; authorization servers that use it must reach that address from the internet.
+- For GitHub's MCP server, create a second GitHub OAuth App for it (not the sign-in one) with the callback URL `https://app.privo.club/connect/callback`, and give its client id and secret when adding the server.
+
+Invite people with `privo admin invite --person NAME` in the container's terminal, or with `POST /api/v1/invites`.
 
 ## Backups
 

@@ -3,7 +3,8 @@
   <h1>Sign in to Privo</h1>
   <p>Privo uses your GitHub account to know who you are. Only people who were added as members of this Privo can sign in.</p>
   <form method="post" action="/auth/github/start">
-    <button type="submit" class="primary">Continue with GitHub</button>
+{{if .ReturnTo}}    <input type="hidden" name="return_to" value="{{.ReturnTo}}">
+{{end}}    <button type="submit" class="primary">Continue with GitHub</button>
   </form>
 </section>
 {{end}}

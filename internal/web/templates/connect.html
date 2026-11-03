@@ -1,0 +1,12 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>Connect your {{.Server}} account</h1>
+  <p>You will sign in at <strong>{{.AuthHost}}</strong>. Privo then keeps a token for <strong>your</strong> account, encrypted, and uses it only for calls you make through Privo to <code>{{.Server}}</code>.</p>
+{{if .Scopes}}  <p class="meta">Access asked for: <code>{{.Scopes}}</code></p>
+{{end}}  <p class="meta">You can disconnect at any time from your connections.</p>
+  <form method="post" action="/connect/{{.Server}}/start">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <button type="submit" class="primary">Continue to {{.AuthHost}}</button>
+  </form>
+</section>
+{{end}}

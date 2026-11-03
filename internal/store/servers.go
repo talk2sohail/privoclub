@@ -31,6 +31,41 @@ type ServerConfig struct {
 	// Names of secret env vars and headers (values live in credentials).
 	EnvNames    []string `json:"env_names,omitempty"`
 	HeaderNames []string `json:"header_names,omitempty"`
+	// Auth is "" (none: no auth or the static secrets above) or AuthOAuth
+	// (each person's own grant, ADR 0017).
+	Auth  string       `json:"auth,omitempty"`
+	OAuth *ServerOAuth `json:"oauth,omitempty"`
+}
+
+// Auth modes and client registration methods (ADR 0017).
+const (
+	AuthOAuth = "oauth"
+
+	RegistrationAdmin   = "admin"   // a client id the admin entered
+	RegistrationCIMD    = "cimd"    // Privo's client ID metadata document
+	RegistrationDynamic = "dynamic" // RFC 7591 dynamic registration
+
+	// Credential purposes for upstream OAuth.
+	PurposeOAuthGrant  = "oauth"        // a person's tokens (owner_id = user id)
+	PurposeOAuthClient = "oauth:client" // the client secret, when there is one
+)
+
+// ServerOAuth is what discovery and registration found for an oauth server.
+// It holds no secret: a client secret is a credential (PurposeOAuthClient).
+type ServerOAuth struct {
+	Issuer                string    `json:"issuer"`
+	AuthorizationEndpoint string    `json:"authorization_endpoint"`
+	TokenEndpoint         string    `json:"token_endpoint"`
+	RevocationEndpoint    string    `json:"revocation_endpoint,omitempty"`
+	RegistrationEndpoint  string    `json:"registration_endpoint,omitempty"`
+	IssParameter          bool      `json:"iss_parameter,omitempty"` // the AS sends iss in authorization responses
+	Resource              string    `json:"resource"`
+	Scopes                []string  `json:"scopes,omitempty"`
+	ClientID              string    `json:"client_id"`
+	Registration          string    `json:"registration"`
+	HasClientSecret       bool      `json:"has_client_secret,omitempty"`
+	TokenAuthMethod       string    `json:"token_auth_method,omitempty"` // none | client_secret_basic | client_secret_post
+	DiscoveredAt          time.Time `json:"discovered_at"`
 }
 
 // Credential is an encrypted secret attached to a server.
@@ -115,6 +150,17 @@ func (s *Store) ServerByAlias(ctx context.Context, org OrgID, alias string) (Ser
 	return srv, err
 }
 
+// ServerByID returns one server.
+func (s *Store) ServerByID(ctx context.Context, org OrgID, id string) (Server, error) {
+	srv, err := scanServer(org, s.r.QueryRowContext(ctx, `
+		SELECT id, alias, transport, config, enabled, created_at, updated_at
+		FROM servers WHERE org_id = ? AND id = ?`, org, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return srv, ErrNotFound
+	}
+	return srv, err
+}
+
 // SetServerEnabled enables or disables a server.
 func (s *Store) SetServerEnabled(ctx context.Context, org OrgID, id string, enabled bool) error {
 	res, err := s.w.ExecContext(ctx, `UPDATE servers SET enabled = ?, updated_at = ? WHERE org_id = ? AND id = ?`,
@@ -133,6 +179,7 @@ func (s *Store) DeleteServer(ctx context.Context, org OrgID, id string) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		for _, q := range []string{
 			`DELETE FROM credentials WHERE org_id = ? AND server_id = ?`,
+			`DELETE FROM upstream_grants WHERE org_id = ? AND server_id = ?`,
 			`DELETE FROM pins WHERE org_id = ? AND server_id = ?`,
 		} {
 			if _, err := tx.ExecContext(ctx, q, org, id); err != nil {
@@ -172,4 +219,47 @@ func (s *Store) ServerCredentials(ctx context.Context, org OrgID, serverID strin
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+// UpdateServerOAuth replaces an oauth server's discovered settings and its
+// client secret: secret nil removes the old one.
+func (s *Store) UpdateServerOAuth(ctx context.Context, org OrgID, serverID string, o ServerOAuth, secret *Credential) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var raw string
+		err := tx.QueryRowContext(ctx, `SELECT config FROM servers WHERE org_id = ? AND id = ?`, org, serverID).Scan(&raw)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var cfg ServerConfig
+		if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+			return err
+		}
+		cfg.Auth, cfg.OAuth = AuthOAuth, &o
+		b, err := json.Marshal(cfg)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE servers SET config = ?, updated_at = ? WHERE org_id = ? AND id = ?`,
+			string(b), ts(time.Now()), org, serverID); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM credentials WHERE org_id = ? AND server_id = ? AND purpose = ?`,
+			org, serverID, PurposeOAuthClient); err != nil {
+			return err
+		}
+		if secret == nil {
+			return nil
+		}
+		if secret.ServerID != serverID || secret.Purpose != PurposeOAuthClient || secret.OwnerID != "" {
+			return errors.New("store: the client secret credential does not belong to this server")
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO credentials (org_id, id, server_id, owner_id, purpose, key_version, row_version, ciphertext)
+			VALUES (?, ?, ?, '', ?, ?, ?, ?)`,
+			org, secret.ID, serverID, secret.Purpose, secret.KeyVersion, secret.RowVersion, secret.Ciphertext)
+		return mapErr(err)
+	})
 }

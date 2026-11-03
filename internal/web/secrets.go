@@ -12,12 +12,16 @@ import (
 // and to scan for.
 const setupPrefix = "privo_setup_"
 
+// invitePrefix starts every invite token (ADR 0017).
+const invitePrefix = "privo_invite_"
+
 // secretLen is the length of a random secret: 32 bytes, base64url, no padding.
 const secretLen = 43
 
 var (
-	secretRe     = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
-	setupTokenRe = regexp.MustCompile(`^privo_setup_[A-Za-z0-9_-]{43}$`)
+	secretRe      = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+	setupTokenRe  = regexp.MustCompile(`^privo_setup_[A-Za-z0-9_-]{43}$`)
+	inviteTokenRe = regexp.MustCompile(`^privo_invite_[A-Za-z0-9_-]{43}$`)
 )
 
 // randomSecret returns 256 random bits as 43 URL-safe characters.
@@ -50,6 +54,18 @@ func NewSetupToken() (plain, hash string, err error) {
 // validSetupToken reports whether s has the exact shape of a setup token, so
 // nothing else is ever looked up, logged or echoed.
 func validSetupToken(s string) bool { return setupTokenRe.MatchString(s) }
+
+// NewInviteToken returns an invite token to show once and the hash to store.
+func NewInviteToken() (plain, hash string, err error) {
+	s, err := randomSecret()
+	if err != nil {
+		return "", "", err
+	}
+	plain = invitePrefix + s
+	return plain, HashSecret(plain), nil
+}
+
+func validInviteToken(s string) bool { return inviteTokenRe.MatchString(s) }
 
 // validSecret reports whether s has the shape of a session cookie or state.
 func validSecret(s string) bool { return len(s) == secretLen && secretRe.MatchString(s) }

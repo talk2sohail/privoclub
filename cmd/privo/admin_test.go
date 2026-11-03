@@ -242,3 +242,95 @@ func TestWebSettingsDoNotBreakOtherCommands(t *testing.T) {
 		t.Errorf("healthcheck: exit %d", code)
 	}
 }
+
+// ---- privo admin invite (ADR 0017)
+
+func inviteToken(t *testing.T, stdout string) string {
+	t.Helper()
+	line := strings.TrimSpace(stdout)
+	const prefix = "https://privo.example.com/admin/invite/"
+	if !strings.HasPrefix(line, prefix) || strings.Contains(line, "\n") {
+		t.Fatalf("stdout %q is not just the invite URL", stdout)
+	}
+	tok := strings.TrimPrefix(line, prefix)
+	if !strings.HasPrefix(tok, "privo_invite_") {
+		t.Fatalf("token %q", tok)
+	}
+	return tok
+}
+
+func TestInvitePrintsOnceStoresHash(t *testing.T) {
+	getenv, dir := adminEnv(t, nil)
+	var out, errb bytes.Buffer
+	if code := run([]string{"admin", "invite", "--person", "ada", "--role", "approver"}, &out, &errb, getenv); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	tok := inviteToken(t, out.String())
+	if strings.Contains(errb.String(), tok) || !strings.Contains(errb.String(), "once") || !strings.Contains(errb.String(), "72 hours") {
+		t.Fatalf("stderr %q", errb.String())
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	org, _ := st.EnsureOrg(ctx, DefaultOrgSlug, "Default")
+	in, err := st.Invite(ctx, org.ID, web.HashSecret(tok), time.Now())
+	if err != nil || in.Person != "ada" || in.Role != store.RoleApprover || in.CreatedBy != "cli" {
+		t.Fatalf("stored invite %+v %v", in, err)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "privo.db*"))
+	for _, f := range files {
+		raw, _ := os.ReadFile(f)
+		if strings.Contains(string(raw), tok) {
+			t.Errorf("%s contains the invite token", filepath.Base(f))
+		}
+	}
+}
+
+func TestInviteAudited(t *testing.T) {
+	getenv, dir := adminEnv(t, nil)
+	var out, errb bytes.Buffer
+	if code := run([]string{"admin", "invite", "--person", "ada"}, &out, &errb, getenv); code != 0 {
+		t.Fatal(errb.String())
+	}
+	ctx := context.Background()
+	st, _ := store.Open(ctx, dir)
+	t.Cleanup(func() { _ = st.Close() })
+	org, _ := st.EnsureOrg(ctx, DefaultOrgSlug, "Default")
+	evs, _ := st.RecentAdminEvents(ctx, org.ID, 10)
+	if len(evs) == 0 || evs[0].Action != "invite.create:member:ada" || evs[0].Actor != "cli" {
+		t.Fatalf("audit %+v", evs)
+	}
+}
+
+func TestInviteNeedsPersonAndValidRole(t *testing.T) {
+	getenv, _ := adminEnv(t, nil)
+	for _, args := range [][]string{
+		{"admin", "invite"},
+		{"admin", "invite", "--person"},
+		{"admin", "invite", "--person", "ada", "--role", "owner"},
+		{"admin", "invite", "--person", "ada", "--role", "root"},
+		{"admin", "invite", "--person", "a\x1bb"},
+		{"admin", "invite", "--name", "ada"},
+	} {
+		var out, errb bytes.Buffer
+		if code := run(args, &out, &errb, getenv); code != 2 || out.Len() != 0 {
+			t.Errorf("%q: exit %d, stdout %q", args, code, out.String())
+		}
+	}
+	noURL, _ := adminEnv(t, map[string]string{"PRIVO_PUBLIC_URL": ""})
+	var out, errb bytes.Buffer
+	if code := run([]string{"admin", "invite", "--person", "ada"}, &out, &errb, noURL); code != 2 || !strings.Contains(errb.String(), "PRIVO_PUBLIC_URL") {
+		t.Errorf("without a public URL: exit %d %q", code, errb.String())
+	}
+	// An existing member cannot be invited again.
+	getenv2, _ := adminEnv(t, nil)
+	_ = run([]string{"admin", "invite", "--person", "ada"}, &out, &errb, getenv2)
+	out.Reset()
+	errb.Reset()
+	if code := run([]string{"admin", "invite", "--person", "ada"}, &out, &errb, getenv2); code != 0 {
+		t.Errorf("a second invite for a person who has not joined yet replaces the first: exit %d %s", code, errb.String())
+	}
+}

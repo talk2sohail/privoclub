@@ -1,0 +1,50 @@
+{{define "content"}}
+<h1>People</h1>
+{{with .Flash}}<p class="flash {{.Class}}" role="status">{{.Text}}</p>{{end}}
+{{with .Page.Invite}}<section class="card highlight">
+  <h2>Invite link for {{.Person}}</h2>
+  <p>Send this link to {{.Person}}. It works once, until {{.Expires}}, and makes the GitHub account they sign in with a <strong>{{.Role}}</strong>. It is shown only now.</p>
+  <pre class="args">{{.URL}}</pre>
+</section>{{end}}
+
+<section class="card">
+  <h2>Members</h2>
+  <table class="list">
+    <thead><tr><th>Person</th><th>GitHub</th><th>Role</th><th></th></tr></thead>
+    <tbody>
+{{range .Page.Members}}      <tr{{if .Removed}} class="muted"{{end}}>
+        <td><strong>{{.Person}}</strong>{{if ne .Name .Person}}<br><small class="meta">{{.Name}}</small>{{end}}</td>
+        <td>{{.Login}}</td>
+        <td>{{if .Removed}}removed{{else if .Me}}{{.Role}} <small class="meta">(you)</small>{{else}}
+          <form method="post" action="/admin/people/{{.Person}}/role" class="row">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <select name="role" aria-label="Role of {{.Person}}">
+{{$cur := .Role}}{{range $.Page.AllRoles}}              <option value="{{.}}"{{if eq . $cur}} selected{{end}}>{{.}}</option>
+{{end}}            </select>
+            <button type="submit">Change</button>
+          </form>{{end}}</td>
+        <td>{{if and (not .Removed) (not .Me)}}<form method="post" action="/admin/people/{{.Person}}/remove" class="row">
+            <input type="hidden" name="csrf" value="{{$.CSRF}}">
+            <label class="inline"><input type="checkbox" name="confirm" value="yes"> sure</label>
+            <button type="submit" class="deny">Remove</button>
+          </form>{{end}}</td>
+      </tr>
+{{end}}    </tbody>
+  </table>
+  <p class="meta">Removing someone signs them out, deletes their connected accounts and revokes every token with their name.</p>
+</section>
+
+<section class="card">
+  <h2>Invite someone</h2>
+  <form method="post" action="/admin/people/invite" class="stack">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>Person <small class="meta">the name their tokens and approvals will show, for example ada</small> <input name="person" required maxlength="128"></label>
+    <label>Role
+      <select name="role">
+{{range .Page.Roles}}        <option value="{{.}}">{{.}}</option>
+{{end}}      </select></label>
+    <p class="meta">Members use tools through their AI clients. Approvers decide approvals. Auditors read the activity. Admins manage everything except owners.</p>
+    <div class="actions"><button type="submit" class="primary">Create invite link</button></div>
+  </form>
+</section>
+{{end}}

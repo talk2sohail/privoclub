@@ -233,7 +233,7 @@ func TestWebSetupAndApprovals(t *testing.T) {
 	gh.as = fakeGitHubUser{ID: 424242, Login: "BossHuman", Name: "The Boss"}
 	start, _ := boss.do(http.MethodPost, g.base+"/auth/github/start", url.Values{"setup_token": {m[1]}}, nil)
 	cb, body := boss.signInThroughGitHub(start)
-	if cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/approvals" {
+	if cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/servers" { // owners land on Servers (ADR 0018)
 		t.Fatalf("callback: %d %s\n%s", cb.StatusCode, cb.Header.Get("Location"), body)
 	}
 	// The same link is spent.

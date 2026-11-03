@@ -86,6 +86,15 @@ Endpoints: `/` (static landing page), `/mcp` (MCP gateway), `/api/v1/...`
 
 ## Admin site: sign in with GitHub
 
+Everything after the first sign-in happens in the browser at
+`<PRIVO_PUBLIC_URL>/admin/`: **Servers** (add, review tools, turn off),
+**Rules** (allow, ask, deny), **People** (invite, roles, remove), **Tokens**
+(each person makes tokens for their AI clients, with a ready Claude Code
+command), **Activity**, **Approvals** and **Connections**. The pages call the
+admin API below in process, as the signed-in person (ADR 0018); the API stays
+for scripts.
+
+
 People approve calls in a browser, with their GitHub account and no token
 (ADR 0016). It is off until you set `PRIVO_GITHUB_CLIENT_ID`,
 `PRIVO_GITHUB_CLIENT_SECRET` (or `_FILE`) and `PRIVO_PUBLIC_URL`; until then
@@ -110,6 +119,46 @@ People approve calls in a browser, with their GitHub account and no token
 
 Only people who were added can sign in; any other GitHub account sees a plain
 refusal. See `docs/deploy-coolify.md` for the Coolify steps.
+
+### Invite your team
+
+```sh
+privo admin invite --person ada [--role member|approver|auditor|admin]
+```
+
+prints a link that works once, for 72 hours (also `POST /api/v1/invites` with
+`{"person": "ada", "role": "member"}`). Ada opens it and signs in with GitHub;
+her account is bound by its numeric GitHub id. Give her AI client a gateway
+token whose person is `ada`.
+
+## Servers where each person uses their own account
+
+Remote MCP servers such as GitHub, Linear, Notion, Atlassian or Sentry let each
+person sign in with their own account (OAuth). Privo keeps one grant per person
+and server, encrypted, refreshes it, and runs every call with the caller's own
+grant, so the upstream's permissions and audit stay honest (ADR 0017). This
+needs the admin site above.
+
+```sh
+curl -X POST $PRIVO/api/v1/servers -H "Authorization: Bearer $OWNER" -d '{
+  "alias": "linear", "transport": "http", "url": "https://mcp.linear.app/mcp",
+  "oauth": {}
+}'
+```
+
+Privo finds the server's authorization server and registers itself: with the
+client id you give (`"oauth": {"client_id": "...", "client_secret": "..."}`,
+needed for GitHub, whose OAuth app gets the callback URL
+`<PRIVO_PUBLIC_URL>/connect/callback`), with its client ID metadata document
+(`<PRIVO_PUBLIC_URL>/oauth/client-metadata.json`), or by dynamic registration.
+`"scopes"` and `"issuer"` are optional.
+
+Then an admin connects their own account at `/connect/<alias>`; the server's
+tool list is read with it. Everyone else connects theirs from **Connections**
+on the admin site, or follows the link their AI client shows on the first call.
+A person disconnects there; an admin lists and removes connections with
+`GET /api/v1/servers/<alias>/connections` and
+`DELETE /api/v1/servers/<alias>/connections/<person>`.
 
 ## Tokens
 

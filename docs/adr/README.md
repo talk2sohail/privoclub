@@ -26,3 +26,5 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0014](0014-token-kinds-and-persons.md) | Token kinds and person identity | Accepted (security fix) |
 | [0015](0015-configuration.md) | Configuration: environment and an optional file | Accepted |
 | [0016](0016-admin-sign-in-with-github.md) | Admin sign-in with GitHub | Proposed (accept after the F05 review) |
+| [0017](0017-upstream-oauth-broker.md) | Upstream OAuth broker: each person connects their own account | Proposed (accept after the F07 review) |
+| [0018](0018-admin-ui-server-rendered.md) | Admin UI: server-rendered pages over the admin API | Accepted |

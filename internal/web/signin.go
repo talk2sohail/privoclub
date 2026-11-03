@@ -59,6 +59,23 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		st.Purpose, st.SetupLinkID = store.PurposeSetup, l.ID
+	} else if _, inv := r.PostForm["invite_token"]; inv {
+		token := r.PostForm.Get("invite_token")
+		if !validInviteToken(token) {
+			s.notFoundInvite(w)
+			return
+		}
+		in, err := s.o.Store.Invite(r.Context(), s.o.Org, HashSecret(token), s.now())
+		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) {
+				s.log.Error("web: look up invite", "err", err)
+			}
+			s.notFoundInvite(w)
+			return
+		}
+		st.Purpose, st.InviteID = store.PurposeInvite, in.ID
+	} else if next := r.PostForm.Get("return_to"); returnToRe.MatchString(next) && s.connections() {
+		st.ReturnTo = next
 	}
 
 	state, err1 := randomSecret()
@@ -128,8 +145,12 @@ func (s *Server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 	switch st.Purpose {
 	case store.PurposeSetup:
 		s.finishSetup(w, r, st, prof)
+	case store.PurposeInvite:
+		s.finishInvite(w, r, st, prof)
+	case store.PurposeSignIn:
+		s.finishSignIn(w, r, st, prof)
 	default:
-		s.finishSignIn(w, r, prof)
+		s.signInFailed(w, http.StatusBadRequest, "This sign-in was not started in this browser, or it has expired.")
 	}
 }
 
@@ -162,7 +183,7 @@ func (s *Server) denied(w http.ResponseWriter, r *http.Request, p githubauth.Pro
 		"It is not a member of this Privo. Ask an owner to add you.")
 }
 
-func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, p githubauth.Profile) {
+func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, st store.OAuthState, p githubauth.Profile) {
 	u, err := s.o.Store.UserByIdentity(r.Context(), s.o.Org, store.ProviderGitHub, p.Subject())
 	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
 		s.denied(w, r, p)
@@ -183,7 +204,11 @@ func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, p githubau
 		return
 	}
 	s.setCookie(w, s.sessionCookie, secret, int(s.o.MaxAge.Seconds()))
-	redirect(w, "/admin/approvals")
+	to := s.landing(u)
+	if returnToRe.MatchString(st.ReturnTo) && s.connections() {
+		to = st.ReturnTo
+	}
+	redirect(w, to)
 }
 
 func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request, st store.OAuthState, p githubauth.Profile) {
@@ -195,7 +220,7 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request, st store.OA
 	}
 	userID := ids.New()
 	sess.UserID = userID
-	_, err = s.o.Store.ClaimSetup(r.Context(), s.o.Org, store.Claim{
+	u, err := s.o.Store.ClaimSetup(r.Context(), s.o.Org, store.Claim{
 		LinkID: st.SetupLinkID, UserID: userID, Person: strings.ToLower(p.Login), Subject: p.Subject(), Login: p.Login,
 		DisplayName: displayName(p), Session: sess, Now: s.now(),
 	}, s.event("setup.claim", strings.ToLower(p.Login), "github:"+p.Subject(), "allow", "ok"))
@@ -218,5 +243,5 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request, st store.OA
 		return
 	}
 	s.setCookie(w, s.sessionCookie, secret, int(s.o.MaxAge.Seconds()))
-	redirect(w, "/admin/approvals")
+	redirect(w, s.landing(u))
 }

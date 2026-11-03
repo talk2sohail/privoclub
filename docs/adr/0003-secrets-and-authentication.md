@@ -4,6 +4,7 @@
 - Date: 2026-10-28
 - Related: 0008 egress, 0009 threat model, 0011 enterprise identity
 - Amended by: 0016 (the first sign-in provider is GitHub; Google and Microsoft follow)
+- Detailed by: 0017 (section 3, the upstream OAuth broker)
 
 ## Context
 
