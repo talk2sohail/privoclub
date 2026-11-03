@@ -38,32 +38,26 @@ var (
 	formActionRe = regexp.MustCompile(`form-action [^;]*;`)
 )
 
-// connectFlashes are the only messages the result parameter can select.
-var connectFlashes = map[string]flash{
-	"connected":    {"ok", "Connected. Your AI tools can now use this server as you."},
-	"disconnected": {"ok", "Disconnected. Privo no longer holds a token for this account."},
-	"gone":         {"warn", "That connection no longer exists."},
-}
-
 func (s *Server) connections() bool {
 	return s.o.Grants != nil && s.o.OAuth != nil && s.o.Upstream != nil
 }
 
-// landing is where a person goes after signing in: approvers to the approvals,
-// everyone else to their connections.
+// landing is the app page a person starts on after signing in: owners and
+// admins on Servers, approvers on Approvals, members on Tokens (a member's
+// first step is a token for their AI client), auditors on Activity.
 func (s *Server) landing(u store.User) string {
 	p := s.principal(u)
 	switch {
-	case s.uiEnabled() && p.Can(auth.PermManageServers):
+	case p.Can(auth.PermManageServers):
 		return "/admin/servers"
-	case p.Can(auth.PermDecide) || (!s.connections() && !s.uiEnabled()):
+	case p.Can(auth.PermDecide):
 		return "/admin/approvals"
-	case s.uiEnabled() && p.Can(auth.PermUseGateway):
-		return "/admin/tokens" // a member's first step: a token for their AI client
-	case s.uiEnabled() && p.Can(auth.PermReadAudit):
+	case p.Can(auth.PermUseGateway):
+		return "/admin/tokens"
+	case p.Can(auth.PermReadAudit):
 		return "/admin/activity"
 	}
-	return "/admin/connections"
+	return "/admin/tokens"
 }
 
 // ---- invites
@@ -126,12 +120,7 @@ func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, st store.O
 	redirect(w, s.landing(u))
 }
 
-// ---- connections page
-
-type connectionView struct {
-	Alias, Issuer, Scopes, Connected, LastUsed string
-	IsConnected                                bool
-}
+// ---- connections
 
 func (s *Server) oauthServers(ctx context.Context) ([]store.Server, error) {
 	all, err := s.o.Store.ListServers(ctx, s.o.Org)
@@ -145,42 +134,6 @@ func (s *Server) oauthServers(ctx context.Context) ([]store.Server, error) {
 		}
 	}
 	return out, nil
-}
-
-func (s *Server) connectionsPage(w http.ResponseWriter, r *http.Request) {
-	sess, u, ok := s.session(r)
-	if !ok {
-		redirect(w, "/admin/signin")
-		return
-	}
-	servers, err := s.oauthServers(r.Context())
-	var grants []store.Grant
-	if err == nil {
-		grants, err = s.o.Store.ListGrants(r.Context(), s.o.Org, u.ID)
-	}
-	if err != nil {
-		s.log.Error("web: list connections", "err", err)
-		s.pageFor(w, http.StatusInternalServerError, sess, u, "Something went wrong", "Your connections could not be read. Try again.")
-		return
-	}
-	byServer := map[string]store.Grant{}
-	for _, g := range grants {
-		byServer[g.ServerID] = g
-	}
-	d := pageData{Title: "Connections", User: view(u), CSRF: sess.CSRF, CanConnect: s.principal(u).Can(auth.PermUseGateway)}
-	for _, srv := range servers {
-		v := connectionView{Alias: srv.Alias, Issuer: hostOf(srv.Config.OAuth.Issuer)}
-		if g, ok := byServer[srv.ID]; ok {
-			v.IsConnected, v.Scopes = true, g.Scopes
-			v.Connected = g.ConnectedAt.UTC().Format("2006-01-02 15:04 UTC")
-			v.LastUsed = g.LastUsedAt.UTC().Format("2006-01-02 15:04 UTC")
-		}
-		d.Connections = append(d.Connections, v)
-	}
-	if f, ok := connectFlashes[r.URL.Query().Get("result")]; ok {
-		d.Flash = &f
-	}
-	s.render(w, http.StatusOK, "connections", d)
 }
 
 func hostOf(raw string) string {
@@ -367,37 +320,6 @@ func (s *Server) connectCallbackHandler(w http.ResponseWriter, r *http.Request) 
 		s.o.Upstream.Kick(srv.ID)
 	}
 	redirect(w, "/admin/connections?result=connected")
-}
-
-func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
-	sess, u, ok := s.guarded(w, r)
-	if !ok {
-		return
-	}
-	alias := r.PathValue("alias")
-	srv, err := s.o.Store.ServerByAlias(r.Context(), s.o.Org, alias)
-	if errors.Is(err, store.ErrNotFound) || !aliasRe.MatchString(alias) {
-		redirect(w, "/admin/connections?result=gone")
-		return
-	}
-	if err != nil {
-		s.log.Error("web: look up server", "err", err)
-		s.pageFor(w, http.StatusInternalServerError, sess, u, "Something went wrong", "Try again.")
-		return
-	}
-	ev := s.event("upstream.disconnect:"+srv.Alias, u.Person, "user:"+u.ID, "allow", "ok")
-	ev.Server = srv.Alias
-	switch err := s.o.Grants.Disconnect(r.Context(), s.o.Org, srv, u.ID, ev); {
-	case errors.Is(err, store.ErrNotFound):
-		redirect(w, "/admin/connections?result=gone")
-		return
-	case err != nil:
-		s.log.Error("web: disconnect", "server", srv.Alias, "err", err)
-		s.pageFor(w, http.StatusInternalServerError, sess, u, "Something went wrong", "Try again.")
-		return
-	}
-	s.o.Upstream.ClosePerson(srv.ID, u.ID)
-	redirect(w, "/admin/connections?result=disconnected")
 }
 
 // clientMetadata serves Privo's client ID metadata document. It holds nothing

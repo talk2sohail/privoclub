@@ -3,10 +3,12 @@
 package acceptance
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -176,6 +178,56 @@ func (p *person) approvals() (*http.Response, string) {
 	return p.do(http.MethodGet, p.g.base+"/admin/approvals", nil, nil)
 }
 
+// csrf reads the session's CSRF token the way the admin app does (ADR 0019).
+func (p *person) csrf() string {
+	p.t.Helper()
+	res, body := p.do(http.MethodGet, p.g.base+"/admin/api/session", nil, nil)
+	var s struct {
+		CSRF string `json:"csrf"`
+	}
+	if res.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &s) != nil || s.CSRF == "" {
+		p.t.Fatalf("session: %d %s", res.StatusCode, body)
+	}
+	return s.CSRF
+}
+
+// app calls /admin/api{path} as the admin app does: JSON, same origin, the
+// session's CSRF token in a header. hdr overrides headers ("" removes one).
+func (p *person) app(method, path string, body any, hdr map[string]string) (int, map[string]any) {
+	p.t.Helper()
+	var r io.Reader
+	h := map[string]string{"Origin": p.g.base, "X-Privo-CSRF": p.csrf(), "Accept": "application/json"}
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			p.t.Fatal(err)
+		}
+		r = bytes.NewReader(b)
+		h["Content-Type"] = "application/json"
+	}
+	for k, v := range hdr {
+		h[k] = v
+	}
+	req, err := http.NewRequest(method, p.g.base+"/admin/api"+path, r)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	for k, v := range h {
+		if v != "" {
+			req.Header.Set(k, v)
+		}
+	}
+	res, err := p.http.Do(req)
+	if err != nil {
+		p.t.Fatalf("%s %s: %v", method, path, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	raw, _ := io.ReadAll(res.Body)
+	out := map[string]any{}
+	_ = json.Unmarshal(raw, &out)
+	return res.StatusCode, out
+}
+
 // follow resolves a redirect Location against the page that sent it.
 func (p *person) follow(from string, res *http.Response) (*http.Response, string) {
 	p.t.Helper()
@@ -203,8 +255,23 @@ func (p *person) signInThroughGitHub(start *http.Response) (*http.Response, stri
 var (
 	setupTokenField = regexp.MustCompile(`name="setup_token" value="([^"]+)"`)
 	csrfField       = regexp.MustCompile(`name="csrf" value="([^"]+)"`)
-	approveAction   = regexp.MustCompile(`/admin/approvals/([A-Za-z0-9-]+)/approve`)
 )
+
+// pendingID is the id of the one pending approval, read through the app's API.
+func (p *person) pendingID(want string) string {
+	p.t.Helper()
+	code, out := p.app(http.MethodGet, "/v1/approvals?status=pending", nil, nil)
+	list, _ := out["approvals"].([]any)
+	if code != http.StatusOK || len(list) != 1 {
+		p.t.Fatalf("pending approvals: %d %v", code, out)
+	}
+	a, _ := list[0].(map[string]any)
+	if b, _ := json.Marshal(a); want != "" && !strings.Contains(string(b), want) {
+		p.t.Fatalf("approval %s lacks %q", b, want)
+	}
+	id, _ := a["id"].(string)
+	return id
+}
 
 func TestWebSetupAndApprovals(t *testing.T) {
 	gh := newAcceptanceGitHub(t)
@@ -246,24 +313,28 @@ func TestWebSetupAndApprovals(t *testing.T) {
 	if text, isErr := call(t, member, "echo__echo", map[string]any{"text": "deploy-to-prod"}); !isErr || !strings.Contains(text, "Approval required") {
 		t.Fatalf("first call: %q", text)
 	}
-	res, page := boss.approvals()
-	am := approveAction.FindStringSubmatch(page)
-	cm := csrfField.FindStringSubmatch(page)
-	if res.StatusCode != http.StatusOK || am == nil || cm == nil || !strings.Contains(page, "deploy-to-prod") || !strings.Contains(page, "ada") {
-		t.Fatalf("approvals page: %d\n%s", res.StatusCode, page)
+	// The approvals page is the app; it reads and decides through the session.
+	if res, page := boss.approvals(); res.StatusCode != http.StatusOK || !strings.Contains(page, `<div id="app">`) ||
+		!strings.Contains(res.Header.Get("Content-Security-Policy"), "script-src 'self';") {
+		t.Fatalf("approvals page: %d %v\n%s", res.StatusCode, res.Header, page)
 	}
-	if res, _ := boss.do(http.MethodPost, g.base+am[0], url.Values{"csrf": {"wrong"}}, nil); res.StatusCode != http.StatusForbidden {
-		t.Errorf("approve with a wrong CSRF token: %d, want 403", res.StatusCode)
+	id := boss.pendingID("deploy-to-prod")
+	approve := "/v1/approvals/" + id + "/approve"
+	if code, _ := boss.app(http.MethodPost, approve, nil, map[string]string{"X-Privo-CSRF": "wrong"}); code != http.StatusForbidden {
+		t.Errorf("approve with a wrong CSRF token: %d, want 403", code)
 	}
-	if res, _ := boss.do(http.MethodPost, g.base+am[0], url.Values{"csrf": {cm[1]}}, map[string]string{"Origin": "https://evil.example"}); res.StatusCode != http.StatusForbidden {
-		t.Errorf("approve from another origin: %d, want 403", res.StatusCode)
+	if code, _ := boss.app(http.MethodPost, approve, nil, map[string]string{"Origin": "https://evil.example"}); code != http.StatusForbidden {
+		t.Errorf("approve from another origin: %d, want 403", code)
+	}
+	// The token API never takes the session cookie.
+	if res, _ := boss.do(http.MethodPost, g.base+"/api/v1"+approve[3:], nil, map[string]string{"Content-Type": "application/json"}); res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("token API with only the session cookie: %d, want 401", res.StatusCode)
 	}
 	if text, isErr := call(t, member, "echo__echo", map[string]any{"text": "deploy-to-prod"}); !isErr || !strings.Contains(text, "Approval required") {
 		t.Fatalf("refused approvals let the call through: %q", text)
 	}
-	res, _ = boss.do(http.MethodPost, g.base+am[0], url.Values{"csrf": {cm[1]}}, nil)
-	if res.StatusCode != http.StatusSeeOther || res.Header.Get("Location") != "/admin/approvals?result=approved" {
-		t.Fatalf("approve: %d %s", res.StatusCode, res.Header.Get("Location"))
+	if code, out := boss.app(http.MethodPost, approve, nil, nil); code != http.StatusOK {
+		t.Fatalf("approve: %d %v", code, out)
 	}
 	if text, isErr := call(t, member, "echo__echo", map[string]any{"text": "deploy-to-prod"}); isErr || text != "deploy-to-prod" {
 		t.Fatalf("approved retry: %q (error=%v)", text, isErr)
@@ -301,15 +372,14 @@ func TestWebSetupAndApprovals(t *testing.T) {
 	if cb, _ = again.signInThroughGitHub(start); cb.StatusCode != http.StatusSeeOther {
 		t.Fatalf("sign in again: %d", cb.StatusCode)
 	}
-	_, page = again.approvals()
-	if cm = csrfField.FindStringSubmatch(page); cm == nil {
-		t.Fatalf("no csrf on the page:\n%s", page)
-	}
-	if res, _ := again.do(http.MethodPost, g.base+"/admin/signout", url.Values{"csrf": {cm[1]}}, nil); res.StatusCode != http.StatusSeeOther {
+	if res, _ := again.do(http.MethodPost, g.base+"/admin/signout", url.Values{"csrf": {again.csrf()}}, nil); res.StatusCode != http.StatusSeeOther {
 		t.Fatalf("sign out: %d", res.StatusCode)
 	}
 	if res, _ := again.approvals(); res.StatusCode != http.StatusSeeOther {
 		t.Errorf("after sign-out: %d, want a redirect to sign-in", res.StatusCode)
+	}
+	if res, _ := again.do(http.MethodGet, g.base+"/admin/api/session", nil, nil); res.StatusCode != http.StatusUnauthorized {
+		t.Errorf("session after sign-out: %d, want 401", res.StatusCode)
 	}
 
 	// Nothing secret reached the logs: not the client secret, the setup token,

@@ -3,8 +3,8 @@ package web
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"privo.club/privo/internal/approval"
 	"privo.club/privo/internal/store"
 )
 
@@ -78,7 +77,7 @@ func TestSetupFlowCreatesOwner(t *testing.T) {
 	b := e.browser()
 	token := e.setupLink("")
 	res := e.setupAs(b, token, octo)
-	if res.StatusCode != http.StatusSeeOther || location(res) != "/admin/approvals" {
+	if res.StatusCode != http.StatusSeeOther || location(res) != "/admin/servers" { // owners land on Servers
 		t.Fatalf("callback: %d %s\n%s", res.StatusCode, location(res), res.Body)
 	}
 	if b.cookie(sessionCookieName(e)) == nil {
@@ -88,9 +87,8 @@ func TestSetupFlowCreatesOwner(t *testing.T) {
 	if err != nil || u.Role != store.RoleOwner || u.Person != "octocat" || u.DisplayName != "The Octocat" {
 		t.Fatalf("user %+v, %v", u, err)
 	}
-	page := b.get("/admin/approvals")
-	if page.StatusCode != http.StatusOK || !strings.Contains(page.Body, "octocat") {
-		t.Fatalf("approvals page: %d\n%s", page.StatusCode, page.Body)
+	if page := b.get("/admin/api/session"); page.StatusCode != http.StatusOK || !strings.Contains(page.Body, `"person":"octocat"`) {
+		t.Fatalf("session: %d\n%s", page.StatusCode, page.Body)
 	}
 	if !contains(e.adminActions(), "setup.claim") {
 		t.Errorf("no setup.claim audit event: %v", e.adminActions())
@@ -194,10 +192,10 @@ func TestSignInPage(t *testing.T) {
 	e.member(octo, "octocat", store.RoleOwner)
 	b := e.browser()
 	e.signIn(b, octo)
-	if loc := location(b.get("/admin/")); loc != "/admin/approvals" {
+	if loc := location(b.get("/admin/")); loc != "/admin/servers" {
 		t.Errorf("/admin/ for a member redirects to %q", loc)
 	}
-	if loc := location(b.get("/admin/signin")); loc != "/admin/approvals" {
+	if loc := location(b.get("/admin/signin")); loc != "/admin/servers" {
 		t.Errorf("/admin/signin for a member redirects to %q", loc)
 	}
 }
@@ -524,24 +522,38 @@ func TestRoleChangeAppliesAtOnce(t *testing.T) {
 	u := e.member(octo, "octocat", store.RoleApprover)
 	b := e.browser()
 	e.signIn(b, octo)
-	if res := b.get("/admin/approvals"); res.StatusCode != http.StatusOK {
-		t.Fatalf("approver: %d", res.StatusCode)
+	canDecide := func() (int, bool) {
+		res := b.get("/admin/api/session")
+		var s sessionAnswer
+		_ = json.Unmarshal([]byte(res.Body), &s)
+		return res.StatusCode, s.Can["decide"]
+	}
+	if code, ok := canDecide(); code != http.StatusOK || !ok {
+		t.Fatalf("approver: %d %v", code, ok)
 	}
 	ctx := context.Background()
 	if err := e.st.SetUserRole(ctx, e.org, u.ID, store.RoleMember, e.event("role")); err != nil {
 		t.Fatal(err)
 	}
-	if res := b.get("/admin/approvals"); res.StatusCode != http.StatusForbidden {
-		t.Errorf("after demotion: %d, want 403 on the same cookie", res.StatusCode)
+	if _, ok := canDecide(); ok {
+		t.Error("after demotion the same cookie can still decide")
+	}
+	// The bridge runs as the live role, so the API refuses at once.
+	b.call(http.MethodGet, "/admin/api/v1/approvals", b.csrf(), "", nil)
+	if calls := e.api().all(); len(calls) != 1 || calls[0].P.Role != store.RoleMember {
+		t.Errorf("bridge principal after demotion: %+v", calls)
 	}
 	if err := e.st.SetUserRole(ctx, e.org, u.ID, store.RoleAdmin, e.event("role2")); err != nil {
 		t.Fatal(err)
 	}
-	if res := b.get("/admin/approvals"); res.StatusCode != http.StatusOK {
-		t.Errorf("after promotion: %d", res.StatusCode)
+	if _, ok := canDecide(); !ok {
+		t.Error("after promotion: cannot decide")
 	}
 	if err := e.st.DisableUser(ctx, e.org, u.ID, e.clock.now(), e.event("disable")); err != nil {
 		t.Fatal(err)
+	}
+	if code, _ := canDecide(); code != http.StatusUnauthorized {
+		t.Errorf("after disabling: %d, want 401", code)
 	}
 	if res := b.get("/admin/approvals"); res.StatusCode != http.StatusSeeOther {
 		t.Errorf("after disabling: %d, want a redirect to sign-in", res.StatusCode)
@@ -554,7 +566,7 @@ func TestSignOutDeletesSession(t *testing.T) {
 	b := e.browser()
 	e.signIn(b, octo)
 	old := *b.cookie(sessionCookieName(e))
-	token := csrfOf(t, b.get("/admin/approvals").Body)
+	token := b.csrf()
 
 	if res := b.post("/admin/signout", nil); res.StatusCode != http.StatusForbidden {
 		t.Errorf("sign-out without csrf: %d, want 403", res.StatusCode)
@@ -586,9 +598,8 @@ func TestCSRFMissingWrongCrossOrigin(t *testing.T) {
 	e.member(octo, "octocat", store.RoleOwner)
 	b := e.browser()
 	e.signIn(b, octo)
-	id := e.pending("ada", "delete_repo", `{"repo":"sandbox"}`)
-	good := csrfOf(t, b.get("/admin/approvals").Body)
-	path := "/admin/approvals/" + id + "/approve"
+	good := b.csrf()
+	path := "/admin/signout" // the one form a signed-in person posts; the app's calls are TestBridge*
 
 	refused := map[string]page{
 		"no csrf":                      b.post(path, nil),
@@ -607,13 +618,13 @@ func TestCSRFMissingWrongCrossOrigin(t *testing.T) {
 			t.Errorf("%s: status %d, want 403", name, res.StatusCode)
 		}
 	}
-	if st := e.status(id); st != store.ApprovalPending {
-		t.Fatalf("a refused request changed the approval: %s", st)
+	if res := b.get("/admin/api/session"); res.StatusCode != http.StatusOK {
+		t.Fatalf("a refused request ended the session: %d", res.StatusCode)
 	}
 	// Same-origin fetch metadata without Origin is how some browsers send it.
 	ok := b.do("POST", path, url.Values{"csrf": {good}}, map[string]string{"Origin": "", "Sec-Fetch-Site": "same-origin"})
-	if ok.StatusCode != http.StatusSeeOther || e.status(id) != store.ApprovalApproved {
-		t.Errorf("same-origin fetch metadata: %d, status %s", ok.StatusCode, e.status(id))
+	if ok.StatusCode != http.StatusSeeOther || location(ok) != "/admin/signin" {
+		t.Errorf("same-origin fetch metadata: %d %q", ok.StatusCode, location(ok))
 	}
 }
 
@@ -622,15 +633,17 @@ func TestOriginComesFromThePublicURLNotTheHost(t *testing.T) {
 	e.member(octo, "octocat", store.RoleOwner)
 	b := e.browser()
 	e.signIn(b, octo)
-	id := e.pending("ada", "delete_repo", `{}`)
-	good := csrfOf(t, b.get("/admin/approvals").Body)
+	good := b.csrf()
 
 	// A request whose Host and Origin agree with each other but not with the
 	// configured public URL is refused.
 	b.host = "evil.example"
-	res := b.do("POST", "/admin/approvals/"+id+"/approve", url.Values{"csrf": {good}}, map[string]string{"Origin": "https://evil.example"})
-	if res.StatusCode != http.StatusForbidden || e.status(id) != store.ApprovalPending {
+	res := b.call(http.MethodPost, "/admin/api/v1/policies", good, `{}`, map[string]string{"Origin": "https://evil.example"})
+	if res.StatusCode != http.StatusForbidden || len(e.api().all()) != 0 {
 		t.Errorf("origin that matches the Host header: %d", res.StatusCode)
+	}
+	if res := b.do("POST", "/admin/signout", url.Values{"csrf": {good}}, map[string]string{"Origin": "https://evil.example"}); res.StatusCode != http.StatusForbidden {
+		t.Errorf("sign-out from an origin that matches the Host header: %d", res.StatusCode)
 	}
 	// The redirect URI never follows the Host header.
 	anon := e.browser()
@@ -664,10 +677,9 @@ func TestWrongMethodsAreRefused(t *testing.T) {
 	e.member(octo, "octocat", store.RoleOwner)
 	b := e.browser()
 	e.signIn(b, octo)
-	id := e.pending("ada", "t", `{}`)
 	for _, tc := range []struct{ method, path string }{
-		{"GET", "/admin/approvals/" + id + "/approve"}, {"GET", "/admin/approvals/" + id + "/deny"}, {"GET", "/admin/signout"},
-		{"POST", "/auth/github/callback"}, {"POST", "/admin/approvals"}, {"DELETE", "/admin/approvals"},
+		{"GET", "/admin/signout"}, {"POST", "/auth/github/callback"}, {"POST", "/admin/approvals"}, {"DELETE", "/admin/approvals"},
+		{"POST", "/admin/api/session"}, {"POST", "/admin/app/assets/index-abc123.js"}, {"PUT", "/admin/api/v1/servers"},
 	} {
 		var form url.Values
 		if tc.method == "POST" {
@@ -677,172 +689,29 @@ func TestWrongMethodsAreRefused(t *testing.T) {
 			t.Errorf("%s %s: %d, want 405", tc.method, tc.path, res.StatusCode)
 		}
 	}
-	if e.status(id) != store.ApprovalPending {
-		t.Error("a wrong-method request changed the approval")
+	if len(e.api().all()) != 0 {
+		t.Error("a wrong-method request reached the API")
 	}
 }
 
 // ---- the approvals page
 
-func TestMemberCannotSeeOrDecideApprovals(t *testing.T) {
-	e := newEnv(t)
-	e.member(octo, "octocat", store.RoleMember)
-	b := e.browser()
-	e.signIn(b, octo)
-	id := e.pending("ada", "delete_repo", `{"repo":"secret-repo"}`)
-	res := b.get("/admin/approvals")
-	if res.StatusCode != http.StatusForbidden || strings.Contains(res.Body, "secret-repo") || strings.Contains(res.Body, "delete_repo") {
-		t.Fatalf("member saw approvals: %d\n%s", res.StatusCode, res.Body)
-	}
-	// Even with a valid CSRF token (it belongs to the session) a member cannot decide.
-	csrf := csrfOf(t, b.get("/admin/approvals").Body) // the 403 page carries the sign-out form
-	if res := b.post("/admin/approvals/"+id+"/approve", url.Values{"csrf": {csrf}}); res.StatusCode != http.StatusForbidden {
-		t.Errorf("member approve: %d, want 403", res.StatusCode)
-	}
-	if e.status(id) != store.ApprovalPending {
-		t.Error("a member decided an approval")
-	}
-}
-
-func TestApproveAndDeny(t *testing.T) {
-	e := newEnv(t)
-	u := e.member(octo, "octocat", store.RoleApprover)
-	b := e.browser()
-	e.signIn(b, octo)
-	a, aReq := e.pendingReq("ada", "delete_repo", `{"repo":"sandbox","force":true}`)
-	d := e.pending("grace", "drop_table", `{"table":"users"}`)
-
-	list := b.get("/admin/approvals")
-	if list.StatusCode != http.StatusOK {
-		t.Fatalf("list: %d", list.StatusCode)
-	}
-	for _, want := range []string{"delete_repo", "sandbox", "drop_table", "users", "ada", "grace", "needs a human", "/admin/approvals/" + a + "/approve", "/admin/approvals/" + d + "/deny"} {
-		if !strings.Contains(list.Body, want) {
-			t.Errorf("the page lacks %q", want)
-		}
-	}
-	csrf := csrfOf(t, list.Body)
-
-	res := b.post("/admin/approvals/"+a+"/approve", url.Values{"csrf": {csrf}})
-	if res.StatusCode != http.StatusSeeOther || location(res) != "/admin/approvals?result=approved" {
-		t.Fatalf("approve: %d %s", res.StatusCode, location(res))
-	}
-	got, _ := e.st.GetApproval(context.Background(), e.org, a)
-	if got.Status != store.ApprovalApproved || got.DecidedBy != "octocat (user "+u.ID+")" {
-		t.Errorf("approval %+v", got)
-	}
-	// The gateway's retry of the same call finds it approved, consumes it and names the approver.
-	out, err := e.approvals.Gate(context.Background(), aReq)
-	if err != nil || out.Result != approval.Approved || out.DecidedBy != got.DecidedBy {
-		t.Errorf("gateway retry = %+v, %v", out, err)
-	}
-
-	res = b.post("/admin/approvals/"+d+"/deny", url.Values{"csrf": {csrf}})
-	if res.StatusCode != http.StatusSeeOther || location(res) != "/admin/approvals?result=denied" || e.status(d) != store.ApprovalDenied {
-		t.Fatalf("deny: %d %s status %s", res.StatusCode, location(res), e.status(d))
-	}
-	// Deciding again, or an unknown id, is "gone", not an error page.
-	for _, id := range []string{a, d, "no-such-approval"} {
-		if r := b.post("/admin/approvals/"+id+"/approve", url.Values{"csrf": {csrf}}); r.StatusCode != http.StatusSeeOther || location(r) != "/admin/approvals?result=gone" {
-			t.Errorf("deciding %s again: %d %s", id, r.StatusCode, location(r))
-		}
-	}
-	// What was decided is not listed as pending any more, and its arguments are not shown.
-	after := b.get("/admin/approvals?result=approved")
-	if strings.Contains(after.Body, "sandbox") || strings.Contains(after.Body, "drop_table") {
-		t.Error("decided approvals are still listed")
-	}
-	actions := e.adminActions()
-	for _, want := range []string{"approval.approve:" + a, "approval.deny:" + d, "approvals.view:2"} {
-		if !contains(actions, want) {
-			t.Errorf("no audit event %q in %v", want, actions)
-		}
-	}
-	evs, _ := e.st.RecentAdminEvents(context.Background(), e.org, 100)
-	for _, ev := range evs {
-		if ev.Action == "approval.approve:"+a && (ev.Actor != "octocat" || ev.ActorID != "user:"+u.ID) {
-			t.Errorf("decision event %+v", ev)
-		}
-	}
-}
-
-func TestSelfApprovalBlocked(t *testing.T) {
-	e := newEnv(t)
-	e.member(octo, "octocat", store.RoleOwner)
-	b := e.browser()
-	e.signIn(b, octo)
-	id := e.pending("octocat", "delete_repo", `{}`) // the same person's own call
-	csrf := csrfOf(t, b.get("/admin/approvals").Body)
-
-	res := b.post("/admin/approvals/"+id+"/approve", url.Values{"csrf": {csrf}})
-	if res.StatusCode != http.StatusSeeOther || location(res) != "/admin/approvals?result=self" || e.status(id) != store.ApprovalPending {
-		t.Fatalf("self approval: %d %s status %s", res.StatusCode, location(res), e.status(id))
-	}
-	if page := b.get(location(res)); !strings.Contains(page.Body, "your own") {
-		t.Error("the page does not explain the refusal")
-	}
-	if err := e.st.SetSetting(context.Background(), e.org, "approvals.allow_self", "true"); err != nil {
-		t.Fatal(err)
-	}
-	if res := b.post("/admin/approvals/"+id+"/approve", url.Values{"csrf": {csrf}}); location(res) != "/admin/approvals?result=approved" {
-		t.Errorf("with allow_self on: %s", location(res))
-	}
-}
-
 func TestEscapesWhatOthersControl(t *testing.T) {
-	e := newEnv(t)
+	e := newConnEnv(t)
 	evil := ghUser{ID: 31337, Login: "ok-login", Name: `<script>alert("name")</script>`}
 	e.member(evil, `x"><b>p`, store.RoleOwner)
 	b := e.browser()
 	e.signIn(b, evil)
-	e.pending(`<img src=x onerror=alert(1)>`, `<svg onload=alert(2)>`, `{"cmd":"</pre><script>alert(3)</script>","k":"<script>alert(4)</script>"}`)
-	res := b.get("/admin/approvals?result=<script>alert(5)</script>")
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("%d\n%s", res.StatusCode, res.Body)
-	}
-	for _, raw := range []string{"<script", "<img src=x", "<svg onload", "onerror=alert(1)>", "<b>p"} {
-		if strings.Contains(res.Body, raw) {
-			t.Errorf("the page contains unescaped %q", raw)
+	for _, path := range []string{"/connect/linear", "/connect/nosuch", "/admin/signin?next=<script>alert(5)</script>"} {
+		res := b.get(path)
+		for _, raw := range []string{"<script", "<b>p"} {
+			if strings.Contains(res.Body, raw) {
+				t.Errorf("%s contains unescaped %q", path, raw)
+			}
 		}
 	}
-	if !strings.Contains(res.Body, "&lt;svg onload=alert(2)&gt;") {
-		t.Error("the tool name is not shown (escaped)")
-	}
-}
-
-func TestLongArgumentsAreShortened(t *testing.T) {
-	e := newEnv(t)
-	e.member(octo, "octocat", store.RoleOwner)
-	b := e.browser()
-	e.signIn(b, octo)
-	e.pending("ada", "write_file", `{"content":"`+strings.Repeat("A", 60000)+`"}`)
-	res := b.get("/admin/approvals")
-	if res.StatusCode != http.StatusOK || len(res.Body) > 64<<10 || !strings.Contains(res.Body, "shortened") {
-		t.Errorf("status %d, %d bytes, shortened note %v", res.StatusCode, len(res.Body), strings.Contains(res.Body, "shortened"))
-	}
-	// An approver must see what they allow: with arguments cut short only deny is offered.
-	if strings.Contains(res.Body, "/approve") || !strings.Contains(res.Body, "/deny") {
-		t.Error("a call whose arguments are shortened can be approved from the page")
-	}
-}
-
-func TestUnreadableArgumentsCanOnlyBeDenied(t *testing.T) {
-	e := newEnv(t)
-	e.member(octo, "octocat", store.RoleOwner)
-	b := e.browser()
-	e.signIn(b, octo)
-	id := e.pending("ada", "write_file", `{"path":"/etc/hosts"}`)
-	rw, err := sql.Open("sqlite", "file:"+filepath.Join(e.dataDir, "privo.db")+"?_pragma=busy_timeout(5000)")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = rw.Close() }()
-	if _, err := rw.Exec(`UPDATE approvals SET args = x'00000001deadbeef' WHERE id = ?`, id); err != nil {
-		t.Fatal(err)
-	}
-	res := b.get("/admin/approvals")
-	if res.StatusCode != http.StatusOK || strings.Contains(res.Body, "/approve") || !strings.Contains(res.Body, "/deny") || !strings.Contains(res.Body, "cannot be shown") {
-		t.Errorf("status %d; approve offered or no explanation:\n%s", res.StatusCode, res.Body)
+	if res := b.get("/connect/linear"); !strings.Contains(res.Body, "&lt;script&gt;alert(&#34;name&#34;)&lt;/script&gt;") {
+		t.Errorf("the name is not shown (escaped):\n%s", res.Body)
 	}
 }
 
@@ -898,15 +767,13 @@ func TestSecurityHeaders(t *testing.T) {
 	b := e.browser()
 	anon := e.browser()
 	e.signIn(b, octo)
-	e.pending("ada", "t", `{}`)
 	token := e.setupLink("")
 
 	pages := map[string]page{
 		"signin":       anon.get("/admin/signin"),
 		"setup":        anon.get("/admin/setup/" + token),
 		"setup 404":    anon.get("/admin/setup/privo_setup_" + strings.Repeat("A", 43)),
-		"approvals":    b.get("/admin/approvals"),
-		"redirect":     anon.get("/admin/approvals"),
+		"redirect":     anon.get("/admin/"),
 		"403":          b.post("/admin/signout", nil),
 		"405":          anon.get("/auth/github/start"),
 		"bad callback": anon.get("/auth/github/callback"),
@@ -937,6 +804,9 @@ func TestSecurityHeaders(t *testing.T) {
 	css := anon.get("/admin/assets/app.css")
 	if css.StatusCode != http.StatusOK || !strings.HasPrefix(css.Header.Get("Content-Type"), "text/css") || css.Header.Get("X-Content-Type-Options") != "nosniff" || css.Body == "" {
 		t.Errorf("stylesheet: %d %q", css.StatusCode, css.Header.Get("Content-Type"))
+	}
+	if app := b.get("/admin/approvals"); app.Header.Get("Content-Security-Policy") != appCSP || app.Header.Get("Referrer-Policy") != "same-origin" {
+		t.Errorf("app page headers: %v", app.Header)
 	}
 	for name, p := range pages {
 		if p.StatusCode == http.StatusOK && !strings.Contains(p.Body, `/admin/assets/app.css`) {
@@ -999,10 +869,9 @@ func TestNothingSecretInLogsOrAudit(t *testing.T) {
 	e.signIn(e.browser(), ghUser{ID: 99, Login: "stranger"}) // a denied one
 	b2 := e.browser()
 	e.signIn(b2, octo)
-	id := e.pending("ada", "t", `{"password":"hunter2-in-arguments"}`)
-	page := b2.get("/admin/approvals")
-	csrf := csrfOf(t, page.Body)
-	b2.post("/admin/approvals/"+id+"/approve", url.Values{"csrf": {csrf}})
+	csrf := b2.csrf()
+	b2.call(http.MethodPost, "/admin/api/v1/policies", csrf, `{"note":"hunter2-in-a-body"}`, nil)
+	b2.post("/admin/signout", url.Values{"csrf": {csrf}})
 	e.audit.Close()
 
 	var haystack strings.Builder
@@ -1011,7 +880,7 @@ func TestNothingSecretInLogsOrAudit(t *testing.T) {
 	for _, ev := range evs {
 		haystack.WriteString(strings.Join([]string{ev.ID, ev.CallID, ev.Actor, ev.ActorID, ev.Client, ev.Server, ev.Action, ev.Decision, ev.Outcome}, "|") + "\n")
 	}
-	needles := []string{ghClientSecret, token, csrf, "hunter2-in-arguments"}
+	needles := []string{ghClientSecret, token, csrf, "hunter2-in-a-body"}
 	needles = append(needles, e.gh.issuedTokens...)
 	needles = append(needles, e.gh.issuedCodes...)
 	for _, br := range []*browser{b, b2} {

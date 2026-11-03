@@ -253,7 +253,7 @@ verifier are stored in the clear for the life of a session and ten minutes.
 - [ ] Google and Microsoft OIDC; magic-link fallback
 - [ ] Restrict sign-in by GitHub organisation membership (`read:org`)
 - [ ] Step-up re-authentication for high-risk actions
-- [ ] Sessions accepted by the admin API for the UI (F14)
+- [x] Sessions accepted by the admin API for the UI (F14): through `/admin/api/v1`, never on `/api/v1` (ADR 0019)
 - [ ] Approvals page: page through more than 50 pending approvals; show decided ones
 
 ## F06. Client authentication (OAuth server and personal tokens)
@@ -444,8 +444,8 @@ ADRs: 0007
 - [ ] Isolated network; egress allow-list proxy
 
 ## F14. Admin UI
-Status: In progress (first slice built 2026-11-03: every admin step without curl; independent review open)
-ADRs: 0016, 0017, 0018
+Status: In progress (second slice built 2026-11-03: the Preact admin app replaces the server-rendered pages; independent review open)
+ADRs: 0016, 0017, 0018 (superseded), 0019
 
 ### First slice: goal
 
@@ -478,11 +478,48 @@ form per task, no script.
   - tests: `TestServeRunsHandlersAsTheSessionUser`, `TestServeChecksPermissions`, `TestServeAuditsTheUser`, `TestServeIsNotReachableOverHTTP`
 - [x] Members and own-token endpoints (`/api/v1/members`, `/api/v1/me/tokens`); `store.ListUsers`; removing a member also closes their pooled upstream sessions
   - tests: `TestMembersRoleRules`, `TestLastOwnerCannotBeRemovedOrDemoted`, `TestRemoveMemberRevokesTokensSessionsAndGrants`, `TestMyTokensAreOnlyMine`
-- [x] Pages: servers, server, rules, people, tokens, activity; owners and admins land on Servers, members on Tokens, auditors on Activity
+- [x] Pages: servers, server, rules, people, tokens, activity; owners and admins land on Servers, members on Tokens, auditors on Activity (replaced by the app in the second slice; the page tests went with them)
   - tests: `TestNavByRole`, `TestPagesNeedSignInAndRole`, `TestServersPageListsAndAdds` (API errors shown, secrets never echoed), `TestServerPageReviewsTools`, `TestUpstreamTextIsEscaped`, `TestRulesPage`, `TestPeoplePage`, `TestTokensPageShowsTheTokenOnce`, `TestActivityPage`, `TestEveryFormNeedsCSRF`, `TestManagersLandOnServers`, `TestMembersLandOnTokens`
 - [x] Acceptance through the real binary with a browser-like client: `TestAdminUIFromScratch` (setup link, add a server, accept its tool, add an ask rule, invite a member, the member makes their token, the call waits, approve, activity, remove the member and their token stops working)
 - [x] Real browser walkthrough from an empty install (Chromium, 2026-11-03): no console or CSP errors; it led to an escaped `pattern` attribute (Chrome compiles it with the `v` flag), shorter decision and approver text in Activity, and members landing on Tokens
 - [x] Docs: README, deploy guide, `docs/manual-test.md` (the test plan, browser only); version 0.5.0
+
+### Second slice: the admin app (ADR 0019)
+
+Goal: the same tasks, but fast. The owner found the server-rendered pages slow
+(every click a page load, every button a post, a redirect and a reload). The
+admin site becomes a Preact single-page app like VictoriaLogs' UI, embedded
+in the binary; sign-in and OAuth pages stay server-rendered.
+
+Acceptance:
+
+1. Moving between pages loads no page; a page revisited shows its last data
+   at once and refreshes it. Assets are content-hashed, cached for a year and
+   served gzipped; the shell is never cached.
+2. The app reaches the admin API only through `/admin/api/v1/...`, run in
+   process as the signed-in person: the API's checks, rules and audit apply
+   unchanged. `/api/v1` never accepts the session cookie.
+3. Every bridge request needs the session and the session's CSRF token in
+   `X-Privo-CSRF` (reads too); changes also need a same-origin `Origin` (or
+   `Sec-Fetch-Site: same-origin`) and a JSON body. Bodies are capped at
+   64 KiB. A refused request never reaches the API.
+4. CSP for the app: own script only, no inline script or style, no eval, no
+   other origin. Data is rendered only as text; the source never sets HTML.
+5. The build is committed (`web/dist`) and embedded; Go builds and the image
+   need no Node; CI fails if the committed build differs from the source.
+6. A refused self-approval is audited by the API (it was by the old page).
+
+Tasks and the tests that name them:
+
+- [x] ADR 0019; ADR 0018 superseded (its in-process API, member endpoints and setup link stand); CLAUDE.md stack line
+- [x] `web/`: Preact 10, Vite 8, TypeScript 6, no router or UI library; `make ui`, `make ui-test`, `make ui-check`; CI job `ui`
+  - tests (Vitest): `api.test.ts` (CSRF header on every call, JSON only with a body, the server's message, 401 goes to sign-in, unreachable server), `router.test.ts`, `source.test.ts` (no HTML from data), `pages.test.tsx` (nav by role, refused pages ask nothing, sign-out form, add a server, upstream text stays text, accept the ticked tools, delete needs the name, a token shown once with its command, approve and deny with the API's refusal shown, invite link)
+- [x] Website: app pages, hashed assets, `/admin/api/session`, the bridge, `/admin/api/me/connections`; the server-rendered admin, approvals and connections pages removed
+  - tests: `TestAppPagesServeTheShellToSignedIn`, `TestAppPagesRedirectWithoutSession`, `TestAppAssetsAreCachedForever`, `TestAppNeedsItsBuild`, `TestSessionEndpointSaysWhoAndWhatTheyMayDo`, `TestBridgeRunsAsThePerson`, `TestBridgeNeedsSessionHeaderTokenOriginAndJSON`, `TestSignedOutSessionIsRefusedByTheBridge`, `TestRoleChangeAppliesAtOnce`, `TestConnectionsPageListsOwnGrantsOnly`, `TestDisconnectRevokesAndDeletes`, `TestWhereEachRoleLands`
+- [x] API: a refused self-approval is audited (`TestSelfApprovalRefusalIsAudited`)
+- [x] Acceptance through the real binary, as the app calls it: `TestAdminUIFromScratch` (also: the shell's script is served and cached for good), `TestWebSetupAndApprovals` (wrong header token and other origin refused; the token API ignores the session cookie), `TestUpstreamOAuthTwoPeople` (disconnect through the app)
+- [x] Real browser walkthrough from an empty install (Chromium, 2026-11-03): the whole first-day flow with no console or CSP errors; in-app navigation 40–70 ms locally with no page load
+- [x] Docs: README, deploy guide, `docs/manual-test.md`
 
 ### Later in F14
 

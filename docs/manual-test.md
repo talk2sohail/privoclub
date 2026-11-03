@@ -2,7 +2,9 @@
 
 Everything here is done in the browser, except printing the setup link once.
 It checks what the automated tests cannot: the real GitHub, Coolify's proxy and
-cookies over https, a real AI client and real MCP servers. Write down anything
+cookies over https, a real AI client and real MCP servers. The admin site is an
+app (ADR 0019): moving between pages should feel instant, with no white flash;
+note any page that does not. Write down anything
 that differs from "expect" (step number, what you saw, the time) and tell
 Claude.
 
@@ -26,10 +28,12 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
    `https://mcp.deepwiki.com/mcp`, Streamable HTTP, No sign-in needed →
    **Add server**. (If deepwiki already exists, open it instead.)
 2. Expect the server page: status `up`, and under **Waiting for review** its
-   tools with descriptions. Read them, keep them ticked → **Accept the ticked
-   ones**. Expect: "Available to AI clients" lists them.
+   tools with descriptions (they appear by themselves within a few seconds).
+   Read them, keep them ticked → **Accept N tools**. Expect: "Available to AI
+   clients" lists them.
 3. Wrong input shows the reason on the page: try adding a server named `Bad
-   Name` → expect an error, nothing added.
+   Name` → expect the browser to point at the name field; with a valid name
+   but a URL that does not answer, expect the server's reason in a red box.
 
 ## 3. A rule
 
@@ -39,7 +43,7 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
 ## 4. A second person (needs a second GitHub account; skip to 5 otherwise)
 
 1. **People → Invite someone**: Person `tester`, Role member → **Create invite
-   link**. Expect a link shown once.
+   link**. Expect a link with a **Copy** button, shown once.
 2. Open it in a **private window**, Continue with GitHub with the second
    account. Expect: lands on **Tokens**, menu shows only Tokens and Connections.
 
@@ -48,7 +52,8 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
 1. As the person who will call tools (the second account from 4, so that
    you, the owner, can approve; approving your own calls is refused):
    **Tokens → Your AI clients**, name `claude-code` → **Create token**.
-   Expect: the token and a ready command, shown once.
+   Expect: the token and a ready command, each with **Copy**, shown once
+   (leave the page and come back: it is gone).
 2. Run the command in your terminal (`claude mcp add --transport http privo …`).
    Without a second account: make the token as yourself and skip 6.2 (you
    cannot approve your own call; use **Rules** to set the action to allow).
@@ -57,7 +62,8 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
 
 1. In Claude Code ask: "use privo deepwiki to read the wiki structure of
    modelcontextprotocol/go-sdk". Expect: "Approval required…".
-2. As the owner: **Approvals** shows the call and its arguments → **Approve
+2. As the owner: **Approvals** shows the call and its arguments (click
+   **refresh** or switch back to the tab if it was already open) → **Approve
    this call**. Ask Claude Code to try again. Expect: the real answer.
 3. Again, and **Deny**. Expect: the retry is refused.
 4. **Activity**: the calls with decisions and "by sohail"; **Admin changes**:
@@ -65,7 +71,7 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
 
 ## 7. Clean up
 
-1. **People**: tick "sure" next to `tester` → **Remove**. Expect: "removed";
+1. **People**: **Remove…** next to `tester` → **Remove tester**. Expect: "removed";
    their Claude Code gets "invalid token" within seconds.
 2. **Rules**: delete the ask rule. **Tokens**: revoke tokens you made for the
    test.

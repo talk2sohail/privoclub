@@ -303,7 +303,7 @@ func TestUpstreamOAuthTwoPeople(t *testing.T) {
 	}
 	w.gh.as = fakeGitHubUser{ID: 2, Login: "ada-gh", Name: "Ada"}
 	start, _ := adaWeb.do(http.MethodPost, g.base+"/auth/github/start", url.Values{"invite_token": {m[1]}}, nil)
-	if cb, _ := adaWeb.signInThroughGitHub(start); cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/tokens" { // members land on Tokens (ADR 0018)
+	if cb, _ := adaWeb.signInThroughGitHub(start); cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/tokens" { // members land on Tokens
 		t.Fatalf("ada joins: %d %q", cb.StatusCode, cb.Header.Get("Location"))
 	}
 	adaAgent := g.connect(g.issue("ada")) // a gateway token whose person is "ada"
@@ -361,10 +361,11 @@ func TestUpstreamOAuthTwoPeople(t *testing.T) {
 	}
 
 	// Ada disconnects: the token is revoked and her next call gets the link again.
-	_, page := adaWeb.do(http.MethodGet, g.base+"/admin/connections", nil, nil)
-	cm := csrfField.FindStringSubmatch(page)
-	if res, _ := adaWeb.do(http.MethodPost, g.base+"/admin/connections/linear/disconnect", url.Values{"csrf": {cm[1]}}, nil); res.Header.Get("Location") != "/admin/connections?result=disconnected" {
-		t.Fatalf("disconnect: %q", res.Header.Get("Location"))
+	if code, out := adaWeb.app(http.MethodGet, "/me/connections", nil, nil); code != http.StatusOK || !strings.Contains(fmt.Sprint(out), "connected:true") {
+		t.Fatalf("ada's connections: %d %v", code, out)
+	}
+	if code, out := adaWeb.app(http.MethodDelete, "/me/connections/linear", nil, nil); code != http.StatusOK {
+		t.Fatalf("disconnect: %d %v", code, out)
 	}
 	if text, isErr := call(t, adaAgent, "linear__whoami", nil); !isErr || !strings.Contains(text, "/connect/linear") {
 		t.Fatalf("ada after disconnecting: %q", text)

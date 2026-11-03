@@ -90,9 +90,11 @@ Everything after the first sign-in happens in the browser at
 `<PRIVO_PUBLIC_URL>/admin/`: **Servers** (add, review tools, turn off),
 **Rules** (allow, ask, deny), **People** (invite, roles, remove), **Tokens**
 (each person makes tokens for their AI clients, with a ready Claude Code
-command), **Activity**, **Approvals** and **Connections**. The pages call the
-admin API below in process, as the signed-in person (ADR 0018); the API stays
-for scripts.
+command), **Activity**, **Approvals** and **Connections**. It is a small
+Preact app built into the binary (ADR 0019): moving between pages loads no
+page, and every action is a call to the admin API below, run in process as the
+signed-in person; the API stays for scripts. Changing the app needs Node 22
+and `make ui`; building Privo does not.
 
 
 People approve calls in a browser, with their GitHub account and no token

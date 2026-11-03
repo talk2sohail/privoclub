@@ -254,3 +254,26 @@ func TestMyTokensAreOnlyMine(t *testing.T) {
 	// Approvers do not use tools, so they get no gateway token.
 	e.call(t, appr, http.MethodPost, "/api/v1/me/tokens", map[string]any{"name": "x"}, http.StatusForbidden)
 }
+
+func TestSelfApprovalRefusalIsAudited(t *testing.T) {
+	e := newSessionEnv(t)
+	_, owner := e.user(t, "boss", store.RoleOwner)
+	gate := &approval.Service{Store: e.st, Keys: e.api.Keys, Hold: 5 * time.Millisecond, Poll: time.Millisecond}
+	out, err := gate.Gate(context.Background(), approval.Request{Org: e.org, RequesterID: "tok-boss", RequesterName: "boss-laptop", RequesterPerson: "boss",
+		ServerID: "srv1", ServerAlias: "github", Tool: "merge", ArgsDigest: "d1", Args: json.RawMessage(`{"pr":1}`)})
+	if err != nil || out.Result != approval.Pending {
+		t.Fatalf("Gate = %+v, %v", out, err)
+	}
+	e.call(t, owner, http.MethodPost, "/api/v1/approvals/"+out.ID+"/approve", nil, http.StatusForbidden)
+	e.aw.Close() // flush
+	evs, _ := e.st.RecentAdminEvents(context.Background(), e.org, 20)
+	for _, ev := range evs {
+		if ev.Action == "approval.approve:"+out.ID {
+			if ev.Decision != "deny" || ev.Outcome != "refused" || ev.Actor != "boss" {
+				t.Fatalf("refusal audited as %+v", ev)
+			}
+			return
+		}
+	}
+	t.Fatal("the refused self-approval is not audited")
+}

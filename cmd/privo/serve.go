@@ -33,6 +33,7 @@ import (
 	"privo.club/privo/internal/upstreamauth"
 	"privo.club/privo/internal/vault"
 	"privo.club/privo/internal/web"
+	webapp "privo.club/privo/web"
 )
 
 // DefaultOrgSlug names the organisation a single-node install starts with.
@@ -165,7 +166,7 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 		api.PublicURL = cfg.PublicURL
 	}
 
-	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, approvals, logger, siteConnections{grants: grantSvc, oauth: oauthClient, upstream: mgr, api: api})
+	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, logger, siteConnections{grants: grantSvc, oauth: oauthClient, upstream: mgr, api: api})
 	siteCtx, stopSite := context.WithCancel(ctx)
 	siteDone := make(chan struct{})
 	go func() { site.Run(siteCtx, 10*time.Minute); close(siteDone) }()
@@ -272,8 +273,8 @@ type siteConnections struct {
 	api      *control.API // the admin pages call it in process (ADR 0018)
 }
 
-func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *store.Store, org store.OrgID, aw *audit.Writer, approvals *approval.Service, logger *slog.Logger, conn siteConnections) *web.Server {
-	opts := web.Options{Store: st, Org: org, Audit: aw, Logger: logger, Approval: approvals, PublicURL: cfg.PublicURL,
+func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *store.Store, org store.OrgID, aw *audit.Writer, logger *slog.Logger, conn siteConnections) *web.Server {
+	opts := web.Options{Store: st, Org: org, Audit: aw, Logger: logger, PublicURL: cfg.PublicURL, App: webapp.Dist(),
 		IdleTimeout: webCfg.IdleTimeout, MaxAge: webCfg.MaxAge, Missing: webCfg.Missing(cfg.PublicURL)}
 	if conn.grants != nil && conn.oauth != nil && conn.upstream != nil {
 		opts.Grants, opts.OAuth, opts.Upstream = conn.grants, conn.oauth, conn.upstream

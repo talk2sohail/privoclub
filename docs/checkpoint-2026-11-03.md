@@ -23,17 +23,51 @@ Read this first in a new session; the previous one is `docs/checkpoint-2026-11-0
   the cloud copy also vet, `go mod tidy` unchanged, golangci-lint 0 issues and
   a real-Chromium walkthrough from an empty install (no console or CSP errors).
 
+## Later the same day: the Preact admin app (ADR 0019)
+
+The owner committed F07 + F14 (`c7801b0`, not deployed yet) and then found the
+server-rendered pages slow. Every click was a page load and every button a
+post, a redirect and a reload. VictoriaLogs' UI is a Preact + Vite + TypeScript
+app whose build is committed and embedded with `go:embed`, so Privo now does
+the same:
+
+- `web/`: the app's source (Preact 10.29.8, Vite 8.3.5, TypeScript 6.0.3, no
+  router or UI library). `web/dist` is committed and embedded by package
+  `privo.club/privo/web`. The script is about 16 KB gzipped, cached for a
+  year; moving between pages loads no page (40–70 ms in a local Chromium).
+- `internal/web/app.go`: serves the app pages and assets,
+  `/admin/api/session`, the bridge `/admin/api/v1/...` (runs the admin API
+  in process as the signed-in person; needs the session, the `X-Privo-CSRF`
+  header, same origin for changes, JSON bodies of at most 64 KiB) and
+  `/admin/api/me/connections`. `/api/v1` still never takes the cookie.
+- The server-rendered admin, approvals and connections pages are gone.
+  Sign-in, setup link, invite and connect pages stay server-rendered.
+- A refused self-approval is now audited by the API.
+- `make ui` rebuilds the app (Node 22); `make ui-check` is the new CI job
+  `ui`. Building Privo and the image need no Node.
+- Checked: cloud (gofmt, vet, `go test -race ./...`, acceptance, golangci-lint
+  0 issues, Vitest 19/19, `tsc`, reproducible build, real-Chromium walkthrough
+  with no console or CSP errors); this Mac (`go test -race ./...` all ok,
+  acceptance 52/52 under `-race`).
+- **To delete by hand before committing** (the session cannot delete files
+  here; they are stubs so the build passes): `internal/web/ui.go`,
+  `internal/web/ui_test.go`, `internal/web/approvals.go`, and
+  `internal/web/templates/{activity,approvals,connections,people,rules,server,servers,tokens}.html`.
+
 ## Decisions (owner, 2026-11-03)
 
 - No curl in the normal flow: build the UI first, then test from scratch.
 - UI is server-rendered HTML (not React/Vite); CLAUDE.md updated.
+  **Reversed the same day:** a Preact + Vite app like VictoriaLogs', without
+  Playwright tests (ADR 0019).
 - The first owner still claims a setup link printed by `docker exec … privo
   admin setup-link` (not an env var naming the owner).
 - Use an OAuth App (not a GitHub App) for sign-in.
 
 ## Next steps
 
-1. Owner: commit F07 and F14 (separately if wanted), push; Coolify deploys 0.5.0.
+1. Owner: delete the stub files above, commit the admin app, push; Coolify
+   deploys 0.5.0 (F07 + the admin app).
 2. Owner: follow `docs/manual-test.md` (browser only). `docs/manual-test-f05-f07.md`
    is replaced by it and can be deleted.
 3. Independent reviews of F05, F07, F14 when the owner says go.

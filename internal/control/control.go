@@ -957,6 +957,12 @@ func (a *API) decide(approve bool) handler {
 		case errors.Is(err, store.ErrNotFound):
 			return errorf(http.StatusNotFound, "no approval %q", id)
 		case errors.Is(err, approval.ErrSelfApproval):
+			// A refused attempt to decide one's own request is worth a record.
+			ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(),
+				Action: "approval." + map[bool]string{true: "approve", false: "deny"}[approve] + ":" + id, Decision: "deny", Outcome: "refused"}
+			if aerr := a.Audit.Admin(r.Context(), p.OrgID, ev); aerr != nil {
+				a.Logger.Error("audit admin event", "action", ev.Action, "err", aerr)
+			}
 			return errorf(http.StatusForbidden, "%v", err)
 		case errors.Is(err, approval.ErrNotPending):
 			return errorf(http.StatusConflict, "%v", err)

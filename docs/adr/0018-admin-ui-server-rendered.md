@@ -1,6 +1,6 @@
 # 0018. Admin UI: server-rendered pages over the admin API
 
-- Status: Accepted, 2026-11-03 (owner's choice)
+- Status: Superseded by 0019 (points 2, 4 and 5 stand), 2026-11-03
 - Date: 2026-11-03
 - Amends: CLAUDE.md stack line "Admin UI: React and Vite, embedded with go:embed"
 - Related: 0011 (roles), 0014 (token kinds), 0016 (sessions, CSRF, CSP), 0017

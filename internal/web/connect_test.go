@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -215,7 +216,7 @@ func TestSignInReturnsToTheConnectPage(t *testing.T) {
 		start := b2.post("/auth/github/start", url.Values{"return_to": {bad}})
 		code, state := e2.gh.authorize(start.Header.Get("Location"), ada)
 		cb := b2.get("/auth/github/callback?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(state))
-		if cb.Header.Get("Location") != "/admin/connections" {
+		if cb.Header.Get("Location") != "/admin/tokens" { // a member's landing page
 			t.Errorf("return_to %q led to %q", bad, cb.Header.Get("Location"))
 		}
 	}
@@ -305,10 +306,22 @@ func TestConnectSuccessStoresAnEncryptedGrant(t *testing.T) {
 	if !strings.Contains(acts, "upstream.connect:linear") {
 		t.Errorf("connect not audited: %s", acts)
 	}
-	page := b.get("/admin/connections?result=connected")
-	if !strings.Contains(page.Body, "Connected.") || !strings.Contains(page.Body, "Disconnect") {
-		t.Errorf("connections page: %s", page.Body)
+	if mine := myConnectionsOf(t, b); len(mine) != 1 || !mine[0].Connected || mine[0].Alias != "linear" {
+		t.Errorf("connections: %+v", mine)
 	}
+}
+
+func myConnectionsOf(t *testing.T, b *browser) []myConnection {
+	t.Helper()
+	res := b.call(http.MethodGet, "/admin/api/me/connections", b.csrf(), "", nil)
+	var out struct {
+		Connections []myConnection `json:"connections"`
+		CanConnect  bool           `json:"can_connect"`
+	}
+	if res.StatusCode != http.StatusOK || json.Unmarshal([]byte(res.Body), &out) != nil || !out.CanConnect {
+		t.Fatalf("my connections: %d %s", res.StatusCode, res.Body)
+	}
+	return out.Connections
 }
 
 func auditActionsOf(t *testing.T, e *env) string {
@@ -434,12 +447,11 @@ func TestConnectionsPageListsOwnGrantsOnly(t *testing.T) {
 	ob, _ := e.signedIn(ghUser{ID: 1, Login: "boss"}, "boss", store.RoleOwner)
 	e.connect(ob, "boss")
 	b, _ := e.signedIn(ada, "ada", store.RoleMember)
-	page := b.get("/admin/connections")
-	if !strings.Contains(page.Body, `href="/connect/linear"`) || strings.Contains(page.Body, "Disconnect") {
-		t.Fatalf("ada sees someone else's connection: %s", page.Body)
+	if mine := myConnectionsOf(t, b); len(mine) != 1 || mine[0].Connected || mine[0].Issuer == "" {
+		t.Fatalf("ada sees someone else's connection: %+v", mine)
 	}
-	if !strings.Contains(ob.get("/admin/connections").Body, "Disconnect") {
-		t.Fatal("the owner does not see their own connection")
+	if mine := myConnectionsOf(t, ob); len(mine) != 1 || !mine[0].Connected || mine[0].ConnectedAt == "" {
+		t.Fatalf("the owner does not see their own connection: %+v", mine)
 	}
 }
 
@@ -447,13 +459,19 @@ func TestDisconnectRevokesAndDeletes(t *testing.T) {
 	e := newConnEnv(t)
 	b, u := e.signedIn(ada, "ada", store.RoleMember)
 	e.connect(b, "ada")
-	tok := csrfOf(t, b.get("/admin/connections").Body)
-	if p := b.post("/admin/connections/linear/disconnect", url.Values{"csrf": {"wrong"}}); p.StatusCode != http.StatusForbidden {
+	tok := b.csrf()
+	if p := b.call(http.MethodDelete, "/admin/api/me/connections/linear", "wrong", "", nil); p.StatusCode != http.StatusForbidden {
 		t.Fatalf("disconnect without CSRF: %d", p.StatusCode)
 	}
-	p := b.post("/admin/connections/linear/disconnect", url.Values{"csrf": {tok}})
-	if p.StatusCode != http.StatusSeeOther || p.Header.Get("Location") != "/admin/connections?result=disconnected" {
-		t.Fatalf("disconnect: %d %q", p.StatusCode, p.Header.Get("Location"))
+	if p := b.call(http.MethodDelete, "/admin/api/me/connections/linear", tok, "", map[string]string{"Origin": "https://evil.example"}); p.StatusCode != http.StatusForbidden {
+		t.Fatalf("disconnect from another origin: %d", p.StatusCode)
+	}
+	if _, err := e.grant(u.ID); err != nil {
+		t.Fatal("a refused disconnect deleted the grant")
+	}
+	p := b.call(http.MethodDelete, "/admin/api/me/connections/linear", tok, "", nil)
+	if p.StatusCode != http.StatusOK || !strings.Contains(p.Body, `"disconnected":"linear"`) {
+		t.Fatalf("disconnect: %d %s", p.StatusCode, p.Body)
 	}
 	if _, err := e.grant(u.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("grant kept")
@@ -461,8 +479,8 @@ func TestDisconnectRevokesAndDeletes(t *testing.T) {
 	if len(e.as.revoked) != 1 || !strings.HasPrefix(e.as.revoked[0], "RT-ada") {
 		t.Fatalf("revoked %v", e.as.revoked)
 	}
-	if p := b.post("/admin/connections/linear/disconnect", url.Values{"csrf": {tok}}); p.Header.Get("Location") != "/admin/connections?result=gone" {
-		t.Fatalf("second disconnect: %q", p.Header.Get("Location"))
+	if p := b.call(http.MethodDelete, "/admin/api/me/connections/linear", tok, "", nil); p.StatusCode != http.StatusNotFound {
+		t.Fatalf("second disconnect: %d", p.StatusCode)
 	}
 	if !strings.Contains(auditActionsOf(t, e), "upstream.disconnect:linear") {
 		t.Error("disconnect not audited")
@@ -505,7 +523,7 @@ func TestInviteClaimCreatesMemberWithRole(t *testing.T) {
 		t.Fatalf("invite page: %s", page.Body)
 	}
 	cb := e.claimInvite(b, token, ghUser{ID: 7007, Login: "Ada-GH"})
-	if cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/connections" {
+	if cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/tokens" {
 		t.Fatalf("claim: %d %q %s", cb.StatusCode, cb.Header.Get("Location"), cb.Body)
 	}
 	u, err := e.st.UserByIdentity(context.Background(), e.org, store.ProviderGitHub, "7007")
@@ -556,10 +574,18 @@ func TestClientMetadataDocumentIsServed(t *testing.T) {
 	}
 }
 
-func TestMembersLandOnConnectionsApproversOnApprovals(t *testing.T) {
+func TestWhereEachRoleLands(t *testing.T) {
 	e := newConnEnv(t)
+	ob, _ := e.signedIn(ghUser{ID: 1, Login: "boss"}, "boss", store.RoleOwner)
+	if p := ob.get("/admin/"); p.Header.Get("Location") != "/admin/servers" {
+		t.Errorf("owner lands on %q", p.Header.Get("Location"))
+	}
+	audb, _ := e.signedIn(ghUser{ID: 3002, Login: "aud"}, "aud", store.RoleAuditor)
+	if p := audb.get("/admin/"); p.Header.Get("Location") != "/admin/activity" {
+		t.Errorf("auditor lands on %q", p.Header.Get("Location"))
+	}
 	b, _ := e.signedIn(ada, "ada", store.RoleMember)
-	if p := b.get("/admin/"); p.Header.Get("Location") != "/admin/connections" {
+	if p := b.get("/admin/"); p.Header.Get("Location") != "/admin/tokens" {
 		t.Errorf("member lands on %q", p.Header.Get("Location"))
 	}
 	ab, _ := e.signedIn(ghUser{ID: 3001, Login: "appr"}, "appr", store.RoleApprover)
@@ -594,17 +620,5 @@ func TestDynamicRegistrationRetriedWhenRejected(t *testing.T) {
 	e2.as.invalidClient = true
 	if cb := e2.connect(b2, "ada"); cb.StatusCode != http.StatusBadRequest || e2.as.registered != 0 {
 		t.Fatalf("admin-registered client: %d, registered %d", cb.StatusCode, e2.as.registered)
-	}
-}
-
-func TestNavShowsApprovalsOnlyToDeciders(t *testing.T) {
-	e := newConnEnv(t)
-	b, _ := e.signedIn(ada, "ada", store.RoleMember)
-	if p := b.get("/admin/connections"); strings.Contains(p.Body, `href="/admin/approvals"`) || !strings.Contains(p.Body, `href="/admin/connections"`) {
-		t.Errorf("member nav: %s", p.Body)
-	}
-	ob, _ := e.signedIn(ghUser{ID: 1, Login: "boss"}, "boss", store.RoleOwner)
-	if p := ob.get("/admin/connections"); !strings.Contains(p.Body, `href="/admin/approvals"`) {
-		t.Errorf("owner nav lacks approvals")
 	}
 }

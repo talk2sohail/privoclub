@@ -87,7 +87,7 @@ People approve calls at `https://app.privo.club/admin/approvals` with their GitH
 
 Treat the setup link as a secret until it is used. It sits in the URL path, so a proxy's access log may record it; once claimed it is worthless, and unclaimed it expires after an hour.
 
-After the claim, everything else is in the browser: add servers, rules, invite people, and make your AI client's token on **Tokens** (no curl, no bootstrap token needed). Later sign-ins: `https://app.privo.club/admin/signin`. Sessions end after 2 hours without a request or 12 hours in all (`PRIVO_SESSION_IDLE_TIMEOUT`, `PRIVO_SESSION_MAX_AGE`). With GitHub Enterprise Server, set `PRIVO_GITHUB_BASE_URL` and `PRIVO_GITHUB_API_URL`, and add its network to `PRIVO_EGRESS_ALLOW_CIDRS` if it is private.
+After the claim, everything else is in the browser (the admin app, ADR 0019; nothing to install, it is in the image): add servers, rules, invite people, and make your AI client's token on **Tokens** (no curl, no bootstrap token needed). Later sign-ins: `https://app.privo.club/admin/signin`. Sessions end after 2 hours without a request or 12 hours in all (`PRIVO_SESSION_IDLE_TIMEOUT`, `PRIVO_SESSION_MAX_AGE`). With GitHub Enterprise Server, set `PRIVO_GITHUB_BASE_URL` and `PRIVO_GITHUB_API_URL`, and add its network to `PRIVO_EGRESS_ALLOW_CIDRS` if it is private.
 
 Privo cannot require two-factor authentication at GitHub; turn it on for the accounts that approve calls (an organisation can require it).
 

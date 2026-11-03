@@ -6,6 +6,7 @@ docs
 
 # Landing page (built separately from site/) and local backups
 site
+web/node_modules
 _backup-*
 .env
 .DS_Store

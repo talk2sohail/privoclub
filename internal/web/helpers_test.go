@@ -324,7 +324,7 @@ func newEnvWith(t *testing.T, conn bool, opts ...envOpt) *env {
 	svc := &approval.Service{Store: st, Keys: kr, Hold: 10 * time.Millisecond, Poll: 2 * time.Millisecond}
 	o := Options{
 		Store: st, Org: org.ID, Audit: aw, Logger: logger, Now: clk.now,
-		Approval:  svc,
+		API: newFakeAPI(), App: testApp,
 		GitHub:    &githubauth.Client{ClientID: ghClientID, ClientSecret: ghClientSecret, BaseURL: gu, APIURL: au, HTTP: gh.srv.Client()},
 		PublicURL: pu, IdleTimeout: 2 * time.Hour, MaxAge: 12 * time.Hour,
 	}
@@ -429,26 +429,6 @@ func (e *env) setupAs(b *browser, token string, u ghUser) page {
 	return b.get("/auth/github/callback?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(state))
 }
 
-// pending creates a pending approval requested by person for a tool call.
-func (e *env) pending(person, tool string, args string) string {
-	e.t.Helper()
-	id, _ := e.pendingReq(person, tool, args)
-	return id
-}
-
-// pendingReq is pending, also returning the request, so a test can play the
-// gateway's retry of the same call.
-func (e *env) pendingReq(person, tool string, args string) (string, approval.Request) {
-	e.t.Helper()
-	req := approval.Request{Org: e.org, RequesterID: "tok-" + person, RequesterName: person + "-token",
-		RequesterPerson: person, ServerID: "srv1", ServerAlias: "github", Tool: tool, ArgsDigest: randHex(8), Args: json.RawMessage(args), Reason: "needs a human"}
-	out, err := e.approvals.Gate(context.Background(), req)
-	if err != nil || out.Result != approval.Pending {
-		e.t.Fatalf("Gate = %+v, %v", out, err)
-	}
-	return out.ID, req
-}
-
 // db opens the database read-only, next to the store's own connections.
 func (e *env) db() *sql.DB {
 	e.t.Helper()
@@ -458,15 +438,6 @@ func (e *env) db() *sql.DB {
 	}
 	e.t.Cleanup(func() { _ = db.Close() })
 	return db
-}
-
-func (e *env) status(id string) string {
-	e.t.Helper()
-	a, err := e.st.GetApproval(context.Background(), e.org, id)
-	if err != nil {
-		e.t.Fatal(err)
-	}
-	return a.EffectiveStatus(e.clock.now())
 }
 
 func (e *env) adminActions() []string {

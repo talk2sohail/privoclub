@@ -1,12 +1,13 @@
-// Package web is Privo's admin website: sign-in with GitHub and the approvals
-// page (ADR 0016).
+// Package web is Privo's admin website: sign-in with GitHub (ADR 0016), the
+// invite and upstream connect pages (ADR 0017), and the admin app with its
+// bridge to the admin API (ADR 0019).
 //
 // Everything here is built to fail closed. A session is a random secret in an
 // HttpOnly cookie that the database knows only as a hash. Every state-changing
-// request is checked for its origin and a per-session CSRF token. Pages are
-// served with a Content-Security-Policy that allows no script and no inline
-// style, so what an attacker controls (tool names, arguments, GitHub profile
-// names) can only ever be text.
+// request is checked for its origin and a per-session CSRF token. The
+// server-rendered pages are served with a Content-Security-Policy that allows
+// no script; the app's allows only its own, and it renders what an attacker
+// controls (tool names, arguments, GitHub profile names) only as text.
 package web
 
 import (
@@ -14,16 +15,15 @@ import (
 	"context"
 	"crypto/subtle"
 	"embed"
-	"encoding/json"
 	"errors"
 	"html/template"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
-	"privo.club/privo/internal/approval"
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/githubauth"
 	"privo.club/privo/internal/ids"
@@ -64,7 +64,6 @@ type Store interface {
 	TouchSession(ctx context.Context, org store.OrgID, hash string, now time.Time) error
 	DeleteSession(ctx context.Context, org store.OrgID, hash string, ev store.AuditEvent) error
 	PruneSignIn(ctx context.Context, org store.OrgID, now time.Time, idle time.Duration) error
-	ListApprovals(ctx context.Context, org store.OrgID, status string, limit int) ([]store.Approval, error)
 
 	// Invites and upstream connections (ADR 0017).
 	Invite(ctx context.Context, org store.OrgID, secretHash string, now time.Time) (store.Invite, error)
@@ -80,10 +79,9 @@ type Auditor interface {
 	Admin(ctx context.Context, org store.OrgID, ev store.AuditEvent) error
 }
 
-// Approvals decides approvals and shows their arguments.
-type Approvals interface {
-	Decide(ctx context.Context, org store.OrgID, id string, by approval.Decider, approve bool) error
-	Arguments(ctx context.Context, org store.OrgID, a store.Approval) (json.RawMessage, error)
+// API is the in-process admin API (control.API.Serve, ADR 0018 point 2).
+type API interface {
+	Serve(ctx context.Context, p auth.Principal, method, path string, body any) (int, []byte)
 }
 
 // Options configure a Server.
@@ -93,7 +91,6 @@ type Options struct {
 	Audit     Auditor
 	Logger    *slog.Logger
 	Now       func() time.Time
-	Approval  Approvals
 	GitHub    *githubauth.Client
 	PublicURL *url.URL
 	// IdleTimeout and MaxAge bound a session (defaults 2h and 12h).
@@ -110,9 +107,10 @@ type Options struct {
 	OAuth    *upstreamauth.Client
 	Upstream Upstreams
 
-	// API is the admin API in process (ADR 0018); without it the admin
-	// pages (servers, rules, people, tokens, activity) are not served.
+	// API is the admin API in process and App the admin app's build
+	// (ADR 0019). The site needs both.
 	API API
+	App fs.FS
 }
 
 // Server is the admin website.
@@ -122,6 +120,7 @@ type Server struct {
 	log     *slog.Logger
 	now     func() time.Time
 	tmpl    map[string]*template.Template
+	app     *app
 
 	origin                     string // the public origin, as browsers send it in Origin
 	secure                     bool
@@ -151,8 +150,7 @@ func New(o Options) *Server {
 	if s.o.StateCap <= 0 {
 		s.o.StateCap = DefaultStateCap
 	}
-	for _, name := range []string{"signin", "setup", "message", "approvals", "invite", "connect", "connections",
-		"servers", "server", "rules", "people", "tokens", "activity"} {
+	for _, name := range []string{"signin", "setup", "message", "invite", "connect"} {
 		s.tmpl[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+name+".html"))
 	}
 
@@ -177,7 +175,14 @@ func New(o Options) *Server {
 		// subdomain or a plain-http page tries to plant.
 		s.sessionCookie, s.stateCookie = "__Host-"+s.sessionCookie, "__Host-"+s.stateCookie
 	}
-	s.enabled = len(s.missing) == 0 && o.Store != nil && o.Audit != nil && o.Approval != nil && o.GitHub != nil && o.PublicURL != nil
+	if o.App != nil {
+		a, err := loadApp(o.App)
+		if err != nil {
+			s.missing = append(s.missing, "the admin app's build ("+err.Error()+"; run make ui)")
+		}
+		s.app = a
+	}
+	s.enabled = len(s.missing) == 0 && o.Store != nil && o.Audit != nil && o.GitHub != nil && o.PublicURL != nil && o.API != nil && s.app != nil
 	if !s.enabled && len(s.missing) == 0 {
 		s.missing = []string{"the admin site is not wired up"}
 	}
@@ -212,41 +217,14 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/setup/{token}", s.wrap(s.setupPage))
 	mux.Handle("POST /auth/github/start", s.wrap(s.start))
 	mux.Handle("GET /auth/github/callback", s.wrap(s.callbackHandler))
-	mux.Handle("GET /admin/approvals", s.wrap(s.approvalsPage))
-	mux.Handle("POST /admin/approvals/{id}/approve", s.wrap(s.decide(true)))
-	mux.Handle("POST /admin/approvals/{id}/deny", s.wrap(s.decide(false)))
 	mux.Handle("POST /admin/signout", s.wrap(s.signOut))
 	mux.Handle("GET /admin/invite/{token}", s.wrap(s.invitePage))
+	s.appRoutes(mux)
 	if s.connections() {
-		mux.Handle("GET /admin/connections", s.wrap(s.connectionsPage))
-		mux.Handle("POST /admin/connections/{alias}/disconnect", s.wrap(s.disconnect))
 		mux.Handle("GET /connect/callback", s.wrap(s.connectCallbackHandler))
 		mux.Handle("GET /connect/{alias}", s.wrap(s.connectPage))
 		mux.Handle("POST /connect/{alias}/start", s.wrap(s.connectStart))
 		mux.Handle("GET /oauth/client-metadata.json", http.HandlerFunc(s.clientMetadata))
-	}
-	if s.uiEnabled() {
-		mux.Handle("GET /admin/servers", s.wrap(s.serversPage))
-		mux.Handle("POST /admin/servers", s.wrap(s.addServer))
-		mux.Handle("GET /admin/servers/{alias}", s.wrap(s.serverPage))
-		mux.Handle("POST /admin/servers/{alias}/accept", s.wrap(s.acceptTools))
-		mux.Handle("POST /admin/servers/{alias}/enabled", s.wrap(s.setServerEnabled))
-		mux.Handle("POST /admin/servers/{alias}/delete", s.wrap(s.deleteServer))
-		mux.Handle("POST /admin/servers/{alias}/connections/{person}/remove", s.wrap(s.removeConnection))
-		mux.Handle("GET /admin/rules", s.wrap(s.rulesPage))
-		mux.Handle("POST /admin/rules", s.wrap(s.addRule))
-		mux.Handle("POST /admin/rules/default", s.wrap(s.setDefaultRule))
-		mux.Handle("POST /admin/rules/{id}/delete", s.wrap(s.deleteRule))
-		mux.Handle("GET /admin/people", s.wrap(s.peoplePage))
-		mux.Handle("POST /admin/people/invite", s.wrap(s.invitePerson))
-		mux.Handle("POST /admin/people/{person}/role", s.wrap(s.setRole))
-		mux.Handle("POST /admin/people/{person}/remove", s.wrap(s.removePerson))
-		mux.Handle("GET /admin/tokens", s.wrap(s.tokensPage))
-		mux.Handle("POST /admin/tokens", s.wrap(s.createToken))
-		mux.Handle("POST /admin/tokens/mine", s.wrap(s.createMyToken))
-		mux.Handle("POST /admin/tokens/mine/{id}/revoke", s.wrap(s.revokeToken(true)))
-		mux.Handle("POST /admin/tokens/{id}/revoke", s.wrap(s.revokeToken(false)))
-		mux.Handle("GET /admin/activity", s.wrap(s.activityPage))
 	}
 }
 
@@ -317,45 +295,23 @@ type pageData struct {
 	SetupToken string
 	Expires    string
 
-	// approvals page
-	Approvals []approvalView
-
-	// sign-in, invite, connect and connections pages
-	ReturnTo           string
-	InviteToken        string
-	Person, Role       string
-	Server, AuthHost   string
-	Scopes             string
-	Connections        []connectionView
-	CanConnect         bool
-	ConnectionsEnabled bool
-
-	// admin pages (ADR 0018)
-	UIEnabled bool
-	Page      map[string]any
+	// sign-in, invite and connect pages
+	ReturnTo         string
+	InviteToken      string
+	Person, Role     string
+	Server, AuthHost string
+	Scopes           string
 }
 
 type userView struct {
 	Name, Person, Role string
-	CanDecide          bool // shows the approvals link
-	// what the navigation shows (ADR 0018)
-	CanServers, CanRules, CanPeople, CanTokens, CanActivity, UsesGateway bool
 }
 
 type flash struct{ Class, Text string }
 
 type link struct{ Href, Text string }
 
-type approvalView struct {
-	ID, Tool, Server, Person, Requester, Reason, Expires string
-	Args                                                 string
-	ArgsShortened, ArgsError, CanApprove                 bool
-	ArgsBytes                                            int
-}
-
 func (s *Server) render(w http.ResponseWriter, status int, name string, d pageData) {
-	d.ConnectionsEnabled = s.connections()
-	d.UIEnabled = s.uiEnabled()
 	var buf bytes.Buffer
 	if err := s.tmpl[name].ExecuteTemplate(&buf, "base", d); err != nil {
 		s.log.Error("web: render", "page", name, "err", err)
@@ -392,6 +348,8 @@ func (s *Server) stylesheet(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/css; charset=utf-8")
+	// Not content-hashed, so cached for a while rather than forever.
+	w.Header().Set("Cache-Control", "public, max-age=3600")
 	_, _ = w.Write(b)
 }
 
@@ -456,11 +414,7 @@ func (s *Server) principal(u store.User) auth.Principal {
 }
 
 func view(u store.User) *userView {
-	p := auth.Principal{Role: u.Role}
-	return &userView{Name: u.DisplayName, Person: u.Person, Role: u.Role,
-		CanDecide: p.Can(auth.PermDecide), CanServers: p.Can(auth.PermManageServers), CanRules: p.Can(auth.PermManagePolicy),
-		CanPeople: p.Can(auth.PermManageMembers), CanTokens: p.Can(auth.PermUseGateway) || p.Can(auth.PermManageTokens),
-		CanActivity: p.Can(auth.PermReadAudit), UsesGateway: p.Can(auth.PermUseGateway)}
+	return &userView{Name: u.DisplayName, Person: u.Person, Role: u.Role}
 }
 
 // sameOrigin accepts a request that comes from this site's own pages. The

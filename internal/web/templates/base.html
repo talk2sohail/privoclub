@@ -11,16 +11,7 @@
 <header class="bar">
   <a class="brand" href="/admin/">Privo</a>
 {{if .User}}
-  <nav>
-{{- if .User.CanDecide}}<a href="/admin/approvals">Approvals</a>{{end}}
-{{- if .UIEnabled}}
-{{- if .User.CanServers}}<a href="/admin/servers">Servers</a>{{end}}
-{{- if .User.CanRules}}<a href="/admin/rules">Rules</a>{{end}}
-{{- if .User.CanPeople}}<a href="/admin/people">People</a>{{end}}
-{{- if .User.CanTokens}}<a href="/admin/tokens">Tokens</a>{{end}}
-{{- if .User.CanActivity}}<a href="/admin/activity">Activity</a>{{end}}
-{{- end}}
-{{- if and .ConnectionsEnabled .User.UsesGateway}}<a href="/admin/connections">Connections</a>{{end}}</nav>
+  <nav><a href="/admin/">Back to Privo</a></nav>
   <form class="who" method="post" action="/admin/signout">
     <span>{{.User.Name}}{{if ne .User.Name .User.Person}} <small>{{.User.Person}}</small>{{end}} <small>{{.User.Role}}</small></span>
     <input type="hidden" name="csrf" value="{{.CSRF}}">

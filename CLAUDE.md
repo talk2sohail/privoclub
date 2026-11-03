@@ -21,8 +21,9 @@ mid-size companies, to enterprise scale and quality.
 - SQLite (pure Go) on a single node, Postgres for HA and Privo Cloud; sqlc and
   goose. No Valkey in v1.
 - MCP 2026-07-28 primary, 2025-11-25 compatible; stateless gateway (ADR 0004).
-- Admin UI: server-rendered `html/template` pages, no JavaScript, embedded with
-  `go:embed`; pages call the admin API in process (ADR 0018).
+- Admin UI: Preact + Vite + TypeScript app in `web/`, build output committed
+  and embedded with `go:embed`; it calls the admin API through the session
+  (ADR 0019). Sign-in and OAuth pages stay server-rendered.
 - First deployment target: Coolify (Docker Compose). Other platforms through
   packaged artifacts and the versioned runner protocol (ADR 0007).
 
