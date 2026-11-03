@@ -39,7 +39,7 @@ const (
 // appPages are the paths the app answers. Navigation inside the app never
 // loads a page; these are for a first visit, a reload or a link.
 var appPages = []string{
-	"/admin/servers", "/admin/servers/{alias}", "/admin/rules", "/admin/people",
+	"/admin/start", "/admin/servers", "/admin/servers/{alias}", "/admin/rules", "/admin/people", "/admin/teams",
 	"/admin/tokens", "/admin/activity", "/admin/approvals", "/admin/connections",
 }
 
@@ -227,6 +227,7 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		"servers":       p.Can(auth.PermManageServers),
 		"rules":         p.Can(auth.PermManagePolicy),
 		"people":        p.Can(auth.PermManageMembers),
+		"teams":         p.Can(auth.PermManageMembers),
 		"manage_tokens": p.Can(auth.PermManageTokens),
 		"use_gateway":   p.Can(auth.PermUseGateway),
 		"activity":      p.Can(auth.PermReadAudit),

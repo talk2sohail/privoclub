@@ -162,6 +162,37 @@ A person disconnects there; an admin lists and removes connections with
 `GET /api/v1/servers/<alias>/connections` and
 `DELETE /api/v1/servers/<alias>/connections/<person>`.
 
+## Teams and the server catalog
+
+Each team sees only the servers given to it (ADR 0020). On the admin site:
+
+- **Teams → New team**: start from a profile (Developers, Designers, Product
+  managers, Sales and support) or a blank team, then add its people. A team made
+  from a profile shows the catalog's servers for it, each one click away.
+- **Servers → Add from the catalog**: 25 hosted MCP servers (GitHub, Linear,
+  Sentry, Figma, Canva, Notion, Asana, Slack…), checked with Privo's own
+  discovery on 2026-11-03. Pick the teams that may use it. Most register Privo
+  by themselves; GitHub, Asana, Slack and HubSpot need an OAuth app of yours,
+  and the form shows the callback URL to give them. Every tool is still
+  reviewed before anyone sees it.
+- **A server's page → Who can use it**: the teams that reach it.
+  **Everyone** is built in (every member is in it). A server with no team is
+  reachable by nobody.
+- **Start** (where members land): their teams, their servers with a Connect
+  link where their own account is needed, and the setup of Claude Code,
+  Cursor, VS Code, Codex or Windsurf with a token made on the spot.
+
+The gateway lists only the tools of servers the caller's teams reach and
+answers a call on any other server as if the name did not exist. Rules can
+name a team: subject `team:<slug>`. Existing servers, and servers added through
+the API without `"teams"`, are for everyone. API: `GET/POST /api/v1/teams`,
+`PATCH/DELETE /api/v1/teams/<slug>`, `POST /api/v1/teams/<slug>/members`
+(`{"person": "ada"}`), `DELETE /api/v1/teams/<slug>/members/<person>`,
+`POST /api/v1/teams/<slug>/servers` (`{"alias": "figma"}`),
+`DELETE /api/v1/teams/<slug>/servers/<alias>`, `"teams": [...]` on
+`POST` and `PATCH /api/v1/servers`, `GET /api/v1/catalog`, and
+`GET /api/v1/me/tools` for one's own servers.
+
 ## Tokens
 
 Privo has two kinds of personal token (ADR 0014):

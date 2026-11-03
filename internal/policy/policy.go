@@ -2,7 +2,7 @@
 // approval, or is denied (ADR 0001 decision stage).
 //
 // Rules match a server alias (or "*"), an upstream tool name glob and a
-// subject ("*", "role:<role>" or "token:<id>"). Among the matching rules the
+// subject ("*", "role:<role>", "team:<slug>" or "token:<id>"; ADR 0020). Among the matching rules the
 // highest priority wins; within that priority deny beats ask beats allow.
 // When no rule matches, the org default applies, tightened (never relaxed)
 // by the tool's reviewed annotations: a tool that declares itself
@@ -11,6 +11,7 @@ package policy
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,9 +24,10 @@ import (
 type Request struct {
 	Role        string
 	TokenID     string
-	Server      string // alias
-	Tool        string // upstream name (tool, prompt, or resource URI)
-	PinHash     string // hash of the reviewed definition being called
+	Teams       []string // the caller's teams, "everyone" included when they are in it
+	Server      string   // alias
+	Tool        string   // upstream name (tool, prompt, or resource URI)
+	PinHash     string   // hash of the reviewed definition being called
 	Annotations *mcp.ToolAnnotations
 }
 
@@ -48,6 +50,9 @@ func ValidSubject(s string) bool {
 		return true
 	case strings.HasPrefix(s, "role:"):
 		return store.ValidRole(strings.TrimPrefix(s, "role:"))
+	case strings.HasPrefix(s, "team:"):
+		t := strings.TrimPrefix(s, "team:")
+		return t == store.TeamEveryone || store.ValidTeamSlug(t)
 	case strings.HasPrefix(s, "token:"):
 		return len(s) > len("token:")
 	}
@@ -82,6 +87,8 @@ func matches(r store.Policy, req Request, now time.Time) bool {
 		return true
 	case strings.HasPrefix(r.Subject, "role:"):
 		return strings.TrimPrefix(r.Subject, "role:") == req.Role
+	case strings.HasPrefix(r.Subject, "team:"):
+		return slices.Contains(req.Teams, strings.TrimPrefix(r.Subject, "team:"))
 	case strings.HasPrefix(r.Subject, "token:"):
 		return strings.TrimPrefix(r.Subject, "token:") == req.TokenID
 	}

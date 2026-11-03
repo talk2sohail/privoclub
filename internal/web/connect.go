@@ -53,11 +53,11 @@ func (s *Server) landing(u store.User) string {
 	case p.Can(auth.PermDecide):
 		return "/admin/approvals"
 	case p.Can(auth.PermUseGateway):
-		return "/admin/tokens"
+		return "/admin/start" // their teams, their servers, their AI client's setup (ADR 0020)
 	case p.Can(auth.PermReadAudit):
 		return "/admin/activity"
 	}
-	return "/admin/tokens"
+	return "/admin/start"
 }
 
 // ---- invites

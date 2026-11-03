@@ -19,8 +19,8 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
    `docker exec $(docker ps -qf name=f46equvu3pb9kmq0shusvojo) /privo admin setup-link --person sohail`
    (skip if you are already the owner: sign in at `/admin/signin`).
 2. Open the link → **Continue with GitHub**. Expect: you land on **Servers**,
-   your name and "owner" top right, and the menu Approvals, Servers, Rules,
-   People, Tokens, Activity, Connections.
+   your name and "owner" top right, and the menu Start, Approvals, Servers,
+   Teams, Rules, People, Tokens, Activity, Connections.
 
 ## 2. A server
 
@@ -45,7 +45,9 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
 1. **People → Invite someone**: Person `tester`, Role member → **Create invite
    link**. Expect a link with a **Copy** button, shown once.
 2. Open it in a **private window**, Continue with GitHub with the second
-   account. Expect: lands on **Tokens**, menu shows only Tokens and Connections.
+   account. Expect: lands on **Start** (their teams, the servers they can use,
+   and how to set up an AI client); the menu shows only Start, Tokens and
+   Connections.
 
 ## 5. An AI client token
 
@@ -90,3 +92,27 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
 3. Call one of its tools from Claude Code. Expect: it runs as your account.
 4. Disconnect on **Connections**; call again. Expect: the answer is a link to
    connect.
+
+## 9. Teams and the catalog (needs 0.6.0+)
+
+1. **Teams → New team**: Start from **Designers** (the name fills in) →
+   **Create team**. Expect: the team opens below, with **Suggested servers**
+   (Figma, Canva, Webflow, Miro).
+2. Add the second account from 4 to the team (**Add to team**).
+3. **Servers → Add from the catalog**: click **Designers**, then **Add** next to
+   Figma. Under **Who can use it** untick Everyone, tick Designers → **Add
+   Figma**. Expect: the server page, waiting for an admin's connected account;
+   connect yours and accept its tools (as in 8).
+4. Try **Add** on GitHub: expect the OAuth app help, a link to GitHub and the
+   callback URL with a **Copy** button. Cancel.
+5. As the second account, open **Start**. Expect: Designers among the teams,
+   Figma listed with **Connect**, and the client tabs (Claude Code, Cursor,
+   VS Code, Codex, Windsurf, Other). Make a token there: every tab fills it in.
+6. In that person's AI client: Figma's tools show up (within 5 seconds of a
+   refresh). Take them out of Designers (× next to their name): Figma's tools
+   are gone at the next refresh, and a call is "not available".
+7. Open Figma's page as the owner: **Who can use it** shows Designers. Untick
+   everything: expect the warning that nobody can use it. Put Designers back →
+   **Save**.
+8. **Activity → Admin changes**: team.create, team.member.add, server.teams with
+   you as actor.

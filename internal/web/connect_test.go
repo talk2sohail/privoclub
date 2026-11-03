@@ -216,7 +216,7 @@ func TestSignInReturnsToTheConnectPage(t *testing.T) {
 		start := b2.post("/auth/github/start", url.Values{"return_to": {bad}})
 		code, state := e2.gh.authorize(start.Header.Get("Location"), ada)
 		cb := b2.get("/auth/github/callback?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(state))
-		if cb.Header.Get("Location") != "/admin/tokens" { // a member's landing page
+		if cb.Header.Get("Location") != "/admin/start" { // a member's landing page
 			t.Errorf("return_to %q led to %q", bad, cb.Header.Get("Location"))
 		}
 	}
@@ -523,7 +523,7 @@ func TestInviteClaimCreatesMemberWithRole(t *testing.T) {
 		t.Fatalf("invite page: %s", page.Body)
 	}
 	cb := e.claimInvite(b, token, ghUser{ID: 7007, Login: "Ada-GH"})
-	if cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/tokens" {
+	if cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/start" {
 		t.Fatalf("claim: %d %q %s", cb.StatusCode, cb.Header.Get("Location"), cb.Body)
 	}
 	u, err := e.st.UserByIdentity(context.Background(), e.org, store.ProviderGitHub, "7007")
@@ -585,7 +585,7 @@ func TestWhereEachRoleLands(t *testing.T) {
 		t.Errorf("auditor lands on %q", p.Header.Get("Location"))
 	}
 	b, _ := e.signedIn(ada, "ada", store.RoleMember)
-	if p := b.get("/admin/"); p.Header.Get("Location") != "/admin/tokens" {
+	if p := b.get("/admin/"); p.Header.Get("Location") != "/admin/start" {
 		t.Errorf("member lands on %q", p.Header.Get("Location"))
 	}
 	ab, _ := e.signedIn(ghUser{ID: 3001, Login: "appr"}, "appr", store.RoleApprover)

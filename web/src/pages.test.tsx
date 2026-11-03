@@ -35,9 +35,10 @@ describe("the shell", () => {
     at("/admin/tokens");
     await start(session("member"), { "GET /admin/api/v1/me/tokens": { tokens: [] } });
     const nav = screen.getByRole("navigation", { name: "Pages" });
+    expect(nav.textContent).toContain("Start");
     expect(nav.textContent).toContain("Tokens");
     expect(nav.textContent).toContain("Connections");
-    for (const hidden of ["Approvals", "Servers", "Rules", "People", "Activity"]) expect(nav.textContent).not.toContain(hidden);
+    for (const hidden of ["Approvals", "Servers", "Teams", "Rules", "People", "Activity"]) expect(nav.textContent).not.toContain(hidden);
   });
 
   it("refuses a page the role cannot use, without asking the server", async () => {
@@ -179,5 +180,170 @@ describe("people", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create invite link" }));
     await screen.findByText("https://privo.example/admin/invite/privo_invite_x");
     expect(srv.writes()[0]!.body).toEqual({ person: "bob", role: "member" });
+  });
+});
+
+const teamsAnswer = {
+  teams: [
+    { slug: "everyone", name: "Everyone", description: "Every member of the organisation.", profile: "", built_in: true, members: [], servers: ["notion"] },
+    { slug: "designers", name: "Designers", description: "", profile: "designers", members: [{ person: "mia", name: "Mia" }], servers: [] },
+  ],
+  profiles: [
+    { id: "developers", name: "Developers", description: "Code." },
+    { id: "designers", name: "Designers", description: "Design." },
+    { id: "everyone", name: "Everyone", description: "All." },
+  ],
+};
+
+const catalogAnswer = {
+  profiles: teamsAnswer.profiles,
+  callback_url: "https://privo.example/oauth/callback",
+  oauth_available: true,
+  entries: [
+    { id: "figma", name: "Figma", description: "Design files.", alias: "figma", url: "https://mcp.figma.com/mcp", transport: "http", auth: "oauth", registration: "automatic", profiles: ["designers"], checked_on: "2026-11-03" },
+    { id: "github", name: "GitHub", description: "Code.", alias: "github", url: "https://api.githubcopilot.com/mcp/", transport: "http", auth: "oauth", registration: "own_app", app_url: "https://github.com/settings/applications/new", app_help: "Create an OAuth App.", scopes: ["repo"], profiles: ["developers"], checked_on: "2026-11-03" },
+    { id: "notion", name: "Notion", description: "Docs.", alias: "notion", url: "https://mcp.notion.com/mcp", transport: "http", auth: "oauth", registration: "automatic", profiles: ["everyone"], checked_on: "2026-11-03", installed: "notion" },
+  ],
+};
+
+describe("start", () => {
+  it("shows the person's teams and servers, the connect link, and sets up a client with a new token", async () => {
+    at("/admin/start");
+    const srv = await start(session("member"), {
+      "GET /admin/api/v1/me/tools": {
+        teams: [{ slug: "designers", name: "Designers" }, { slug: "everyone", name: "Everyone" }],
+        servers: [
+          { alias: "figma", name: "Figma", description: evil, status: "up", tools: 4, auth: "oauth", connected: false, connect_url: "https://privo.example/connect/figma" },
+          { alias: "deepwiki", name: "deepwiki", status: "up", tools: 2 },
+        ],
+      },
+      "GET /admin/api/v1/me/tokens": { tokens: [] },
+      "POST /admin/api/v1/me/tokens": () => [201, { id: "t1", token: "privo_pat_abc_def", name: "cursor", kind: "gateway", role: "member", person: "ada", expires_at: "2027-01-01T00:00:00Z" }],
+    });
+    await screen.findByText("Figma");
+    expect(screen.getByText("Designers")).toBeTruthy();
+    expect(screen.getByText(evil)).toBeTruthy();
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByRole("link", { name: "Connect" }).getAttribute("href")).toBe("https://privo.example/connect/figma");
+    expect(screen.getByText("not needed")).toBeTruthy();
+    // Before a token exists, the setup shows a placeholder.
+    expect(screen.getByText(/Bearer <your token>/)).toBeTruthy();
+    fireEvent.input(screen.getByLabelText("Name of the AI client"), { target: { value: "cursor" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create token" }));
+    await screen.findByText("privo_pat_abc_def");
+    fireEvent.click(screen.getByRole("tab", { name: "Cursor" }));
+    const snippet = [...document.querySelectorAll("pre")].map((p) => p.textContent ?? "").find((t) => t.includes("mcpServers"))!;
+    expect(JSON.parse(snippet)).toEqual({ mcpServers: { privo: { url: "https://privo.example/mcp", headers: { Authorization: "Bearer privo_pat_abc_def" } } } });
+    expect(srv.writes().map((c) => c.method + " " + c.url)).toEqual(["POST /admin/api/v1/me/tokens"]);
+  });
+
+  it("says so when no server is shared with the person", async () => {
+    at("/admin/start");
+    await start(session("member"), { "GET /admin/api/v1/me/tools": { teams: [{ slug: "everyone", name: "Everyone" }], servers: [] }, "GET /admin/api/v1/me/tokens": { tokens: [] } });
+    await screen.findByText(/No servers are shared with your teams yet/);
+  });
+});
+
+describe("teams", () => {
+  it("creates a team from a profile, opens it and adds a member", async () => {
+    at("/admin/teams");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "GET /admin/api/v1/members": {
+        members: [
+          { person: "mia", name: "Mia", role: "member", github_login: "mia", removed: false },
+          { person: "dev", name: "Dev", role: "member", github_login: "dev", removed: false },
+          { person: "gone", name: "Gone", role: "member", github_login: "gone", removed: true },
+        ],
+      },
+      "GET /admin/api/v1/servers": { servers: [{ alias: "notion", status: "up", target: "", items: {}, pending_review: 0, teams: ["everyone"] }] },
+      "GET /admin/api/v1/catalog": catalogAnswer,
+      "POST /admin/api/v1/teams": () => [201, { team: { slug: "developers", name: "Developers", description: "", profile: "developers", members: [], servers: [] } }],
+      "POST /admin/api/v1/teams/designers/members": { team: "designers", added: "dev" },
+    });
+    await screen.findByText("every member");
+    // Everyone cannot be offered as a profile to start from.
+    expect(screen.queryByRole("radio", { name: /^Everyone/ })).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: /Developers/ }));
+    expect((document.querySelector('input[name="name"]') as HTMLInputElement).value).toBe("Developers");
+    fireEvent.click(screen.getByRole("button", { name: "Create team" }));
+    await waitFor(() => expect(srv.writes()[0]?.body).toEqual({ name: "Developers", description: "", profile: "developers" }));
+    await screen.findByText("Team created. Add its people and servers below.");
+
+    const openButtons = screen.getAllByRole("button", { name: "Open" });
+    fireEvent.click(openButtons[1]!);
+    const detail = await screen.findByRole("region", { name: "Designers" });
+    const select = detail.querySelector('select[name="person"]') as HTMLSelectElement;
+    expect([...select.options].map((o) => o.value)).toEqual(["dev"]); // not mia (already in), not a removed member
+    fireEvent.click(screen.getByRole("button", { name: "Add to team" }));
+    await waitFor(() => expect(srv.writes()[1]).toMatchObject({ method: "POST", url: "/admin/api/v1/teams/designers/members", body: { person: "dev" } }));
+    // The designers profile suggests Figma from the catalog.
+    expect(await screen.findByText("Figma")).toBeTruthy();
+  });
+});
+
+describe("catalog", () => {
+  it("adds a server from the catalog for the chosen teams, with its OAuth app where one is needed", async () => {
+    at("/admin/servers");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [] },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "GET /admin/api/v1/catalog": catalogAnswer,
+      "POST /admin/api/v1/servers": () => [201, { server: { alias: "github" } }],
+      "GET /admin/api/v1/servers/github/pins": { pins: [] },
+    });
+    await screen.findByText("GitHub");
+    expect(screen.getByRole("link", { name: "added as notion" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Developers" }));
+    expect(screen.queryByText("Figma")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    const form = await screen.findByRole("form", { name: "Add GitHub" });
+    expect(form.textContent).toContain("https://privo.example/oauth/callback");
+    // Give it to the designers instead of everyone.
+    const boxes = form.querySelectorAll('input[type="checkbox"]');
+    fireEvent.click(boxes[0]!);
+    fireEvent.click(boxes[1]!);
+    fireEvent.input(form.querySelector('input[name="client_id"]')!, { target: { value: "Iv1.abc" } });
+    fireEvent.input(form.querySelector('input[name="client_secret"]')!, { target: { value: "s3cret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add GitHub" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/admin/servers/github"));
+    expect(srv.writes()[0]!.body).toEqual({
+      alias: "github",
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp/",
+      teams: ["designers"],
+      oauth: { client_id: "Iv1.abc", client_secret: "s3cret", scopes: ["repo"] },
+    });
+  });
+
+  it("warns when nobody would be able to use the server", async () => {
+    at("/admin/servers");
+    await start(session("owner"), { "GET /admin/api/v1/servers": { servers: [] }, "GET /admin/api/v1/teams": teamsAnswer, "GET /admin/api/v1/catalog": catalogAnswer });
+    await screen.findByText("Figma");
+    fireEvent.click(screen.getAllByRole("button", { name: "Add" })[0]!);
+    const form = await screen.findByRole("form", { name: "Add Figma" });
+    fireEvent.click(form.querySelector('input[type="checkbox"]')!); // untick everyone
+    expect(form.textContent).toContain("Nobody will be able to use this server");
+  });
+});
+
+describe("server access", () => {
+  it("saves who can use a server", async () => {
+    at("/admin/servers/notion");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [{ alias: "notion", status: "up", target: "https://mcp.notion.com/mcp", items: { tool: 1 }, pending_review: 0, teams: ["everyone"] }] },
+      "GET /admin/api/v1/servers/notion/pins": { pins: [] },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "PATCH /admin/api/v1/servers/notion": { server: { alias: "notion", teams: ["designers"] } },
+    });
+    const save = (await screen.findByRole("button", { name: "Save" })) as HTMLButtonElement;
+    const card = save.closest("section")!;
+    expect(save.disabled).toBe(true);
+    const boxes = card.querySelectorAll('input[type="checkbox"]');
+    fireEvent.click(boxes[1]!); // designers
+    fireEvent.click(boxes[0]!); // not everyone
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+    await waitFor(() => expect(srv.writes()[0]).toMatchObject({ method: "PATCH", url: "/admin/api/v1/servers/notion", body: { teams: ["designers"] } }));
   });
 });

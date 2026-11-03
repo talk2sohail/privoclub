@@ -2,12 +2,11 @@ import { useState } from "preact/hooks";
 import { api, seg } from "../api";
 import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
+import { ClientSetup } from "../setup";
 import type { Token } from "../types";
 import { Copy, Empty, ErrorLine, formValues, useAction, when } from "../ui";
 
-export function claudeCommand(mcpURL: string, token: string): string {
-  return `claude mcp add --transport http privo ${mcpURL} --header "Authorization: Bearer ${token}"`;
-}
+export { claudeCommand } from "../clients";
 
 export function Tokens({ session }: PageProps) {
   const can = session.can;
@@ -59,11 +58,8 @@ export function Tokens({ session }: PageProps) {
           <Copy text={created.token} label="token" />
           {created.kind === "gateway" && (
             <>
-              <p>Add Privo to Claude Code with:</p>
-              <Copy text={claudeCommand(session.mcp_url, created.token)} label="command" />
-              <p class="meta">
-                Other AI clients: MCP server URL <code>{session.mcp_url}</code>, header <code>Authorization: Bearer &lt;token&gt;</code>.
-              </p>
+              <h3>Add Privo to your AI client</h3>
+              <ClientSetup mcpURL={session.mcp_url} token={created.token} />
             </>
           )}
         </section>

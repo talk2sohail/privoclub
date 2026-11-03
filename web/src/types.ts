@@ -13,6 +13,7 @@ export type ServerView = {
   auth?: string;
   registration?: string;
   connect_url?: string;
+  teams?: string[];
 };
 
 export type Pin = {
@@ -94,4 +95,56 @@ export type MyConnection = {
   scopes?: string;
   connected_at?: string;
   last_used_at?: string;
+};
+
+export type Team = {
+  slug: string;
+  name: string;
+  description: string;
+  profile: string;
+  built_in?: boolean;
+  members: { person: string; name: string }[];
+  servers: string[];
+};
+
+export type Profile = { id: string; name: string; description: string };
+
+export type CatalogEntry = {
+  id: string;
+  name: string;
+  description: string;
+  alias: string;
+  url: string;
+  transport: string;
+  auth: "none" | "oauth";
+  registration?: "automatic" | "own_app";
+  app_url?: string;
+  app_help?: string;
+  scopes?: string[];
+  profiles: string[];
+  checked_on: string;
+  installed?: string;
+};
+
+export type Catalog = {
+  profiles: Profile[];
+  entries: CatalogEntry[];
+  callback_url: string;
+  oauth_available: boolean;
+};
+
+export type MyServer = {
+  alias: string;
+  name: string;
+  description?: string;
+  status: string;
+  tools: number;
+  auth?: string;
+  connected?: boolean;
+  connect_url?: string;
+};
+
+export type MyTools = {
+  teams: { slug: string; name: string }[];
+  servers: MyServer[];
 };

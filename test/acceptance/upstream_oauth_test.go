@@ -303,7 +303,7 @@ func TestUpstreamOAuthTwoPeople(t *testing.T) {
 	}
 	w.gh.as = fakeGitHubUser{ID: 2, Login: "ada-gh", Name: "Ada"}
 	start, _ := adaWeb.do(http.MethodPost, g.base+"/auth/github/start", url.Values{"invite_token": {m[1]}}, nil)
-	if cb, _ := adaWeb.signInThroughGitHub(start); cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/tokens" { // members land on Tokens
+	if cb, _ := adaWeb.signInThroughGitHub(start); cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/start" { // members land on Start
 		t.Fatalf("ada joins: %d %q", cb.StatusCode, cb.Header.Get("Location"))
 	}
 	adaAgent := g.connect(g.issue("ada")) // a gateway token whose person is "ada"

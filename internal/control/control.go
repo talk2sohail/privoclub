@@ -71,6 +71,7 @@ func (a *API) Routes(mux *http.ServeMux) { a.register(mux, a.with) }
 // register mounts every route on mux, each wrapped by wrap.
 func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) http.Handler) {
 	a.registerMembers(mux, wrap)
+	a.registerTeams(mux, wrap)
 	mux.Handle("GET /api/v1/servers", wrap(auth.PermReadServers, a.listServers))
 	mux.Handle("POST /api/v1/servers", wrap(auth.PermManageServers, a.createServer))
 	mux.Handle("PATCH /api/v1/servers/{alias}", wrap(auth.PermManageServers, a.patchServer))
@@ -195,13 +196,18 @@ type serverView struct {
 	Auth         string `json:"auth,omitempty"`
 	Registration string `json:"registration,omitempty"`
 	ConnectURL   string `json:"connect_url,omitempty"`
+	// Teams that reach the server (ADR 0020); shown to admins only.
+	Teams []string `json:"teams,omitempty"`
 }
 
 // view describes a server. Members and auditors see neither the full target
 // (URLs often carry keys) nor connection errors (they can contain them).
-func (a *API) view(ctx context.Context, p auth.Principal, s store.Server) serverView {
+func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams []string) serverView {
 	admin := p.Can(auth.PermManageServers)
 	v := serverView{ID: s.ID, Alias: s.Alias, Transport: s.Transport, Enabled: s.Enabled, Status: upstream.StatusConnecting, Items: map[string]int{}}
+	if admin {
+		v.Teams = append([]string{}, teams...)
+	}
 	switch {
 	case s.Transport == "stdio" && admin:
 		v.Target = s.Config.Path
@@ -233,14 +239,29 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server) server
 	return v
 }
 
+// listServers lists the org's servers. Admins see every server; anyone else
+// only the ones their teams reach (ADR 0020).
 func (a *API) listServers(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	servers, err := a.Store.ListServers(r.Context(), p.OrgID)
 	if err != nil {
 		return err
 	}
+	st, err := a.Store.ServerTeams(r.Context(), p.OrgID)
+	if err != nil {
+		return err
+	}
+	var acc store.Access
+	admin := p.Can(auth.PermManageServers)
+	if !admin {
+		if acc, err = gateway.Access(r.Context(), a.Store, p); err != nil {
+			return err
+		}
+	}
 	out := make([]serverView, 0, len(servers))
 	for _, s := range servers {
-		out = append(out, a.view(r.Context(), p, s))
+		if admin || acc.Reaches(s.ID) {
+			out = append(out, a.view(r.Context(), p, s, st[s.ID]))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": out})
 	return nil
@@ -259,6 +280,8 @@ type createServerReq struct {
 	Env     map[string]string `json:"env"`
 	// OAuth makes every call run with the caller's own account (ADR 0017).
 	OAuth *oauthReq `json:"oauth"`
+	// Teams that reach the server (ADR 0020); absent means everyone.
+	Teams *[]string `json:"teams"`
 }
 
 func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -271,6 +294,13 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 		return errorf(http.StatusUnprocessableEntity, "alias must match %s", aliasRe)
 	}
 	srv := store.Server{OrgID: p.OrgID, ID: ids.New(), Alias: req.Alias, Transport: req.Transport, Enabled: true, CreatedAt: time.Now()}
+	if req.Teams != nil {
+		teams, err := cleanTeams(*req.Teams)
+		if err != nil {
+			return err
+		}
+		srv.Teams = teams
+	}
 	secrets := map[string]string{}
 	if req.OAuth != nil && req.Transport != "http" && req.Transport != "sse" {
 		return errorf(http.StatusUnprocessableEntity, "only http and sse servers can use each person's own account (oauth)")
@@ -338,9 +368,16 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 		if errors.Is(err, store.ErrConflict) {
 			return errorf(http.StatusConflict, "a server named %q already exists", req.Alias)
 		}
+		if errors.Is(err, store.ErrUnknownTeam) {
+			return errorf(http.StatusUnprocessableEntity, "one of the teams %v does not exist", srv.Teams)
+		}
 		return err
 	}
+	if srv.Teams == nil {
+		srv.Teams = []string{store.TeamEveryone}
+	}
 	a.adminEvent(ctx, p, "server.create", srv.Alias)
+	a.adminEvent(ctx, p, "server.teams="+strings.Join(srv.Teams, ","), srv.Alias)
 	if srv.Config.OAuth != nil {
 		a.adminEvent(ctx, p, "server.oauth_register:"+srv.Alias+":"+srv.Config.OAuth.Registration, srv.Alias)
 	}
@@ -350,7 +387,7 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	// Report the first connection result, so the admin sees the status and
 	// how many items wait for review in the response.
 	a.Upstream.WaitSettled(ctx, srv.ID, ConnectWait)
-	writeJSON(w, http.StatusCreated, map[string]any{"server": a.view(ctx, p, srv)})
+	writeJSON(w, http.StatusCreated, map[string]any{"server": a.view(ctx, p, srv, srv.Teams)})
 	return nil
 }
 
@@ -389,24 +426,43 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, p auth.Princip
 		return err
 	}
 	var req struct {
-		Enabled *bool `json:"enabled"`
+		Enabled *bool     `json:"enabled"`
+		Teams   *[]string `json:"teams"`
 	}
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	if req.Enabled == nil {
+	if req.Enabled == nil && req.Teams == nil {
 		return errorf(http.StatusUnprocessableEntity, "nothing to change")
 	}
-	if err := a.Store.SetServerEnabled(r.Context(), p.OrgID, s.ID, *req.Enabled); err != nil {
-		return err
+	if req.Teams != nil {
+		teams, err := cleanTeams(*req.Teams)
+		if err != nil {
+			return err
+		}
+		if err := a.Store.SetServerTeams(r.Context(), p.OrgID, s.ID, teams, event(p, "server.teams="+strings.Join(teams, ","), s.Alias)); err != nil {
+			if errors.Is(err, store.ErrUnknownTeam) {
+				return errorf(http.StatusUnprocessableEntity, "one of the teams %v does not exist", teams)
+			}
+			return err
+		}
 	}
-	a.adminEvent(r.Context(), p, "server.enabled="+strconv.FormatBool(*req.Enabled), s.Alias)
-	if err := a.Upstream.Sync(r.Context(), p.OrgID); err != nil {
-		return err
+	if req.Enabled != nil {
+		if err := a.Store.SetServerEnabled(r.Context(), p.OrgID, s.ID, *req.Enabled); err != nil {
+			return err
+		}
+		a.adminEvent(r.Context(), p, "server.enabled="+strconv.FormatBool(*req.Enabled), s.Alias)
+		if err := a.Upstream.Sync(r.Context(), p.OrgID); err != nil {
+			return err
+		}
+		a.Upstream.WaitSettled(r.Context(), s.ID, ConnectWait)
 	}
-	a.Upstream.WaitSettled(r.Context(), s.ID, ConnectWait)
 	s, _ = a.Store.ServerByAlias(r.Context(), p.OrgID, s.Alias)
-	writeJSON(w, http.StatusOK, map[string]any{"server": a.view(r.Context(), p, s)})
+	st, err := a.Store.ServerTeams(r.Context(), p.OrgID)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": a.view(r.Context(), p, s, st[s.ID])})
 	return nil
 }
 
@@ -788,7 +844,7 @@ func (a *API) createPolicy(w http.ResponseWriter, r *http.Request, p auth.Princi
 	case !policy.ValidGlob(req.Tool):
 		return errorf(http.StatusUnprocessableEntity, "tool must be a name or glob pattern")
 	case !policy.ValidSubject(req.Subject):
-		return errorf(http.StatusUnprocessableEntity, "subject must be *, role:<role> or token:<id>")
+		return errorf(http.StatusUnprocessableEntity, "subject must be *, role:<role>, team:<slug> or token:<id>")
 	case !policy.ValidAction(req.Action):
 		return errorf(http.StatusUnprocessableEntity, "action must be allow, ask or deny")
 	case req.Priority < -1000 || req.Priority > 1000:

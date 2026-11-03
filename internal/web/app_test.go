@@ -246,7 +246,7 @@ func TestSessionEndpointSaysWhoAndWhatTheyMayDo(t *testing.T) {
 	member, _ := e.appSignedIn(ada, "ada", store.RoleMember)
 	s = sessionAnswer{}
 	_ = json.Unmarshal([]byte(member.get("/admin/api/session").Body), &s)
-	if s.Landing != "/admin/tokens" || !s.Can["use_gateway"] || !s.Can["connections"] {
+	if s.Landing != "/admin/start" || !s.Can["use_gateway"] || !s.Can["connections"] {
 		t.Errorf("member: %+v", s)
 	}
 	for _, k := range []string{"decide", "servers", "rules", "people", "manage_tokens", "activity"} {

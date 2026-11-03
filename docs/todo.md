@@ -370,7 +370,7 @@ until URL elicitation lands.
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ## F08. Toolsets
-Status: Not started
+Status: Not started (server-level access per team came first, in F26 and ADR 0020)
 
 - [ ] Toolsets per user and group; hide unseen tools from lists
 
@@ -677,3 +677,69 @@ Tests, written first: `internal/config` `TestReadFile*`, `TestLayer*`, `TestLoad
 - [x] `--config`, `PRIVO_CONFIG_FILE` and `privo config show` (`cmd/privo/configcmd.go`); key provider (`vault.LoadKeyProvider`) and the bootstrap token read through the lookup
 - [x] `docs/privo.example.yaml`, README (settings table completed: it was missing the retry bounds, runner, master key variables), deploy guide (config file on Coolify)
 - [ ] Later: structured sections (sign-in providers in F05), reload on SIGHUP only if a setting needs it
+
+## F26. Teams, the server catalog and the start page
+Status: In progress (first slice built 2026-11-03; independent review and the owner's browser walkthrough open)
+ADRs: 0020
+
+Goal (owner's request, 2026-11-03): adding servers for developers, designers
+and product managers is quick, each team sees only its own servers, and every
+person knows how to use Privo from their AI client.
+
+Acceptance:
+1. Owners and admins create teams (from a profile or blank), rename them,
+   add and remove members and delete them; each change is audited with the
+   person as actor. `everyone` is built in and cannot be changed.
+2. A server is reachable by the teams it is given. New servers get
+   `everyone` unless teams are named; existing servers keep working. A
+   server with no team is reachable by nobody, and the app says so.
+3. The gateway lists only items of reachable servers; a call, prompt or read
+   on an unreachable server is answered exactly like an unknown name. A
+   change of teams or membership applies to the gateway's next request; a
+   client's cached list follows within its 5-second lifetime (ADR 0003).
+4. Rules can use `team:<slug>`; deleting a team deletes its rules.
+5. The catalog lists hosted servers by profile with their sign-in kind; an
+   admin adds one in one step (name prefilled, teams chosen), with an OAuth
+   app's client id only where the provider needs it. The entry still goes
+   through every check of `POST /api/v1/servers`.
+6. Every person who uses the gateway lands on a start page: their teams,
+   their servers (connect links where their own account is needed), and
+   the setup of Claude Code, Cursor, VS Code, Codex, Windsurf or another
+   client with a token made there.
+7. Members cannot list teams or the catalog, or change any of it.
+
+Threat note:
+- Team access is a filter in front of policy, not a replacement: rules and
+  approvals still apply to everything a person reaches.
+- Fail closed: an error reading access fails the request; a server without
+  teams is reachable by nobody; a removed member is in no team, not even
+  `everyone`.
+- No probing: an unreachable server's tool is "not available", the same
+  answer as a name that does not exist.
+- The catalog is embedded data, not fetched at runtime, so it cannot be
+  changed from outside; an entry only fills a form, and the egress check,
+  discovery and tool review still run.
+- Membership follows the token's person (F07 R-01, parked): the fix that
+  binds tokens to a user id covers teams too.
+
+Tasks and the tests that name them:
+
+- [x] Spec (this section) and ADR 0020
+- [x] Store: migration `00006_teams.sql` (`teams`, `team_members`, `server_teams`, every table with `org_id`; existing servers get `everyone`); teams, members, server teams, `Access`
+  - tests: `TestTeamsCreateListRenameDelete`, `TestTeamSlugRules`, `TestEveryoneIsReserved`, `TestTeamMembers`, `TestServerTeamsDefaultToEveryone`, `TestSetServerTeamsNeedsKnownTeams`, `TestAccessFollowsTeams`, `TestAccessOfRemovedMemberIsEmpty`, `TestDeleteTeamDropsItsRulesAndAccess`, `TestDeleteServerDropsItsTeams`, `TestTeamsAreIsolatedPerOrg`, `TestMigrationGivesExistingServersEveryone`
+- [x] Policy: subject `team:<slug>`
+  - tests: `TestTeamSubject`, `TestValidSubjectTeam`
+- [x] Gateway: lists and resolve filtered by access (`gateway.Access`, shared with the admin API); rules get the caller's teams
+  - tests: `TestAccessResolvesTheCallersMember` (member token, signed-in user, token without a member), `TestAccessFailsClosed`; lists, calls, the team rule and changes applying at once are tested end to end in the acceptance test below, since they need a live upstream
+- [x] Catalog (`internal/catalog`): 25 entries in five profiles; each URL checked on 2026-11-03 with `upstreamauth.Discover` and `ChooseRegistration` (Box left out: its issuer does not match where its metadata is served; Atlassian: no protected resource metadata). GitHub, Asana, Slack and HubSpot need the admin's own OAuth app: embedded entries and profiles
+  - tests: `TestCatalogEntriesAreValid` (aliases, https URLs, known profiles, unique ids, a check date), `TestProfilesHaveEntries`, `TestEntriesIsACopy`
+- [x] Admin API: `/api/v1/teams` (list, create, patch, delete, members, servers), `teams` on create and patch server, `GET /api/v1/catalog`, `GET /api/v1/me/tools`
+  - tests: `TestTeamsAPIRoleRules`, `TestTeamsAPIAudited`, `TestCreateServerWithTeams`, `TestPatchServerTeams` (members list only the servers they reach, without team names), `TestCatalogAPI`, `TestMyTools`
+- [x] App: Start page (landing for members), Teams page, catalog on Servers, "Who can use it" on a server; client setup snippets shared with Tokens
+  - tests (Vitest): `clients.test.ts` (each client's snippet; Codex keeps the token out of its config file), `pages.test.tsx` (start page lists teams, servers and the connect link, upstream text stays text, a new token fills every tab; teams page creates from a profile and adds a member; the catalog adds a server for the chosen teams with its OAuth app, and warns when nobody could use it; access saved on the server page); 28/28
+- [x] Acceptance through the real binary: `TestTeamsLimitWhatEachPersonSees` (two members, a designers server and an everyone server; each lists only theirs; a call on the other's is answered like an unknown name; joining the team opens it on the next call; a `team:` rule applies to members only; a server without teams answers nobody; deleting the team deletes its rule; members cannot see teams or the catalog; the audit names the owner). `TestAdminUIFromScratch` and `TestUpstreamOAuthTwoPeople` updated: members land on Start
+- [x] Docs: README, `docs/manual-test.md` (section 9), deploy guide note; version 0.6.0
+- [ ] Independent review (tenancy and the request pipeline: required by CLAUDE.md)
+- [ ] Owner's browser walkthrough (`docs/manual-test.md` section 9)
+- [ ] Discovered: token names are unique in the whole org, so two people cannot both call their token `claude-code`; make them unique per person (with the person in the name shown to admins)
+- [ ] Later: tool-level toolsets inside a server (F08); a team's own rule presets; identity provider groups mapped onto teams (F20)

@@ -57,6 +57,7 @@ type Store interface {
 	Setting(ctx context.Context, org store.OrgID, key, def string) (string, error)
 	ListPolicies(ctx context.Context, org store.OrgID) ([]store.Policy, error)
 	UserByPerson(ctx context.Context, org store.OrgID, person string) (store.User, error)
+	AccessFor(ctx context.Context, org store.OrgID, userID string) (store.Access, error)
 }
 
 // Gateway is the MCP data plane.
@@ -148,13 +149,42 @@ func (g *Gateway) finish(req mcp.Request, res mcp.Result, err error) (mcp.Result
 	return res, g.rpcError(err)
 }
 
-// visible returns the reviewed items of kind for org, sorted by public name.
-func (g *Gateway) visible(ctx context.Context, org store.OrgID, kind string) ([]upstream.Item, error) {
+// Access returns what a caller reaches (ADR 0020): the servers of their
+// teams. A signed-in person is their user; a token is the member its person
+// names, and a token whose person is no member is in "everyone" only. A
+// removed member reaches nothing. Any error is returned, so callers fail
+// closed. The admin API uses it too, so both answer the same.
+func Access(ctx context.Context, st Store, p auth.Principal) (store.Access, error) {
+	userID := p.UserID
+	if userID == "" && p.Person != "" {
+		u, err := st.UserByPerson(ctx, p.OrgID, p.Person)
+		switch {
+		case err == nil:
+			userID = u.ID // a removed member reaches nothing: AccessFor checks
+		case !errors.Is(err, store.ErrNotFound):
+			return store.Access{}, err
+		}
+	}
+	return st.AccessFor(ctx, p.OrgID, userID)
+}
+
+func (g *Gateway) access(ctx context.Context, p auth.Principal) (store.Access, error) {
+	return Access(ctx, g.Store, p)
+}
+
+// visible returns the reviewed items of kind on the servers p reaches,
+// sorted by public name.
+func (g *Gateway) visible(ctx context.Context, p auth.Principal, kind string) ([]upstream.Item, error) {
+	org := p.OrgID
+	acc, err := g.access(ctx, p)
+	if err != nil {
+		return nil, err
+	}
 	items := g.Upstream.Items(org)
 	statuses := map[string]map[store.PinKey]string{}
 	var out []upstream.Item
 	for _, it := range items {
-		if it.Kind != kind {
+		if it.Kind != kind || !acc.Reaches(it.ServerID) {
 			continue
 		}
 		st, ok := statuses[it.ServerID]
@@ -175,8 +205,8 @@ func (g *Gateway) visible(ctx context.Context, org store.OrgID, kind string) ([]
 	return dropCollisions(out, g.Logger), nil
 }
 
-func (g *Gateway) find(ctx context.Context, org store.OrgID, kind, public string) (upstream.Item, bool, error) {
-	items, err := g.visible(ctx, org, kind)
+func (g *Gateway) find(ctx context.Context, p auth.Principal, kind, public string) (upstream.Item, bool, error) {
+	items, err := g.visible(ctx, p, kind)
 	if err != nil {
 		return upstream.Item{}, false, err
 	}
@@ -202,7 +232,7 @@ func listCache() mcp.Cacheable { return mcp.Cacheable{TTLMs: listCacheTTLMs, Cac
 func readCache() mcp.Cacheable { return mcp.Cacheable{TTLMs: 0, CacheScope: "private"} }
 
 func (g *Gateway) listTools(ctx context.Context, p auth.Principal) (mcp.Result, error) {
-	items, err := g.visible(ctx, p.OrgID, upstream.KindTool)
+	items, err := g.visible(ctx, p, upstream.KindTool)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +246,7 @@ func (g *Gateway) listTools(ctx context.Context, p auth.Principal) (mcp.Result, 
 }
 
 func (g *Gateway) listPrompts(ctx context.Context, p auth.Principal) (mcp.Result, error) {
-	items, err := g.visible(ctx, p.OrgID, upstream.KindPrompt)
+	items, err := g.visible(ctx, p, upstream.KindPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +260,7 @@ func (g *Gateway) listPrompts(ctx context.Context, p auth.Principal) (mcp.Result
 }
 
 func (g *Gateway) listResources(ctx context.Context, p auth.Principal) (mcp.Result, error) {
-	items, err := g.visible(ctx, p.OrgID, upstream.KindResource)
+	items, err := g.visible(ctx, p, upstream.KindResource)
 	if err != nil {
 		return nil, err
 	}
@@ -276,13 +306,17 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	if err != nil {
 		return decision{}, err
 	}
+	acc, err := g.access(ctx, c.p)
+	if err != nil {
+		return decision{}, err
+	}
 	var ann *mcp.ToolAnnotations
 	if c.item.Tool != nil {
 		ann = c.item.Tool.Annotations
 	}
 	// Rules match tools, prompts and resources alike by upstream name, so a
 	// server-wide deny or a default deny covers everything the server offers.
-	dec := policy.Evaluate(rules, policy.Request{Role: c.p.Role, TokenID: c.p.TokenID, Server: c.item.Alias, Tool: c.item.Name,
+	dec := policy.Evaluate(rules, policy.Request{Role: c.p.Role, TokenID: c.p.TokenID, Teams: acc.Teams, Server: c.item.Alias, Tool: c.item.Name,
 		PinHash: c.item.Hash, Annotations: ann}, def, time.Now())
 	switch dec.Action {
 	case store.ActionAllow:
@@ -520,7 +554,7 @@ func notFound(kind, name string) *mcp.CallToolResult {
 }
 
 func (g *Gateway) callTool(ctx context.Context, p auth.Principal, params *mcp.CallToolParamsRaw) (mcp.Result, error) {
-	it, ok, err := g.find(ctx, p.OrgID, upstream.KindTool, params.Name)
+	it, ok, err := g.find(ctx, p, upstream.KindTool, params.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -565,7 +599,7 @@ func (g *Gateway) callTool(ctx context.Context, p auth.Principal, params *mcp.Ca
 }
 
 func (g *Gateway) getPrompt(ctx context.Context, p auth.Principal, params *mcp.GetPromptParams) (mcp.Result, error) {
-	it, ok, err := g.find(ctx, p.OrgID, upstream.KindPrompt, params.Name)
+	it, ok, err := g.find(ctx, p, upstream.KindPrompt, params.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -611,7 +645,7 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 	if !ok {
 		return nil, invalidParams("resource %q is not a Privo resource URI", params.URI)
 	}
-	items, err := g.visible(ctx, p.OrgID, upstream.KindResource)
+	items, err := g.visible(ctx, p, upstream.KindResource)
 	if err != nil {
 		return nil, err
 	}

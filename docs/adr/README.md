@@ -29,3 +29,4 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0017](0017-upstream-oauth-broker.md) | Upstream OAuth broker: each person connects their own account | Proposed (accept after the F07 review) |
 | [0018](0018-admin-ui-server-rendered.md) | Admin UI: server-rendered pages over the admin API | Superseded by 0019 |
 | [0019](0019-admin-app-preact.md) | Admin app: Preact and Vite, embedded in the binary | Accepted |
+| [0020](0020-teams-and-server-catalog.md) | Teams decide which servers a person reaches; a built-in catalog adds them | Proposed (accept after the F26 review) |

@@ -30,6 +30,7 @@ export function session(role: "owner" | "member" | "approver", over: Partial<Ses
       servers: owner,
       rules: owner,
       people: owner,
+      teams: owner,
       manage_tokens: owner,
       use_gateway: role !== "approver",
       activity: owner,
@@ -41,7 +42,7 @@ export function session(role: "owner" | "member" | "approver", over: Partial<Ses
     invite_roles: ["member", "approver", "auditor", "admin"],
     change_roles: ["member", "approver", "auditor", "admin", "owner"],
     token_roles: ["owner", "admin", "auditor", "approver"],
-    landing: owner ? "/admin/servers" : "/admin/tokens",
+    landing: owner ? "/admin/servers" : "/admin/start",
     ...over,
   };
 }

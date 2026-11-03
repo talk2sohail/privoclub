@@ -163,3 +163,39 @@ func TestGlob(t *testing.T) {
 		}
 	}
 }
+
+func TestTeamSubject(t *testing.T) {
+	now := time.Now()
+	rules := []store.Policy{
+		rule("1", "figma", "*", "team:designers", "allow", 5),
+		rule("2", "figma", "*", "*", "deny", 0),
+		rule("3", "notion", "delete_*", "team:everyone", "ask", 0),
+	}
+	designer := Request{Server: "figma", Tool: "get_file", Teams: []string{"designers", "everyone"}}
+	if d := Evaluate(rules, designer, "allow", now); d.Action != "allow" {
+		t.Fatalf("designer on figma: %s", d.Action)
+	}
+	dev := Request{Server: "figma", Tool: "get_file", Teams: []string{"developers", "everyone"}}
+	if d := Evaluate(rules, dev, "allow", now); d.Action != "deny" {
+		t.Fatalf("developer on figma: %s", d.Action)
+	}
+	if d := Evaluate(rules, Request{Server: "notion", Tool: "delete_page", Teams: []string{"everyone"}}, "allow", now); d.Action != "ask" {
+		t.Fatalf("team:everyone rule: %s", d.Action)
+	}
+	if d := Evaluate(rules, Request{Server: "notion", Tool: "delete_page"}, "allow", now); d.Action != "allow" {
+		t.Fatalf("a caller in no team matched team:everyone: %s", d.Action)
+	}
+}
+
+func TestValidSubjectTeam(t *testing.T) {
+	for _, ok := range []string{"team:designers", "team:everyone", "team:pm"} {
+		if !ValidSubject(ok) {
+			t.Errorf("%q should be valid", ok)
+		}
+	}
+	for _, bad := range []string{"team:", "team:Designers", "team:a", "team:with space"} {
+		if ValidSubject(bad) {
+			t.Errorf("%q should be invalid", bad)
+		}
+	}
+}

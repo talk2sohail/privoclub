@@ -100,6 +100,15 @@ Nothing new to configure: once sign-in with GitHub works, add a remote server wi
 
 Invite people with `privo admin invite --person NAME` in the container's terminal, or with `POST /api/v1/invites`.
 
+## Teams (0.6.0)
+
+0.6.0 adds teams (ADR 0020) and migration `00006_teams.sql`, which runs on the
+first start of the new image. Every server that exists keeps being reachable by
+everyone, so nothing changes for AI clients until an admin gives a server to a
+team. Take a backup before the deploy (below); the migration has a down step,
+and restoring the backup is the way back. Members now land on **Start** instead
+of **Tokens**.
+
 ## Backups
 
 A backup is a consistent copy of the database (`privo.db`) taken while the gateway runs, with no downtime. It holds token hashes, policy, audit and the wrapped keys and credentials, and nothing in the clear. It does **not** hold the master key, and it is useless without it: keep the key in your password manager (see above). Restoring with another key is refused at start with a message that names the master key.

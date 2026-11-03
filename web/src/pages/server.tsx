@@ -3,7 +3,8 @@ import { api, seg } from "../api";
 import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
 import { Link, navigate } from "../router";
-import type { Pin, ServerConnection, ServerView } from "../types";
+import { TeamPicker } from "../catalog";
+import type { Pin, ServerConnection, ServerView, Team } from "../types";
 import { Empty, ErrorLine, Loading, Status, firstLine, when, useAction } from "../ui";
 import { authLabel } from "./servers";
 
@@ -12,7 +13,7 @@ import { authLabel } from "./servers";
 const WATCH_MS = 60_000;
 const POLL_MS = 3_000;
 
-export function Server({ alias }: PageProps & { alias: string }) {
+export function Server({ alias, session }: PageProps & { alias: string }) {
   const [opened] = useState(() => Date.now());
   const [watching, setWatching] = useState(true);
   useEffect(() => {
@@ -94,6 +95,7 @@ export function Server({ alias }: PageProps & { alias: string }) {
           </div>
         </section>
       )}
+      {session.can.teams && <Access srv={current} />}
       {current.auth === "oauth" && <Connected alias={alias} />}
       <Settings srv={current} />
     </>
@@ -159,6 +161,39 @@ function Review({ alias, pending, loading }: { alias: string; pending: Pin[]; lo
           <div class="actions">
             <button type="button" class="approve" disabled={busy || chosen.length === 0} onClick={accept}>
               Accept {chosen.length} {chosen.length === 1 ? "tool" : "tools"}
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function Access({ srv }: { srv: ServerView }) {
+  const teams = useData<{ teams: Team[] }>("/v1/teams");
+  const saved = [...(srv.teams ?? [])].sort();
+  const [chosen, setChosen] = useState<string[] | null>(null);
+  const [busy, run] = useAction();
+  const current = chosen ?? saved;
+  const changed = chosen !== null && chosen.join(",") !== saved.join(",");
+  const save = () =>
+    void run(async () => {
+      await api("PATCH", "/v1/servers/" + seg(srv.alias), { teams: current });
+      invalidate("/v1/servers");
+      invalidate("/v1/teams");
+      setChosen(null);
+    }, "Saved. The change applies to the next request of every AI client.");
+  return (
+    <section class="card">
+      <h2>Who can use it</h2>
+      <ErrorLine text={teams.error} />
+      {teams.data && (
+        <>
+          <p class="meta">People see this server's tools only when they are in one of its teams. Rules and approvals still apply to them.</p>
+          <TeamPicker teams={teams.data.teams} chosen={current} onChange={setChosen} />
+          <div class="actions">
+            <button type="button" class="primary" disabled={busy || !changed} onClick={save}>
+              Save
             </button>
           </div>
         </>

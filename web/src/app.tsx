@@ -10,6 +10,8 @@ import { People } from "./pages/people";
 import { Rules } from "./pages/rules";
 import { Server } from "./pages/server";
 import { Servers } from "./pages/servers";
+import { Start } from "./pages/start";
+import { Teams } from "./pages/teams";
 import { Tokens } from "./pages/tokens";
 import { Link, beforeNavigate, match, navigate, useLocation } from "./router";
 import { FlashBar, clearFlash } from "./ui";
@@ -17,8 +19,10 @@ import { FlashBar, clearFlash } from "./ui";
 type NavItem = { href: string; label: string; show: (c: Can) => boolean };
 
 export const navItems: NavItem[] = [
+  { href: "/admin/start", label: "Start", show: (c) => c.use_gateway },
   { href: "/admin/approvals", label: "Approvals", show: (c) => c.decide },
   { href: "/admin/servers", label: "Servers", show: (c) => c.servers },
+  { href: "/admin/teams", label: "Teams", show: (c) => c.teams },
   { href: "/admin/rules", label: "Rules", show: (c) => c.rules },
   { href: "/admin/people", label: "People", show: (c) => c.people },
   { href: "/admin/tokens", label: "Tokens", show: (c) => c.use_gateway || c.manage_tokens },
@@ -31,6 +35,8 @@ export type PageProps = { session: Session; loc: string };
 type Route = { pattern: string; allowed: (c: Can) => boolean; render: (p: PageProps, params: Record<string, string>) => ComponentChildren };
 
 const routes: Route[] = [
+  { pattern: "/admin/start", allowed: (c) => c.use_gateway, render: (p) => <Start {...p} /> },
+  { pattern: "/admin/teams", allowed: (c) => c.teams, render: (p) => <Teams {...p} /> },
   { pattern: "/admin/servers", allowed: (c) => c.servers, render: (p) => <Servers {...p} /> },
   { pattern: "/admin/servers/:alias", allowed: (c) => c.servers, render: (p, m) => <Server {...p} alias={m.alias ?? ""} /> },
   { pattern: "/admin/rules", allowed: (c) => c.rules, render: (p) => <Rules {...p} /> },

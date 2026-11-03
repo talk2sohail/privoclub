@@ -118,7 +118,7 @@ func TestAdminUIFromScratch(t *testing.T) {
 	_, body = ada.do(http.MethodGet, link, nil, nil)
 	gh.as = fakeGitHubUser{ID: 2, Login: "ada-gh", Name: "Ada"}
 	start, _ = ada.do(http.MethodPost, g.base+"/auth/github/start", url.Values{"invite_token": {inviteTokenField.FindStringSubmatch(body)[1]}}, nil)
-	if cb, _ := ada.signInThroughGitHub(start); cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/tokens" {
+	if cb, _ := ada.signInThroughGitHub(start); cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/start" {
 		t.Fatalf("ada joins: %d %q", cb.StatusCode, cb.Header.Get("Location"))
 	}
 	if code, _ := ada.app(http.MethodGet, "/v1/servers/plain/pins", nil, nil); code != http.StatusForbidden {

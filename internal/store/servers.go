@@ -18,6 +18,9 @@ type Server struct {
 	Enabled   bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	// Teams that reach the server (ADR 0020). CreateServer stores them; nil
+	// means "everyone". Reads leave it empty: see ServerTeams.
+	Teams []string
 }
 
 // ServerConfig is the non-secret part of a server's configuration.
@@ -79,13 +82,21 @@ type Credential struct {
 	Ciphertext []byte
 }
 
-// CreateServer inserts a server and its credentials atomically.
+// CreateServer inserts a server, its credentials and its teams atomically.
+// It is ErrUnknownTeam when a team does not exist.
 func (s *Store) CreateServer(ctx context.Context, srv Server, creds []Credential) error {
 	cfg, err := json.Marshal(srv.Config)
 	if err != nil {
 		return err
 	}
+	teams := srv.Teams
+	if teams == nil {
+		teams = []string{TeamEveryone}
+	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := checkTeams(ctx, tx, srv.OrgID, teams); err != nil {
+			return err
+		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO servers (org_id, id, alias, transport, config, enabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -102,7 +113,7 @@ func (s *Store) CreateServer(ctx context.Context, srv Server, creds []Credential
 				return mapErr(err)
 			}
 		}
-		return nil
+		return insertServerTeams(ctx, tx, srv.OrgID, srv.ID, teams)
 	})
 }
 
@@ -181,6 +192,7 @@ func (s *Store) DeleteServer(ctx context.Context, org OrgID, id string) error {
 			`DELETE FROM credentials WHERE org_id = ? AND server_id = ?`,
 			`DELETE FROM upstream_grants WHERE org_id = ? AND server_id = ?`,
 			`DELETE FROM pins WHERE org_id = ? AND server_id = ?`,
+			`DELETE FROM server_teams WHERE org_id = ? AND server_id = ?`,
 		} {
 			if _, err := tx.ExecContext(ctx, q, org, id); err != nil {
 				return err

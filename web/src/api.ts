@@ -6,6 +6,7 @@ export type Can = {
   servers: boolean;
   rules: boolean;
   people: boolean;
+  teams: boolean;
   manage_tokens: boolean;
   use_gateway: boolean;
   activity: boolean;

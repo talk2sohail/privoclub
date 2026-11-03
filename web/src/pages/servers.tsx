@@ -3,15 +3,23 @@ import { api } from "../api";
 import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
 import { Link, navigate } from "../router";
-import type { ServerView } from "../types";
+import { CatalogAdd, TeamPicker, signInLabel } from "../catalog";
+import type { Catalog, CatalogEntry, ServerView, Team } from "../types";
 import { Empty, ErrorLine, Loading, Status, formValues, useAction } from "../ui";
 
 export function authLabel(auth: string | undefined): string {
   return auth === "oauth" ? "each person's own account" : "shared";
 }
 
+export function teamNames(slugs: string[] | undefined, teams: Team[]): string {
+  if (!slugs || slugs.length === 0) return "nobody";
+  return slugs.map((s) => teams.find((t) => t.slug === s)?.name ?? s).join(", ");
+}
+
 export function Servers({ session }: PageProps) {
   const list = useData<{ servers: ServerView[] }>("/v1/servers");
+  const teamsData = useData<{ teams: Team[] }>(session.can.teams ? "/v1/teams" : null);
+  const teams = teamsData.data?.teams ?? [];
   const servers = list.data?.servers;
   return (
     <>
@@ -29,6 +37,7 @@ export function Servers({ session }: PageProps) {
                 <th>Status</th>
                 <th>Tools</th>
                 <th>Sign-in</th>
+                <th>Who</th>
               </tr>
             </thead>
             <tbody>
@@ -56,25 +65,92 @@ export function Servers({ session }: PageProps) {
                     )}
                   </td>
                   <td>{authLabel(s.auth)}</td>
+                  <td class={s.teams && s.teams.length === 0 ? "warn-text" : undefined}>{teamNames(s.teams, teams)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
-      <AddServer canOAuth={session.can.oauth_servers} />
+      <FromCatalog teams={teams} />
+      <AddServer canOAuth={session.can.oauth_servers} teams={teams} />
     </>
   );
 }
 
-function AddServer({ canOAuth }: { canOAuth: boolean }) {
+/** FromCatalog lists the catalog by profile; one entry at a time opens its form. */
+export function FromCatalog({ teams, profile, initialTeams }: { teams: Team[]; profile?: string; initialTeams?: string[] }) {
+  const cat = useData<Catalog>("/v1/catalog");
+  const [filter, setFilter] = useState(profile ?? "");
+  const [open, setOpen] = useState("");
+  const data = cat.data;
+  const shown = (data?.entries ?? []).filter((e) => !filter || e.profiles.includes(filter));
+  return (
+    <section class="card">
+      <h2>{profile ? "Suggested servers" : "Add from the catalog"}</h2>
+      <ErrorLine text={cat.error} />
+      {!data && cat.loading && <Loading what="the catalog" />}
+      {data && !profile && (
+        <div class="row tabs" role="tablist" aria-label="Profile">
+          <button type="button" role="tab" class={filter === "" ? "primary small" : "small"} aria-selected={filter === ""} onClick={() => setFilter("")}>
+            All
+          </button>
+          {data.profiles.map((p) => (
+            <button key={p.id} type="button" role="tab" class={filter === p.id ? "primary small" : "small"} aria-selected={filter === p.id} onClick={() => setFilter(p.id)}>
+              {p.name}
+            </button>
+          ))}
+        </div>
+      )}
+      {data && (
+        <ul class="catalog">
+          {shown.map((e: CatalogEntry) => (
+            <li key={e.id}>
+              <div class="catalog-head">
+                <span>
+                  <strong>{e.name}</strong> <small class="meta">{signInLabel(e)}</small>
+                  <br />
+                  <small class="meta">{e.description}</small>
+                </span>
+                {e.installed ? (
+                  <Link href={"/admin/servers/" + e.installed}>added as {e.installed}</Link>
+                ) : (
+                  open !== e.id && (
+                    <button type="button" class="small" onClick={() => setOpen(e.id)}>
+                      Add
+                    </button>
+                  )
+                )}
+              </div>
+              {open === e.id && !e.installed && (
+                <CatalogAdd
+                  entry={e}
+                  teams={teams}
+                  initialTeams={initialTeams ?? ["everyone"]}
+                  callbackURL={data.callback_url}
+                  oauthAvailable={data.oauth_available}
+                  onCancel={() => setOpen("")}
+                />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {data && <p class="meta">Checked {data.entries[0]?.checked_on}. An entry only fills in the form: Privo still checks the server and you review every tool.</p>}
+    </section>
+  );
+}
+
+function AddServer({ canOAuth, teams }: { canOAuth: boolean; teams: Team[] }) {
   const [authMode, setAuthMode] = useState("none");
+  const [chosen, setChosen] = useState<string[]>(["everyone"]);
   const [busy, run] = useAction();
 
   const submit = (e: Event) => {
     const f = formValues(e);
     const alias = (f.alias ?? "").trim();
     const body: Record<string, unknown> = { alias, transport: f.transport, url: (f.url ?? "").trim() };
+    if (teams.length > 0) body.teams = chosen;
     if (authMode === "header") {
       body.headers = { [(f.header_name ?? "").trim() || "Authorization"]: f.header_value ?? "" };
     } else if (authMode === "oauth") {
@@ -90,7 +166,7 @@ function AddServer({ canOAuth }: { canOAuth: boolean }) {
 
   return (
     <section class="card">
-      <h2>Add a server</h2>
+      <h2>Add another server</h2>
       <form class="stack" onSubmit={submit}>
         <label>
           Name <small class="meta">lowercase letters, digits and dashes; AI clients see tools as name__tool</small>
@@ -145,6 +221,7 @@ function AddServer({ canOAuth }: { canOAuth: boolean }) {
             </label>
           </details>
         )}
+        {teams.length > 0 && <TeamPicker teams={teams} chosen={chosen} onChange={setChosen} />}
         <div class="actions">
           <button type="submit" class="primary" disabled={busy}>
             {busy ? "Adding…" : "Add server"}
