@@ -112,7 +112,8 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
    refresh). Take them out of Designers (× next to their name): Figma's tools
    are gone at the next refresh, and a call is "not available".
 7. Open Figma's page as the owner: **Who can use it** shows Designers. Untick
-   everything: expect the warning that nobody can use it. Put Designers back →
-   **Save**.
-8. **Activity → Admin changes**: team.create, team.member.add, server.teams with
-   you as actor.
+   everything: expect the warning that nobody can use it. Put Designers back
+   (Save stays disabled while nothing changed), tick Everyone too → **Save**:
+   expect "Saved". Untick Everyone → **Save**.
+8. **Activity → Admin changes**: team.create, team.member.add, server.create,
+   server.teams (one per Save) with you as actor.
