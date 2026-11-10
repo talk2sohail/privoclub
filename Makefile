@@ -1,4 +1,4 @@
-# Privo build targets. Requires Go 1.25+.
+# Privo build targets. Requires Go 1.26+ (go.mod pins the 1.27.3 toolchain).
 # The version is the semantic version in internal/buildinfo/VERSION (docs/versioning.md).
 VERSION := $(shell tr -d '[:space:]' < internal/buildinfo/VERSION)
 LDFLAGS := -s -w
@@ -44,7 +44,6 @@ ui-check: ui-test
 	cd web && npm run build
 	git diff --exit-code -- web/dist
 	test -z "$$(git status --porcelain -- web/dist)"
-
 
 clean:
 	rm -rf bin

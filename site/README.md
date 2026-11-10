@@ -2,7 +2,7 @@
 
 The private club for MCP. This repo is the pre-launch landing page for **privo.club**: a waitlist with referral links, a short post-signup survey to validate the idea, and a private dashboard to read the results.
 
-- Zero dependencies: Node's built-in `http` and `sqlite` modules only
+- One dependency (`nodemailer`, for the welcome email); everything else is Node's built-in `http` and `sqlite` modules
 - No third-party requests: fonts are self-hosted, no analytics, strict CSP
 - IP addresses are used for rate limiting in memory and never stored
 - New members get a welcome email from support@privo.club with their list number, referral link and a 5-point MCP safety checklist
@@ -29,7 +29,7 @@ npm start                     # http://localhost:3000 (or the PORT in .env)
    - `ADMIN_TOKEN`: long random string (`openssl rand -hex 32`)
    - `PUBLIC_COUNT_MIN` (optional, default `50`): the page only shows "N people have asked for a seat" once the list reaches this size
    - `SMTP_PASS`: the support@privo.club mailbox password; turns on welcome emails (see below)
-   - Optional: `SMTP_HOST` (default `mail.spacemail.com`), `SMTP_PORT` (default `465`; use `587` if your host blocks 465), `SMTP_USER` (default `support@privo.club`), `SMTP_MAX_PER_MINUTE` (default `20`), `MAIL_FROM`, `PUBLIC_URL` (default `https://privo.club`)
+   - Optional: `SMTP_HOST` (default `mail.spacemail.com`), `SMTP_PORT` (default `465`; use `587` if your host blocks 465), `SMTP_USER` (default `support@privo.club`), `SMTP_MAX_PER_MINUTE` (default `20`), `MAIL_FROM`, `MAIL_REPLY_TO` (default: `SMTP_USER`), `PUBLIC_URL` (default `https://privo.club`)
 6. **Persistent storage:** add a volume mounted at **`/data`**. This is where `waitlist.db` lives. Without it, every redeploy wipes your signups.
 7. Point the domain's DNS `A` record at your Coolify server, then deploy.
 

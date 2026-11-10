@@ -1,5 +1,7 @@
 # Privo checkpoint: 2026-11-03
 
+> **Superseded.** Kept for history; do not start from this file. The current state is in `docs/checkpoint-2026-11-11.md`.
+
 Read this first in a new session; the previous one is `docs/checkpoint-2026-11-01.md`.
 
 ## Where things stand

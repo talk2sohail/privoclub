@@ -11,6 +11,7 @@
 //	privo restore       put a snapshot in place (the gateway must be stopped)
 //	privo config show   print every setting with its effective value and where it came from
 //	privo admin setup-link  print a one-time URL that makes the first person to sign in with GitHub the owner
+//	privo admin invite      print a one-time URL that adds a person with a role (ADR 0017)
 //
 // Settings come from the environment and, optionally, a configuration file
 // named by --config FILE (before the command) or PRIVO_CONFIG_FILE (ADR 0015).
@@ -36,7 +37,7 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
 }
 
-const usage = "usage: privo [--config FILE] [serve|version|healthcheck|token create|token generate|backup|restore|config show|admin setup-link]"
+const usage = "usage: privo [--config FILE] [serve|version|healthcheck|token create|token generate|backup|restore|config show|admin setup-link|admin invite]"
 
 // configCommands are the commands that read settings, and so the configuration
 // file. version, help and token generate touch nothing and never read it.
