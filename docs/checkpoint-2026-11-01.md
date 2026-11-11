@@ -1,5 +1,7 @@
 # Privo checkpoint: 2026-11-01, about 04:30 IST
 
+> **Superseded.** Kept for history; do not start from this file. The current state is in `docs/checkpoint-2026-11-11.md`.
+
 Read this first in a new session. Details: `docs/todo.md` (F05, F07),
 `docs/adr/0016-admin-sign-in-with-github.md`, `docs/adr/0017-upstream-oauth-broker.md`.
 Older context: `privo-checkpoint-2026-10-29.md` (repo root).

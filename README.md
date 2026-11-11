@@ -14,7 +14,8 @@ Requires Go 1.26 or later; `go.mod` pins the toolchain (1.27.4 or later: GO-2026
 ```sh
 make            # vet, lint, test, build
 make build      # bin/privo
-make acceptance # black-box suite against the binary (fails until F02 lands)
+make acceptance # black-box suite against the binary
+make ui-check   # the admin app: types, tests, and web/dist matches the source (Node 22)
 make image      # container image
 ```
 
@@ -82,25 +83,27 @@ file is read once at start; restart to change a setting. In a container use
 `PRIVO_CONFIG_FILE`, so the image's healthcheck reads the same file.
 
 Endpoints: `/` (static landing page), `/mcp` (MCP gateway), `/api/v1/...`
-(admin API), `/livez`, `/readyz`, `/version` (the semantic version, see `docs/versioning.md`).
+(admin API), `/admin/...` (the admin site, with `/auth/...`, `/connect/...` and
+`/oauth/client-metadata.json`; see below), `/livez`, `/readyz`, `/version` (the
+semantic version, see `docs/versioning.md`).
 
 ## Admin site: sign in with GitHub
 
 Everything after the first sign-in happens in the browser at
-`<PRIVO_PUBLIC_URL>/admin/`: **Servers** (add, review tools, turn off),
-**Rules** (allow, ask, deny), **People** (invite, roles, remove), **Tokens**
-(each person makes tokens for their AI clients, with a ready Claude Code
-command), **Activity**, **Approvals** and **Connections**. It is a small
+`<PRIVO_PUBLIC_URL>/admin/`: **Start** (each person's servers and client
+setup), **Servers** (add, review tools, turn off), **Teams**, **Rules** (allow,
+ask, deny), **People** (invite, roles, remove), **Tokens** (each person makes
+tokens for their AI clients, with a ready Claude Code command), **Activity**,
+**Approvals** and **Connections**. It is a small
 Preact app built into the binary (ADR 0019): moving between pages loads no
 page, and every action is a call to the admin API below, run in process as the
 signed-in person; the API stays for scripts. Changing the app needs Node 22
 and `make ui`; building Privo does not.
 
-
 People approve calls in a browser, with their GitHub account and no token
 (ADR 0016). It is off until you set `PRIVO_GITHUB_CLIENT_ID`,
 `PRIVO_GITHUB_CLIENT_SECRET` (or `_FILE`) and `PRIVO_PUBLIC_URL`; until then
-`/admin` answers 503 and names what is missing.
+`/admin`, `/auth` and `/connect` answer 503 and name what is missing.
 
 1. In GitHub, create an OAuth App (Settings > Developer settings). Its
    authorization callback URL is `<PRIVO_PUBLIC_URL>/auth/github/callback`.

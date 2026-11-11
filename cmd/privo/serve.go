@@ -263,17 +263,17 @@ func tokenCreate(args []string, stdout, stderr io.Writer, getenv func(string) st
 	return 0
 }
 
-// adminSite builds the admin website (ADR 0016). With anything missing it is
-// still returned, off: it answers 503 and says which settings to add.
 // siteConnections is what the admin site needs for people's upstream
 // connections; with grants nil the connect pages are not served.
 type siteConnections struct {
 	grants   *grants.Service
 	oauth    *upstreamauth.Client
 	upstream *upstream.Manager
-	api      *control.API // the admin pages call it in process (ADR 0018)
+	api      *control.API // the admin app calls it in process (ADR 0019 point 4)
 }
 
+// adminSite builds the admin website (ADR 0016). With anything missing it is
+// still returned, off: it answers 503 and says which settings to add.
 func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *store.Store, org store.OrgID, aw *audit.Writer, logger *slog.Logger, conn siteConnections) *web.Server {
 	opts := web.Options{Store: st, Org: org, Audit: aw, Logger: logger, PublicURL: cfg.PublicURL, App: webapp.Dist(),
 		IdleTimeout: webCfg.IdleTimeout, MaxAge: webCfg.MaxAge, Missing: webCfg.Missing(cfg.PublicURL)}

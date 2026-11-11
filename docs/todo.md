@@ -5,7 +5,7 @@ and a to-do list. Tick items as they land; add items as they are discovered.
 Status: Not started, In progress, Blocked, Done.
 
 ## F00. Architecture review
-Status: In progress
+Status: Done
 
 - [x] Draft ADR 0001 request pipeline and extension points
 - [x] Draft ADR 0002 data model and tenancy
@@ -17,7 +17,7 @@ Status: In progress
 - [x] Spike: OAuth server library, desk review; ory/fosite chosen, see ADR 0012 (accept after F06 prototype)
 
 ## F01. Project foundation
-Status: In progress
+Status: Done
 
 Goal: a Go repo that builds one static binary, with CI and release images.
 
@@ -34,9 +34,9 @@ Goal: a Go repo that builds one static binary, with CI and release images.
 - [x] Verified on Go 1.27.3: golangci-lint 0 issues; unit tests pass 3x with race detector; fixture test passes; six acceptance tests fail as expected (gateway not built)
 - [x] go.sum re-verified against sum.golang.org (identical); `go mod verify` passes
 - [x] govulncheck: no vulnerabilities found
-- [ ] Build the container image in CI (no Docker in the workspace)
-- [ ] Initialise git repository for `privo` (it currently sits inside the prototype's repository) and first commit
-- [ ] Place `Makefile` and `.github/workflows/ci.yml` (protected from remote writes; sent to owner)
+- [x] Build the container image in CI: the `image` job (buildx, SBOM, provenance) runs on every push
+- [x] Repository: the Go gateway replaced the prototype at the root of `talk2sohail/privoclub` (`bd11fbc`, 2026-10-29); the landing page moved to `site/`
+- [x] `Makefile` and `.github/workflows/ci.yml` are in the repository and CI runs on every push
 
 Notes: allowed domains: go.dev, dl.google.com, proxy.golang.org, sum.golang.org,
 vuln.go.dev, storage.googleapis.com.
@@ -70,12 +70,12 @@ ADRs: 0001, 0004
 - [x] Security review of milestone 1: 4 high, 4 medium, 4 low findings, all fixed (docs/reviews/2026-10-28-milestone-1-security-review.md)
 - [ ] Tests for the admin API (token revocation ranks, header validation) and refresh coalescing
 - [x] `/version` stays unauthenticated (owner's decision, 2026-10-29). It now shows only the semantic version and the Go version, no commit or build date (see the next item)
-- [x] Versioning follows semver (owner's decision, 2026-10-29): the version is the line in `internal/buildinfo/VERSION` (now `0.5.0`), embedded in the binary, so Coolify builds report it without build arguments; `/version` and `privo version` return `{version, go_version}` and no longer a commit hash or build date; the ldflags and Dockerfile build arguments for version, commit and date are gone. Rules for bumping are in `docs/versioning.md`. Tests: `internal/buildinfo` `TestVersionIsSemver`, `TestSemverGrammar`, `TestGetShape`; `internal/server` `TestEndpoints`; `cmd/privo` `TestVersion`
+- [x] Versioning follows semver (owner's decision, 2026-10-29): the version is the line in `internal/buildinfo/VERSION` (`0.6.0` since F26), embedded in the binary, so Coolify builds report it without build arguments; `/version` and `privo version` return `{version, go_version}` and no longer a commit hash or build date; the ldflags and Dockerfile build arguments for version, commit and date are gone. Rules for bumping are in `docs/versioning.md`. Tests: `internal/buildinfo` `TestVersionIsSemver`, `TestSemverGrammar`, `TestGetShape`; `internal/server` `TestEndpoints`; `cmd/privo` `TestVersion`
 - [x] The master key moved from the `PRIVO_MASTER_KEY` variable to a file mount (owner's decision, 2026-10-29): `PRIVO_MASTER_KEY_FILE=/run/secrets/privo_master_key` on Coolify, the variable deleted, both deploys healthy, the "master key given as PRIVO_MASTER_KEY" warning gone. Steps and the password-manager backup note are in `docs/deploy-coolify.md`. To be streamlined with the admin UI
 - [x] CI lint fixed (2026-10-29): `errorlint` flagged `err != want` in `internal/gateway/resulttype_test.go` (now `errors.Is`); it was the only finding. While checking, `go test -race` on the acceptance suite showed 23 data races in the harness (the gateway's log buffer was read by the test while the process wrote it): `logBuffer` in `test/acceptance/harness_test.go` now has a lock, and the suite passes under `-race`. `/_to_delete/` is in `.gitignore`
 - [x] The acceptance job in `.github/workflows/ci.yml` is a real gate (owner's go-ahead, 2026-10-29): `continue-on-error` and the stale "allowed to fail until F02" comments (workflow, Makefile) removed; the suite passes, also under `-race`
 - [x] List results (tools, prompts, resources, templates) carry `cacheScope: "private"` and `ttlMs: 5000`; `resources/read` is private with ttl 0 and overrides an upstream's own hints (ADR 0001). Found with Claude Code on 2026-10-29: it rejected the empty `cacheScope` and showed "tools fetch failed". Test: `TestListAndReadResultsCarryValidCacheHints` (raw JSON, since the Go client does not check the field)
-- [x] Hostile upstream replies cannot crash the gateway (two High findings of the independent review, 2026-10-29). An upstream is untrusted input and one process serves every tenant, so a reply that breaks the protocol may cost only that server. Acceptance: (1) a `null` entry in an upstream's tools, prompts or resources list makes that server `down` with an error that says so, at first connect and on a list-changed refresh, while the gateway keeps serving its other servers; (2) a `resources/read` reply with a `null` entry in `contents`, or with no result, is refused with an error that calls the reply malformed, nothing of it is relayed, and the next request on the same connection works. Tests first: `internal/upstream` `TestLoadRefusesNullListEntries`; `internal/gateway` `TestRewriteRead`; acceptance `TestHostileUpstreamNullListEntry` and `TestHostileUpstreamNullReadContent` (echoserver `-mode hostile -null tools|prompts|resources|read`). Fix: `upstream.load` and `readResource` (via `rewriteRead`) check for nil before use. The Go SDK already drops a null tool entry itself (`filterValidTools`), so a null in tools/list leaves the server up with its real tools; the tools loop is guarded anyway. Not yet redeployed. Still open from the same review: a result size cap (F19), and the audit outcome for calls the wrapper refuses.
+- [x] Hostile upstream replies cannot crash the gateway (two High findings of the independent review, 2026-10-29). An upstream is untrusted input and one process serves every tenant, so a reply that breaks the protocol may cost only that server. Acceptance: (1) a `null` entry in an upstream's tools, prompts or resources list makes that server `down` with an error that says so, at first connect and on a list-changed refresh, while the gateway keeps serving its other servers; (2) a `resources/read` reply with a `null` entry in `contents`, or with no result, is refused with an error that calls the reply malformed, nothing of it is relayed, and the next request on the same connection works. Tests first: `internal/upstream` `TestLoadRefusesNullListEntries`; `internal/gateway` `TestRewriteRead`; acceptance `TestHostileUpstreamNullListEntry` and `TestHostileUpstreamNullReadContent` (echoserver `-mode hostile -null tools|prompts|resources|read`). Fix: `upstream.load` and `readResource` (via `rewriteRead`) check for nil before use. The Go SDK already drops a null tool entry itself (`filterValidTools`), so a null in tools/list leaves the server up with its real tools; the tools loop is guarded anyway. Deployed. The two items that review left open were done later: the result size cap (R-04, in F24 below) and the audit outcome for calls the wrapper refuses (R-07, in F24 below).
 - [x] A malformed message from an upstream cannot crash the gateway (R-01, High, independent review 2026-10-29; the first fix covered three null cases, not the class). The go-sdk v1.8.0 client dereferences `params` in `notifications/elicitation/complete` and has no `recover()` anywhere, so one upstream notification without `params` killed the process for every tenant, again after each restart. Acceptance: (1) every incoming MCP message on an upstream connection, and every one on the client-facing server, runs under a recover wrapper that logs the panic (method, panic text, stack, no message content) and turns it into an error; (2) a notification of each method the SDK client handles, with `params` absent or null, leaves the gateway up and its other servers working. Tests first: `internal/safe` `TestRecover*`; acceptance `TestHostileUpstreamNotification` (echoserver `-mode raw-notify -method M -params absent|null`) and `TestMalformedClientNotificationsDoNotCrash`. Done: `internal/safe` `Recover`, installed outermost on the upstream client (`connect`) and on the client-facing server. Follow-ups: report the nil dereference to go-sdk (draft with a runnable reproduction: `docs/upstream/go-sdk-elicitation-complete-nil-params.md`, owner files it); the go-sdk has no `recover()` at all, so any other handler bug of that kind is now an error for one message instead of an outage.
 - [x] Transport errors of an upstream never reach the AI client (R-02, Medium, independent review 2026-10-29): the text held the upstream's URL with the API key in its query, and went out as `call failed: ...` (tools/call) and as the error of prompts/get and resources/read. `Gateway.clientFacing` (in `run`) now replaces it with a fixed message naming the server, logs the detail through `upstream.RedactText` (user info, query and fragment removed from every URL in the text), and passes through only the upstream's own JSON-RPC error and the gateway's own. The SDK's local codes (-32001, -32003, -32004, -32005) wrap transport text and count as local. Tests: `TestClientFacing`, `TestRedactText`, acceptance `TestUpstreamTransportErrorsDoNotReachTheClient`.
 
@@ -112,7 +112,7 @@ ADRs: 0003
 - [ ] Tests: tamper, swap, rotation, lost-key behaviour
 
 ## F05. Admin sign-in and organisations
-Status: In progress (first slice built and tested: GitHub sign-in and the web approvals page; independent review and the Coolify run open)
+Status: In progress (first slice live on app.privo.club since 0.3.0, real GitHub sign-in works since 2026-11-03; independent review done 2026-11-03, its findings are open below)
 ADRs: 0003, 0011, 0014, 0016
 
 ### First slice: goal
@@ -210,8 +210,9 @@ of the UI (F14).
 - [x] Wired into `serve` (settings loaded there only; pruning every 10 minutes); version 0.3.0; README, deploy guide, example file
   - tests: `TestServeRejectsBadWebSettings`, `TestWebSettingsDoNotBreakOtherCommands`
 - [x] Acceptance with the real binary and a fake GitHub that checks the client secret, redirect URI and PKCE: `TestWebSetupAndApprovals` (setup link, sign in, an `ask` call from a real MCP client, approve in the browser flow, the call succeeds, the audit names the approver, a stranger is refused, sign-out, no secret in the logs), `TestWebDisabledByDefault`
-- [ ] Independent review of the finished slice (auth, sessions, CSRF: required by CLAUDE.md; run when the owner says go)
-- [ ] On Coolify: create the GitHub OAuth App, mount the client secret, set the two variables, deploy, run `privo admin setup-link`, claim it, approve one real call (owner's steps; `docs/deploy-coolify.md`)
+- [x] Independent review of the finished slice (2026-11-03, `docs/reviews/2026-11-03-f05-sign-in-independent-review.md`): approve with changes; 0 Critical, 0 High, 1 Medium, 3 Low, 2 Info. The fixes were parked by the owner; they are the open items under "Review findings, open" below
+- [x] On Coolify: the GitHub OAuth App, the client secret file mount and the two variables are set, and the owner claimed the setup link and signed in with real GitHub on 2026-11-03 (`docs/checkpoint-2026-11-03.md`)
+- [ ] Approve one real call in the browser on app.privo.club with a second person's token (`docs/manual-test.md` steps 4 to 6; needs a second GitHub account)
 
 ### First slice: how it was checked
 
@@ -247,9 +248,17 @@ label an administrator chose (verified linking arrives with members); no
 step-up before approving high-risk calls yet; the CSRF token and the PKCE
 verifier are stored in the clear for the life of a session and ten minutes.
 
+### Review findings, open (independent review 2026-11-03; fixes parked by the owner)
+
+- [ ] R-01 (Medium): anyone can fill the 500-state cap with `POST /auth/github/start` and lock every sign-in, setup link and invite for ten minutes at a time. Rate-limit the start, or count only `signin` states against the open cap so setup and invite states keep a reserved share. Test: 500 anonymous starts do not block a setup claim
+- [ ] R-02 (Low): any GitHub account can write unlimited `signin.denied` audit rows; collapse or rate-limit per GitHub id
+- [ ] R-03 (Low): a cross-site link to the callback clears the state cookie of a sign-in in progress; clear it only after the state was found
+- [ ] R-04 (Low): self-approval compares `person` exactly while the owner's default person is lower-cased, so `Alice` (tokens) and `alice` (session) are two people; normalise person names everywhere and make the index case-insensitive
+- [ ] R-05, R-06 (Info): the GitHub token is dropped, not revoked, at GitHub; a second `admin setup-link` makes another owner without saying so; `PRIVO_GITHUB_CLIENT_SECRET` as a plain variable gets no warning; timestamps compare as strings of uneven width (sub-second error at expiry edges)
+
 ### Later in F05
 
-- [ ] Orgs, members, roles, groups (invites came with F07: `privo admin invite`, bound by the numeric GitHub id; a members page and role changes in the browser are still to do)
+- [ ] Orgs and groups (invites came with F07, bound by the numeric GitHub id; the People page with role changes and removal came with F14; teams with F26)
 - [ ] Google and Microsoft OIDC; magic-link fallback
 - [ ] Restrict sign-in by GitHub organisation membership (`read:org`)
 - [ ] Step-up re-authentication for high-risk actions
@@ -264,11 +273,11 @@ ADRs: 0003
 - [ ] Client registration, PKCE, audience-bound tokens, refresh rotation
 - [x] Gateway and control tokens, each refused on the other surface; tokens belong to a person (ADR 0014)
 - [x] Personal token format `privo_pat_<id>_<secret><crc32>`, SHA-256 secret hash, constant-time verify, checksum rejection without lookup (`internal/token`)
-- [x] Token storage, roles (owner, admin, auditor, member), mandatory expiry (default 90 days), revocation effective within 2 s (verification cache), owner tokens only issuable by owners
+- [x] Token storage, roles (owner, admin, auditor, approver, member), mandatory expiry (default 90 days), revocation effective within 2 s (verification cache), owner tokens only issuable by owners
 - [ ] Tests with real clients: Claude Code, Cursor, Amp, Codex
 
 ## F07. Upstream OAuth broker
-Status: In progress (first slice built and tested 2026-11-01: each person connects their own account; independent review open)
+Status: In progress (first slice deployed, app.privo.club runs 0.6.0; independent review done 2026-11-03 with one High finding, open below; connecting a real provider account on app.privo.club is still to do, see F26)
 ADRs: 0003, 0017
 
 ### First slice: goal
@@ -341,7 +350,7 @@ browser.
 - [x] Real browser run (headless Chromium, 2026-11-01): owner setup, connect (the post-then-redirect to the authorization server passes the CSP), invite claimed on a phone-sized screen, connect, disconnect, a used invite is 404, a member gets 403 on approvals; no CSP or console errors besides that 403. Led to hiding the approvals link from people who cannot decide.
 - [x] Docs: README (invites, servers where each person uses their own account), ADR 0017 (registration per server, token requests without `x/oauth2`, what building found), version 0.4.0
 - [ ] Scope step-up: `TestInsufficientScopeNamesTheScope` was planned; a 403 `insufficient_scope` ends in the gateway's generic failure message today (later in F07)
-- [ ] Independent review (auth, secrets, tenancy, the request pipeline: required by CLAUDE.md)
+- [x] Independent review (2026-11-03, `docs/reviews/2026-11-03-f07-upstream-oauth-independent-review.md`): approve with changes; 0 Critical, 1 High, 2 Medium, 5 Low, 1 Info. The fixes were parked by the owner; they are the open items under "Review findings, open" below
 
 ### First slice: threat note
 
@@ -361,12 +370,24 @@ as safe as the master key; Privo cannot always tell which upstream account a
 person connected; the connect link travels through AI clients in error text
 until URL elicitation lands.
 
+### Review findings, open (independent review 2026-11-03; fixes parked by the owner)
+
+- [ ] R-01 (High; the same hole as F14 R-02): an owner or admin can issue a gateway token with any member's `person` (`POST /api/v1/tokens`; an omitted person defaults to the token name) and call upstream servers with that member's grant; the audit names the token, not whose account was used. Bind tokens to a user id (`api_tokens.user_id`, set by `/api/v1/me/tokens`), resolve grants and team membership by user id and never by name, and record the grant's owner in the call's audit event. The acceptance fixture `g.issue("ada")` relies on the hole and has to change with it. F26's team membership follows the same string
+- [ ] R-02 (Medium): after a re-registration (`Grants.Reregister` from the connect callback) the running upstream manager keeps the old client id until a restart or an admin edit, so grants issued to the new client are refreshed as the old one, answered with `invalid_grant` and deleted. Call `Upstream.Sync` after the registration changes, or read the client from the store at refresh time; store the client id on the grant
+- [ ] R-03 (Medium): any signed-in member can fill the org-wide state cap through `POST /connect/<alias>/start` and lock out sign-in and connecting for everyone (see F05 R-01); cap connect states per user and replace that user's older one
+- [ ] R-04 (Low): removing a member, deleting a server and reconnecting delete grants locally without revoking them at the provider; backups keep them
+- [ ] R-05 (Low): require `oauth.issuer` when a client secret is supplied, so the secret cannot go to an authorization server the MCP server names
+- [ ] R-06 (Low): a failed save after a rotated refresh token loses the grant; retry the save with the token already obtained
+- [ ] R-07 (Low): the GitHub callback uses up a state of any purpose before checking it; look the state up with its purpose and use one cookie per flow
+- [ ] R-08 (Low): every upstream HTTP request reads, decrypts and touches the grant on the single writer connection; cache the opened token until its expiry and flush `last_used_at` periodically
+- [ ] R-09 (Info, ten notes): among them no backoff when a server rejects every token, discovery of up to a minute inside one admin request, an orphaned dynamic registration when the create fails afterwards
+
 ### Later in F07
 
 - [ ] URL-mode elicitation (2025-11-25) and input-required (2026-07-28) for the connect link
 - [ ] Shared org-wide credentials, only by explicit admin choice and with a policy limiting the tools
 - [ ] Scope step-up on `insufficient_scope`
-- [ ] Admin page of everyone's connections
+- [ ] Admin page of everyone's connections (a server's page lists its connected people since F14; a page across servers is still to do)
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ## F08. Toolsets
@@ -422,9 +443,7 @@ ADRs: 0001, 0002
 
 ## F12. Audit log
 Status: In progress
-ADRs: 0001, 0002
-
-ADRs: 0006
+ADRs: 0001, 0002, 0006
 
 - [x] Synchronous intent record; batched completion; bounded queue that refuses rather than drops
 - [x] Arguments recording off by default; when on, arguments stored encrypted under the org key
@@ -444,7 +463,7 @@ ADRs: 0007
 - [ ] Isolated network; egress allow-list proxy
 
 ## F14. Admin UI
-Status: In progress (second slice built 2026-11-03: the Preact admin app replaces the server-rendered pages; independent review open)
+Status: In progress (the Preact admin app is deployed, app.privo.club runs 0.6.0; independent review done 2026-11-03, its findings are open below)
 ADRs: 0016, 0017, 0018 (superseded), 0019
 
 ### First slice: goal
@@ -521,13 +540,23 @@ Tasks and the tests that name them:
 - [x] Real browser walkthrough from an empty install (Chromium, 2026-11-03): the whole first-day flow with no console or CSP errors; in-app navigation 40–70 ms locally with no page load
 - [x] Docs: README, deploy guide, `docs/manual-test.md`
 
+### Review findings, open (independent review 2026-11-03, `docs/reviews/2026-11-03-f14-admin-app-independent-review.md`: approve with changes; 0 Critical, 0 High, 2 Medium, 4 Low, 2 Info; fixes parked by the owner)
+
+- [ ] R-01 (Medium): the tool review shows only the first line (at most 300 characters) of a description, while the hash that is accepted covers all of it, the input schema and the annotations. Show the whole description as text, the schema, and a diff for a changed definition
+- [ ] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fix with F07 R-01
+- [ ] R-03 (Low): a refused or cross-site request still slides the session's idle timeout; touch the session only after every check passed
+- [ ] R-04 (Low): the review ticks everything by default, also items that arrive while the page polls; make ticking opt-in or mark new rows
+- [ ] R-05 (Low): the UI build has no audit step (`web/.npmrc` has `audit=false` and `legacy-peer-deps=true`; `npm ci` runs lifecycle scripts; actions are pinned by tag): `npm ci --ignore-scripts`, `npm audit --omit=dev`, `npm audit signatures` in the `ui` job, actions by SHA
+- [ ] R-06 (Low): the bridge passes a body on GET and DELETE and accepts any content type with an empty body
+- [ ] R-07, R-08 (Info): a session can mint long-lived owner control tokens (consider a confirmation and an audit tag); a token shown once stays in the page's state until the person leaves
+
 ### Later in F14
 
 - [ ] Toolsets (F08), context-cost report (F17), policy presets in the page
 - [ ] Re-enabling a removed member; editing a server
 
 ## F15. Coolify deployment
-Status: Not started
+Status: In progress (deployed on Coolify since 2026-10-29, guide in `docs/deploy-coolify.md`; snapshot backup, restore and the built-in schedule done; scheduled backups are off in production by the owner's choice)
 
 ADRs: 0010
 
@@ -548,12 +577,12 @@ ADRs: 0010
 - [ ] Install, upgrade, backup and key-backup guide
 
 ## F16. Observability
-Status: Not started
+Status: In progress (health endpoints and drain only)
 
 ADRs: 0010
 
 - [ ] OpenTelemetry span per stage; metrics without org labels in Cloud
-- [ ] `/livez`, `/readyz`; 30-second drain on SIGTERM
+- [x] `/livez`, `/readyz`; 30-second drain on SIGTERM (`PRIVO_SHUTDOWN_TIMEOUT`; built in F01)
 
 ## F17. Context-cost report
 Status: Not started
@@ -588,8 +617,8 @@ ADRs: 0011
 Status: In progress (first real client tried 2026-10-29)
 ADRs: 0004, 0010
 
-- [x] Claude Code over a static bearer header (`claude mcp add --transport http`): connects; the empty `cacheScope` bug was found and fixed (see F02). Still to confirm in Claude Code: `tools/call`, prompts and resources
-- [x] `tools/call` through DeepWiki failed in Claude Code: results lacked `resultType` (required from 2026-07-28). Fixed in `internal/gateway/resulttype.go`; `TestEveryResultCarriesResultTypeOnNewProtocol` speaks the new protocol as raw JSON against an upstream that does and one that does not. Needs a re-run in Claude Code after deploy
+- [x] Claude Code over a static bearer header (`claude mcp add --transport http`): connects; the empty `cacheScope` bug was found and fixed (see F02). `tools/call` through DeepWiki was confirmed in Claude Code after the `resultType` fix (next item; checkpoint of 2026-10-29). Still to confirm in Claude Code: prompts and resources (covered so far by the Go SDK client in `TestPlanPromptsAndResourcesThroughTheClient`)
+- [x] `tools/call` through DeepWiki failed in Claude Code: results lacked `resultType` (required from 2026-07-28). Fixed in `internal/gateway/resulttype.go`; `TestEveryResultCarriesResultTypeOnNewProtocol` speaks the new protocol as raw JSON against an upstream that does and one that does not. Re-run in Claude Code after the deploy: the call works and the audit log shows it
 - [ ] Report to the Go SDK (two drafts in `docs/upstream/`, owner files them): (1) a `notifications/elicitation/complete` without `params` crashes the client and the SDK has no `recover()`: `go-sdk-elicitation-complete-nil-params.md`; (2) results returned from receiving middleware miss `resultType` (the field is unexported and only the SDK's own handlers set it). Issue text with a reproduction is drafted in `docs/upstream/go-sdk-resulttype-from-middleware.md`; search the tracker for duplicates, then file. Drop `typedResult` when a release fixes it
 - [ ] Validate the gateway's raw responses against the MCP schema in the acceptance suite, so a strict client cannot surprise us again (the Go SDK client accepts what Claude Code rejects)
 
@@ -614,7 +643,7 @@ Goal: a stolen database plus every Privo key cannot decrypt a person's upstream 
 - [ ] Security review before release
 
 ## F24. First-deploy readiness
-Status: In progress (code done, tested; Coolify settings and independent review open)
+Status: In progress (code done, tested and deployed; reviewed twice, the second review's findings are open below; the webhook check is open)
 ADRs: 0003, 0010 (no new ADR: the bootstrap token is an interim measure; the F05 setup link, `privo admin setup-link`, is the first-boot path for a person, ADR 0016)
 
 Goal: a fresh Coolify deploy (distroless image, no shell, so no web terminal and
@@ -649,8 +678,12 @@ Tasks (tests named first, per the workflow):
 - [x] Build: store method (token, consumed marker and audit in one transaction), control installer, config with a redacting `Secret` type, startup wiring, `privo token generate`, root page
 - [ ] Coolify: watch paths on both apps, auto deploy on and a shared webhook secret are set (API, 2026-10-29) and verified with a signed test delivery (docs-only push skipped by both apps, bad signature rejected). Open: add the GitHub webhook (needs a GitHub sign-in), then confirm a `site/` push deploys only the landing page and an `internal/` push only the gateway
 - [x] Docs: `docs/deploy-coolify.md` first-run section and deploy setup; README variable table and token section
-- [ ] Independent security review of the bootstrap change (auth, secrets). A self-review by the implementing session is in `docs/reviews/2026-10-29-f24-bootstrap-self-review.md`; it does not replace this
-- [ ] Discovered: tokens created by `privo token create` are not audited (the admin API audits its own); decide whether the CLI writes an audit event
+- [x] Independent security review of the bootstrap change (auth, secrets): first pass 2026-10-29 (`docs/reviews/2026-10-29-independent-review-f24-cache-hints-result-type.md`, R-01 to R-11, all fixed, see the items below); second pass 2026-11-03 (`docs/reviews/2026-11-03-f24-bootstrap-independent-review.md`): approve with changes; 0 Critical, 0 High, 2 Medium, 4 Low, 1 Info, fixes parked by the owner and listed next. The self-review of 2026-10-29 is superseded by both
+- [ ] Second review R-01 (Medium): a bootstrap token still installs on an organisation that was set up with the setup link, because "needs a bootstrap" looks only at control tokens and a browser-only org has none. Count `users` in the same transaction in `InstallBootstrapToken` and `BootstrapNeeded`. (app.privo.club has had control tokens since 2026-10-29, so it is not affected; an install set up only in the browser is)
+- [ ] Second review R-02 (Medium): `privo token create` writes no audit row (the item "Discovered" below); write the token row and a `token.create` event with actor `cli` in one transaction, as `admin setup-link` and `admin invite` do
+- [ ] Second review R-03 to R-06 (Low): a live bootstrap token is not retired when a person claims the setup link; `token.Weak` passes patterns with 16 or more different symbols; a malformed leftover value stops `serve` on an org that no longer needs a token; a reused token id fails the first boot with an SQL conflict that does not name the variable
+- [ ] Second review R-07 (Info): unset the plain variable also when the file form was used; one line in the backup docs that restoring a backup older than the install lets the token install again
+- [ ] Discovered: tokens created by `privo token create` are not audited (the admin API audits its own); the second review rates it Medium (R-02 above) and gives the fix
 - [x] The bootstrap variables are read only by `serve` (R-03, Medium, independent review 2026-10-29): `config.Load` no longer reads them, so the healthcheck (run every 15 s by the image) and the break-glass `privo token create` cannot fail on a leftover variable, and a bootstrap file that was removed after use is a warning on an organisation that is set up already. A first boot that cannot read the file still refuses to start (exit 1, names the variable), and a value that is not a token still stops `serve` with exit 2. Tests: `TestLoadIgnoresBootstrapVariables`, `TestBootstrapTokenConfig`, `TestBootstrapNeeded`, `TestBootstrapAtStartup`, `TestHealthcheckAndTokenCreateIgnoreBootstrapVariables`, acceptance `TestBootstrapFileRemovedAfterUse` and `TestBootstrapFileMissingOnFirstBootRefusesToStart`.
 - [x] An upstream cannot make the gateway hold or do unbounded work (R-04, Medium, independent review 2026-10-29; the reviewer argued it from reading, the tests below measure it with small configured limits). Acceptance: (1) a reply of an HTTP or SSE upstream may not exceed `PRIVO_UPSTREAM_MAX_RESPONSE_BYTES` (default 16 MiB, 1024 to 1 GiB): a JSON body is counted after decompression and one that announces more is refused before it is read, an event stream is counted per event. A reply over the limit fails the call with the same fixed message as any upstream failure (R-02), and the connection is re-established, since the SDK fails a connection whose reply it cannot read. Stdio messages are capped by the SDK at 16 MiB each, which this setting does not change; (2) an upstream call has a deadline, `PRIVO_UPSTREAM_CALL_TIMEOUT` (default 10 min), and the caller is told that the server did not answer within it; (3) a list is walked for at most 100 pages, a repeated cursor ends it, and the definitions of one load may not exceed 8 MiB together: each failure puts that server `down` with the reason; (4) a refresh has the connect timeout as its deadline (a refresh that hung used to keep the refresh slot for good, and no later change of the server's lists was read), and one server gets at most one refresh per `PRIVO_UPSTREAM_REFRESH_GAP` (default 5 s, measured from the end of the last load) however often it announces changes; (5) after each load that listed everything, the pending pins the server no longer offers are deleted, so definitions that change on every refresh cannot fill the disk. Accepted and blocked pins are decisions and are never deleted. Threat: a registered upstream is untrusted input, and one process holds the replies of every tenant. Tests, written first: `internal/upstream` `TestEndlessPaginationBringsServerDown`, `TestPaginationWithinLimitsStaysUp`, `TestLoadStopsAtDefinitionBudget`, `TestRefreshHasADeadline`, `TestRefreshGap`, `TestLoadPrunesPendingPins`, `TestLimitBodies`, `TestEventCapAcrossReads`; `internal/store` `TestPrunePending`; `internal/config` `TestUpstreamLimitsConfig`; `internal/gateway` `TestCallUpstreamTimeout`; acceptance `TestOversizedUpstreamReplyIsRefused` (JSON and event-stream replies, each with a control run without the limit), `TestUpstreamCallTimeout`, `TestListChangedFloodIsRateLimited` (55 refreshes without the gap, 3 to 9 with it). Not covered here: in-flight limits and bulkheads per server (F02, still open), and the stdio message cap, which belongs to the SDK.
 - [x] SSE upstreams stay connected (found while testing R-04). The legacy SSE transport ties its event stream to the context given to `Connect`, and `connect` gave it the context of the handshake, which ended when `connect` returned: an `sse` server went up, was dropped at once ("connection closed") and was reconnected over and over, since the SSE transport was added. `connect` now gives it a context that lives as long as the connection; a timer applies `ConnectTimeout` to the handshake and the first load and is stopped once the connection is up. Tests: `internal/upstream` `TestSSEUpstreamStaysConnected`, acceptance `TestListChangedFloodIsRateLimited` (an SSE server is the only kind that delivers list-changed notifications over HTTP).
@@ -679,7 +712,7 @@ Tests, written first: `internal/config` `TestReadFile*`, `TestLayer*`, `TestLoad
 - [ ] Later: structured sections (sign-in providers in F05), reload on SIGHUP only if a setting needs it
 
 ## F26. Teams, the server catalog and the start page
-Status: In progress (first slice built 2026-11-03; independent review and the owner's browser walkthrough open)
+Status: In progress (live since 0.6.0, 2026-11-04; independent review done and fixed except R-03; of the owner's walkthrough on app.privo.club, steps 9.2, 9.5 and 9.6 and a real OAuth server are open)
 ADRs: 0020
 
 Goal (owner's request, 2026-11-03): adding servers for developers, designers
