@@ -266,15 +266,103 @@ verifier are stored in the clear for the life of a session and ten minutes.
 - [ ] Approvals page: page through more than 50 pending approvals; show decided ones
 
 ## F06. Client authentication (OAuth server and personal tokens)
-Status: In progress
-ADRs: 0003
+Status: In progress (personal tokens done; OAuth sign-in for AI clients: spec and ADR 0022 written 2026-11-11, waiting for the owner's review; nothing built)
+ADRs: 0003 (section 2), 0014, 0021, 0022
 
-- [ ] Protected resource and authorization server metadata
-- [ ] Client registration, PKCE, audience-bound tokens, refresh rotation
-- [x] Gateway and control tokens, each refused on the other surface; tokens belong to a person (ADR 0014)
+### Done: personal tokens
+
+- [x] Gateway and control tokens, each refused on the other surface; a `person` label on every token (ADR 0014); a gateway token belongs to a member by user id (ADR 0021, F27)
 - [x] Personal token format `privo_pat_<id>_<secret><crc32>`, SHA-256 secret hash, constant-time verify, checksum rejection without lookup (`internal/token`)
 - [x] Token storage, roles (owner, admin, auditor, approver, member), mandatory expiry (default 90 days), revocation effective within 2 s (verification cache), owner tokens only issuable by owners
-- [ ] Tests with real clients: Claude Code, Cursor, Amp, Codex
+
+### Next: AI clients sign in with OAuth (ADR 0022)
+
+#### Goal
+A person adds `https://<privo>/mcp` to Claude Code, Claude, VS Code or ChatGPT,
+signs in to Privo in the browser, presses Allow, and the client works as them:
+their teams' servers, their own upstream accounts. Nothing is pasted. Each
+client can be revoked by itself. Personal tokens keep working.
+
+#### Acceptance
+1. **Discovery.** A request to `/mcp` without a token is answered 401 with
+   `resource_metadata` and `scope="mcp"`. The protected resource metadata
+   names the public URL as its only authorization server.
+   `/.well-known/oauth-authorization-server` serves RFC 8414 metadata with
+   `code_challenge_methods_supported: ["S256"]`,
+   `client_id_metadata_document_supported: true`, `none` among
+   `token_endpoint_auth_methods_supported`, and a `registration_endpoint`
+   only when dynamic registration is on.
+2. **Authorize.** `/oauth/authorize` refuses, without redirecting, a client
+   that is not accepted or a redirect URI that does not match; refuses, by
+   redirecting with an error, a missing or non-S256 challenge, an unknown
+   scope and a `resource` that is not this gateway. Loopback redirect URIs
+   match with any port for `127.0.0.1`, `[::1]` and `localhost`; all others
+   match exactly.
+3. **Sign-in on the way.** Without a session the person is sent to sign in and
+   comes back to the consent page for the same request. No row is written
+   before a signed-in member presses Allow. A request cookie that is expired,
+   altered or from another browser is refused.
+4. **Consent.** The page names the client, the redirect host, the signed-in
+   person and what is granted; warns for a loopback-only client and for one
+   that registered itself. Allow and Deny need the CSRF token and the Origin
+   check. An approver or auditor cannot allow. Deny returns `access_denied`.
+5. **Code.** Lives 60 seconds, works once, only with the same client, redirect
+   URI, verifier and resource. A second use fails and revokes the grant.
+6. **Tokens.** The access token is opaque, lives one hour and works only on
+   `/mcp`, never on the admin API. A refresh token is always issued, rotates
+   on use, returns the same successor for 30 seconds, and after that a reuse
+   revokes the grant. Idle 30 days, absolute 90 days. Errors are RFC 6749
+   codes (`invalid_grant` for a dead refresh token). The token endpoint takes
+   form-encoded bodies and answers well inside 10 seconds.
+7. **Who the caller is.** A call with an access token runs as the member who
+   consented: `gateway.Access` and `grantOwner` get their user id; the role is
+   read at verification. The audit names the client and the member.
+8. **Ending it.** The person revokes a client on "Connected clients"; an admin
+   sees and revokes everyone's; `/oauth/revoke` works for the client itself;
+   removing a member or changing them to a role without gateway use revokes
+   their grants. Each takes effect on `/mcp` within 2 seconds.
+9. **Clients.** The built-in known clients are accepted without setup; another
+   metadata document is refused with a page naming its host until an admin
+   approves it; with dynamic registration on, a client that registers is
+   limited, labelled and expires when unused. Metadata is fetched only from
+   public addresses, at most 64 KiB, in at most 5 seconds.
+10. **Fail closed.** With no public URL or with sign-in off, the metadata lists
+    no authorization server and the OAuth endpoints answer 503 naming what is
+    missing, as the admin site does today.
+
+#### Threat note
+- **Open to the internet without a session:** metadata, authorize, token,
+  register. None writes before consent except register (off by default,
+  limited). Every lookup is by a hashed secret or an indexed id.
+- **Client impersonation:** a loopback client cannot be told from another
+  program on the same computer; the consent page says so and PKCE binds the
+  code to whoever started. A hosted client is bound by its exact redirect URI.
+- **SSRF through the metadata URL:** the egress client refuses private,
+  loopback and link-local addresses, follows no redirect to them, and limits
+  size and time.
+- **Token theft:** tokens are stored hashed; refresh rotation with reuse
+  detection; access tokens are bound to this gateway and never forwarded to an
+  upstream (ADR 0003).
+- **Confused deputy:** consent is shown every time and names the redirect
+  host; `state` is returned untouched; `iss` is in the response (RFC 9207).
+- **Locking people out:** the sign-in state cap (F05 R-01) is fixed before the
+  server is switched on.
+- **An administrator acting as a member:** not possible through this flow; a
+  grant is made only by the member's own session (ADR 0021).
+
+#### Tasks, in the order of the pull requests
+- [ ] 1. Spike: `ory/fosite` and `zitadel/oidc` against the checks of ADR 0022 point 16; result in `docs/reviews/`. If neither passes, stop and ask the owner
+- [ ] 2. F05 R-01: sign-in starts cannot lock out setup, invites or each other. Test: `TestAnonymousStartsCannotBlockSetupOrInvites`
+- [ ] 3. Store and migration `00008`: clients, grants, codes, tokens (each with `org_id`); settings `PRIVO_OAUTH_CLIENTS`, `PRIVO_OAUTH_DYNAMIC_REGISTRATION` in the registry, README and example file. Tests: `TestGrantBelongsToAMember`, `TestCodeWorksOnce`, `TestRefreshRotationGraceAndReuse`, `TestRemovingAMemberRevokesTheirGrants`
+- [ ] 4. Client acceptance: metadata documents through the egress client, the known list, loopback matching. Tests: `TestClientDocumentMustMatchItsURL`, `TestLoopbackRedirectIgnoresThePort`, `TestOtherRedirectsMatchExactly`, `TestUnknownClientIsRefusedUntilApproved`, `TestClientDocumentFetchRefusesPrivateAddresses`
+- [ ] 5. Metadata, authorize, the sealed request cookie, consent page. Tests: `TestAuthorizeWritesNothingBeforeConsent`, `TestRequestCookieIsBoundAndExpires`, `TestConsentNeedsCSRFAndOrigin`, `TestApproverCannotAllowAClient`, `TestAuthorizeErrorsRedirectOnlyToAnAcceptedURI`
+- [ ] 6. Token and revoke endpoints; verification by prefix in `internal/auth`. Tests: `TestPKCERequired`, `TestTokenRequestNeedsTheSameResource`, `TestAccessTokenWorksOnlyOnTheGateway`, `TestVerifyReadsTheMembersRoleLive`
+- [ ] 7. Admin app: "Connected clients" for each person and for admins; Clients page with approval. Tests in `web/src/pages.test.tsx`
+- [ ] 8. Dynamic registration behind the setting. Tests: `TestRegistrationIsOffByDefault`, `TestRegistrationLimitsAndExpiry`
+- [ ] 9. Acceptance with the real binary and the Go SDK's OAuth client: `TestClientSignsInWithOAuthAndCallsAsTheMember` (metadata document client on a loopback redirect, sign-in on the way, consent, a call that uses the member's own upstream account, refresh, revoke)
+- [ ] 10. Independent review (required by CLAUDE.md), then switch on for app.privo.club
+- [ ] 11. Real clients, by the owner with Claude: Claude Code, Claude (hosted; the gateway must be reachable from Anthropic), VS Code; Cursor with dynamic registration on
+- [ ] Docs: README ("Connect an AI client"), `docs/deploy-coolify.md`, `docs/manual-test.md`; version (MINOR)
 
 ## F07. Upstream OAuth broker
 Status: In progress (first slice deployed, app.privo.club runs 0.6.0; independent review done 2026-11-03 with one High finding, open below; connecting a real provider account on app.privo.club is still to do, see F26)
@@ -372,7 +460,7 @@ until URL elicitation lands.
 
 ### Review findings, open (independent review 2026-11-03; fixes parked by the owner)
 
-- [ ] R-01 (High; the same hole as F14 R-02): an owner or admin can issue a gateway token with any member's `person` (`POST /api/v1/tokens`; an omitted person defaults to the token name) and call upstream servers with that member's grant; the audit names the token, not whose account was used. Bind tokens to a user id (`api_tokens.user_id`, set by `/api/v1/me/tokens`), resolve grants and team membership by user id and never by name, and record the grant's owner in the call's audit event. The acceptance fixture `g.issue("ada")` relies on the hole and has to change with it. F26's team membership follows the same string
+- [x] R-01 (High; the same hole as F14 R-02): an owner or admin can issue a gateway token with any member's `person` (`POST /api/v1/tokens`; an omitted person defaults to the token name) and call upstream servers with that member's grant; the audit names the token, not whose account was used. Bind tokens to a user id (`api_tokens.user_id`, set by `/api/v1/me/tokens`), resolve grants and team membership by user id and never by name, and record the grant's owner in the call's audit event. The acceptance fixture `g.issue("ada")` relies on the hole and has to change with it. F26's team membership follows the same string **Fixed in 0.7.0 (F27, ADR 0021), deployed 2026-11-11.**
 - [ ] R-02 (Medium): after a re-registration (`Grants.Reregister` from the connect callback) the running upstream manager keeps the old client id until a restart or an admin edit, so grants issued to the new client are refreshed as the old one, answered with `invalid_grant` and deleted. Call `Upstream.Sync` after the registration changes, or read the client from the store at refresh time; store the client id on the grant
 - [ ] R-03 (Medium): any signed-in member can fill the org-wide state cap through `POST /connect/<alias>/start` and lock out sign-in and connecting for everyone (see F05 R-01); cap connect states per user and replace that user's older one
 - [ ] R-04 (Low): removing a member, deleting a server and reconnecting delete grants locally without revoking them at the provider; backups keep them
@@ -543,7 +631,7 @@ Tasks and the tests that name them:
 ### Review findings, open (independent review 2026-11-03, `docs/reviews/2026-11-03-f14-admin-app-independent-review.md`: approve with changes; 0 Critical, 0 High, 2 Medium, 4 Low, 2 Info; fixes parked by the owner)
 
 - [ ] R-01 (Medium): the tool review shows only the first line (at most 300 characters) of a description, while the hash that is accepted covers all of it, the input schema and the annotations. Show the whole description as text, the schema, and a diff for a changed definition
-- [ ] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fix with F07 R-01
+- [x] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fix with F07 R-01 **Fixed in 0.7.0 (F27).** The field stays as a label and says so.
 - [ ] R-03 (Low): a refused or cross-site request still slides the session's idle timeout; touch the session only after every check passed
 - [ ] R-04 (Low): the review ticks everything by default, also items that arrive while the page polls; make ticking opt-in or mark new rows
 - [ ] R-05 (Low): the UI build has no audit step (`web/.npmrc` has `audit=false` and `legacy-peer-deps=true`; `npm ci` runs lifecycle scripts; actions are pinned by tag): `npm ci --ignore-scripts`, `npm audit --omit=dev`, `npm audit signatures` in the `ui` job, actions by SHA
@@ -790,7 +878,7 @@ Tasks and the tests that name them:
 - [ ] Later: tool-level toolsets inside a server (F08); a team's own rule presets; identity provider groups mapped onto teams (F20)
 
 ## F27. A token belongs to a member by user id
-Status: Built, tested; waits for the owner's review of the pull request (2026-11-11)
+Status: Done, deployed as 0.7.0 on 2026-11-11 (independent review and the owner's new token are open below)
 ADRs: 0021 (amends 0014 point 3, 0017 and 0020)
 
 Closes the High finding of the independent reviews of 2026-11-03 (F07 R-01,
@@ -848,4 +936,39 @@ The person a token names is a label and is never looked up.
 - [x] Docs: README (Tokens, invites), `docs/deploy-coolify.md` ("Tokens belong to members (0.7.0)", breaking), version 0.7.0
 - [ ] Owner on app.privo.club after the deploy: make a new token on the Tokens page, put it in Claude Code, revoke the old one
 - [ ] Independent review of this change (auth, tenancy, the request pipeline: required by CLAUDE.md; run when the owner says go)
-- [ ] Follow-up, not in this change: tick F07 R-01 and F14 R-02 in their sections once both this and the audit pull request are merged; record the member (user id) on approvals so the self-approval check compares members, not labels (with F05 R-04)
+- [x] F07 R-01 and F14 R-02 ticked in their sections
+- [ ] Follow-up: record the member (user id) on approvals so the self-approval check compares members, not labels (with F05 R-04)
+
+## F28. Activity and telemetry (the audit, reworked)
+Status: Not started (reference read 2026-11-11; spec comes after F06 and the per-server sign-in work)
+ADRs: 0006 (audit), to be written
+
+The owner wants the audit reworked with telemetry "like Meridian"
+(https://github.com/rynfar/meridian, a local bridge between coding clients and
+model providers). What Meridian has, from its `MONITORING.md` and
+`src/telemetry/types.ts`, and what it would mean in Privo:
+
+- **One row per request with the time of each phase** (queue wait, overhead,
+  time to first byte, upstream duration, total), status and error. In Privo: one
+  row per call with policy and approval wait, upstream connect, upstream
+  duration and total, the size of arguments and result, the outcome and the
+  error class, next to who (member, client, token) and what (server, tool).
+- **A summary over a window**: requests per minute, error count, p50/p95/p99,
+  min, max and average per phase, broken down by model and mode. In Privo: by
+  server, tool, member, team and client.
+- **A time series endpoint** for charts.
+- **A diagnostic log** with levels and categories (session, lineage, error,
+  lifecycle, token), a filter per category and alerts for anomalies. In Privo:
+  upstream connections, grant refreshes, approvals, sign-in, lifecycle.
+- **Storage that says what it holds**: memory ring or SQLite, retention in days,
+  size on disk, the oldest record.
+- **A dashboard**: Overview, Requests, Logs. In Privo: the Activity page.
+- **Tokens and estimated cost per model.** Privo does not see model tokens; the
+  nearest thing it can measure is what tool definitions and results cost in
+  context (F17).
+
+To settle in the spec: the audit (who did what, kept, exportable, tamper
+evident: F12) and telemetry (how it went, bounded retention) share the call
+record but not the retention or the guarantees; whether an OpenTelemetry export
+is wanted next to the built-in pages (F16).
+
