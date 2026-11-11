@@ -186,7 +186,10 @@ Three things are known now that were not then:
   to the internet without a session, so its limits and its tests come first.
 - The sign-in state cap (F05 R-01) is fixed in the same series, before the
   authorization server is switched on, because every client's first step now
-  goes through sign-in.
+  goes through sign-in. The fix uses the mechanism of point 6: the state of a
+  sign-in in flight moves from a table row into a sealed cookie, so a request
+  without a session writes nothing anywhere. That changes how ADR 0016 stores
+  the state and gets its own short amendment.
 - Not decided here: enterprise-managed authorization (an identity assertion
   from the company's identity provider instead of the consent page), which
   needs the identity-provider sign-in first; toolset scopes (F08); a
