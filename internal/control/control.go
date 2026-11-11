@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -551,13 +552,20 @@ func (a *API) acceptPins(w http.ResponseWriter, r *http.Request, p auth.Principa
 // ---- tokens
 
 type tokenView struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Role      string    `json:"role"`
-	Kind      string    `json:"kind"`
-	Person    string    `json:"person"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Role   string `json:"role"`
+	Kind   string `json:"kind"`
+	Person string `json:"person"`
+	// Bound says the token belongs to a member, who made it for themselves:
+	// only such a token uses that member's teams and accounts (F27).
+	Bound     bool      `json:"bound"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func viewToken(t store.APIToken) tokenView {
+	return tokenView{ID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: t.Person, Bound: t.UserID != "", CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt}
 }
 
 func (a *API) listTokens(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -567,15 +575,19 @@ func (a *API) listTokens(w http.ResponseWriter, r *http.Request, p auth.Principa
 	}
 	out := make([]tokenView, 0, len(toks))
 	for _, t := range toks {
-		out = append(out, tokenView{ID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: t.Person, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt})
+		out = append(out, viewToken(t))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": out})
 	return nil
 }
 
-// TokenSpec describes a token to issue.
+// TokenSpec describes a token to issue. Person is a label. UserID makes the
+// token belong to that member, with their teams and accounts: only a signed-in
+// member sets it, for themselves (F27). Everything else issues a token of
+// nobody, whatever person it names.
 type TokenSpec struct {
 	Name, Role, Kind, Person string
+	UserID                   string
 	TTL                      time.Duration
 }
 
@@ -609,11 +621,14 @@ func IssueToken(ctx context.Context, s *store.Store, org store.OrgID, spec Token
 		return "", store.APIToken{}, err
 	}
 	now := time.Now()
-	rec := store.APIToken{OrgID: org, ID: tok.ID, Name: name, Role: role, Kind: spec.Kind, Person: person, SecretHash: tok.SecretHash,
+	rec := store.APIToken{OrgID: org, ID: tok.ID, Name: name, Role: role, Kind: spec.Kind, Person: person, UserID: spec.UserID, SecretHash: tok.SecretHash,
 		CreatedAt: now, ExpiresAt: now.Add(ttl)}
 	if err := s.CreateToken(ctx, rec); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return "", rec, errorf(http.StatusConflict, "an active token named %q already exists", name)
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return "", rec, errorf(http.StatusForbidden, "only an active member can make a token of their own")
 		}
 		return "", rec, err
 	}
@@ -639,13 +654,15 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if (req.Role == store.RoleOwner || req.Role == store.RoleAdmin) && p.Role != store.RoleOwner {
 		return errorf(http.StatusForbidden, "only owners can issue owner or admin tokens")
 	}
+	// No UserID: a token an administrator issues never belongs to a member,
+	// whatever person it names, so it cannot use anyone's accounts or teams.
 	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL})
 	if err != nil {
 		return err
 	}
 	a.adminEvent(r.Context(), p, "token.create:"+rec.Kind+":"+rec.Role+":"+rec.Name, "")
 	writeJSON(w, http.StatusCreated, map[string]any{"id": rec.ID, "token": plain, "name": rec.Name, "role": rec.Role, "kind": rec.Kind,
-		"person": rec.Person, "expires_at": rec.ExpiresAt})
+		"person": rec.Person, "bound": false, "expires_at": rec.ExpiresAt})
 	return nil
 }
 
@@ -688,6 +705,18 @@ func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal
 	if err != nil {
 		return err
 	}
+	// Whose account and teams each call ran as (F27): the member's person, by
+	// the user id recorded with the call.
+	persons := map[string]string{}
+	if slices.ContainsFunc(calls, func(c store.CallRecord) bool { return c.Intent.UserID != "" }) {
+		users, err := a.Store.ListUsers(r.Context(), p.OrgID)
+		if err != nil {
+			return err
+		}
+		for _, u := range users {
+			persons[u.ID] = u.Person
+		}
+	}
 	out := make([]map[string]any, 0, len(calls))
 	for _, c := range calls {
 		e := map[string]any{
@@ -699,6 +728,9 @@ func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal
 		}
 		if c.Intent.ApprovedBy != "" {
 			e["approved_by"] = c.Intent.ApprovedBy
+		}
+		if c.Intent.UserID != "" {
+			e["user_id"], e["user"] = c.Intent.UserID, persons[c.Intent.UserID]
 		}
 		if c.Completion != nil {
 			e["outcome"], e["latency_ms"] = c.Completion.Outcome, c.Completion.LatencyMS

@@ -201,7 +201,8 @@ func publicBase(cfg config.Config, ln net.Listener) string {
 	return "http://localhost:" + port
 }
 
-// tokenCreate issues a personal token from the command line (break-glass and
+// tokenCreate issues a token of nobody from the command line: --person is a
+// label and gives no member's teams or accounts (ADR 0021). Break-glass and
 // first setup). It works while the server runs.
 func tokenCreate(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	name, role, kind, person := "", store.RoleOwner, store.KindControl, ""

@@ -128,6 +128,20 @@ func TestTeamsLimitWhatEachPersonSees(t *testing.T) {
 	g.eventually("ada's list shows the designers' server", 8*time.Second, func() bool {
 		return slices.Equal(toolList(t, adaClient), []string{"design__echo", "shared__echo"})
 	})
+	// F27: a token the owner issues with Ada's name is a token of nobody. It
+	// sees what everyone sees, not what Ada's team reaches, and cannot call it.
+	code, forged := boss.app(http.MethodPost, "/v1/tokens", map[string]any{"name": "as-ada", "role": "member", "kind": "gateway", "person": "ada"}, nil)
+	forgedToken, _ := forged["token"].(string)
+	if code != http.StatusCreated || forgedToken == "" {
+		t.Fatalf("owner issues a token: %d %v", code, forged)
+	}
+	forgedClient := g.connect(forgedToken)
+	if got := toolList(t, forgedClient); !slices.Equal(got, []string{"shared__echo"}) {
+		t.Fatalf("a token that only names ada sees %v, want only shared__echo", got)
+	}
+	if text, isErr := call(t, forgedClient, "design__echo", map[string]any{"text": "x"}); !isErr {
+		t.Fatalf("a token that only names ada called a team server: %q", text)
+	}
 	if got := toolList(t, bobClient); !slices.Equal(got, []string{"shared__echo"}) {
 		t.Fatalf("bob sees %v", got)
 	}

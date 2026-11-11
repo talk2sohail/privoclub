@@ -197,8 +197,8 @@ func (a *API) activeOwners(ctx context.Context, org store.OrgID) (int, error) {
 	return n, nil
 }
 
-// removeMember ends a member's access: sessions, upstream grants, and every
-// active token that carries their person.
+// removeMember ends a member's access: sessions, upstream grants, every active
+// token that belongs to them, and every token of nobody that names them.
 func (a *API) removeMember(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	u, err := a.member(r, p)
 	if err != nil {
@@ -222,7 +222,7 @@ func (a *API) removeMember(w http.ResponseWriter, r *http.Request, p auth.Princi
 	}
 	revoked := 0
 	for _, t := range toks {
-		if t.Person == u.Person {
+		if t.UserID == u.ID || (t.UserID == "" && t.Person == u.Person) {
 			if err := a.Store.RevokeToken(r.Context(), p.OrgID, t.ID); err == nil {
 				revoked++
 				a.adminEvent(r.Context(), p, "token.revoke:"+t.ID, "")
@@ -241,19 +241,35 @@ func (a *API) listMyTokens(w http.ResponseWriter, r *http.Request, p auth.Princi
 	}
 	out := []tokenView{}
 	for _, t := range toks {
-		if t.Person == p.Person && t.Kind == store.KindGateway {
-			out = append(out, tokenView{ID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: t.Person, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt})
+		if mine(t, p) {
+			out = append(out, viewToken(t))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": out})
 	return nil
 }
 
-// createMyToken gives a person a gateway token of their own for an AI client:
-// their person, their role.
+// mine reports whether a gateway token is p's to list and revoke: one that
+// belongs to them, or a token of nobody that names them (made before F27, or
+// by an administrator: they may always take a token with their name away).
+// A token that belongs to another member is never theirs, whatever it names.
+func mine(t store.APIToken, p auth.Principal) bool {
+	if t.Kind != store.KindGateway {
+		return false
+	}
+	if t.UserID != "" {
+		return t.UserID == p.UserID
+	}
+	return p.Person != "" && t.Person == p.Person
+}
+
+// createMyToken gives a signed-in member a gateway token of their own for an
+// AI client: their role, their name, and their user id, which is what makes
+// calls with it use their teams and their accounts (F27). A caller that is no
+// member (an API token, whatever person it names) cannot make one.
 func (a *API) createMyToken(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-	if p.Person == "" {
-		return errorf(http.StatusForbidden, "this principal has no person")
+	if p.UserID == "" || p.Person == "" {
+		return errorf(http.StatusForbidden, "sign in to Privo to make a token of your own; an API token cannot make one")
 	}
 	var req struct {
 		Name string `json:"name"`
@@ -262,20 +278,20 @@ func (a *API) createMyToken(w http.ResponseWriter, r *http.Request, p auth.Princ
 		return err
 	}
 	name := strings.TrimSpace(req.Name)
-	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: name, Role: p.Role, Kind: store.KindGateway, Person: p.Person, TTL: a.TokenTTL})
+	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: name, Role: p.Role, Kind: store.KindGateway, Person: p.Person, UserID: p.UserID, TTL: a.TokenTTL})
 	if err != nil {
 		return err
 	}
 	a.adminEvent(r.Context(), p, "token.create:gateway:"+rec.Role+":"+rec.Name, "")
 	writeJSON(w, http.StatusCreated, map[string]any{"id": rec.ID, "token": plain, "name": rec.Name, "role": rec.Role, "kind": rec.Kind,
-		"person": rec.Person, "expires_at": rec.ExpiresAt})
+		"person": rec.Person, "bound": true, "expires_at": rec.ExpiresAt})
 	return nil
 }
 
 func (a *API) revokeMyToken(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	id := r.PathValue("id")
 	t, err := a.Store.TokenByID(r.Context(), id)
-	if err != nil || t.OrgID != p.OrgID || t.RevokedAt != nil || t.Person != p.Person || t.Kind != store.KindGateway {
+	if err != nil || t.OrgID != p.OrgID || t.RevokedAt != nil || !mine(t, p) {
 		return errorf(http.StatusNotFound, "no active token %q of yours", id)
 	}
 	if err := a.Store.RevokeToken(r.Context(), p.OrgID, id); err != nil {

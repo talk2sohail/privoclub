@@ -59,6 +59,8 @@ export type Token = {
   role: string;
   kind: string;
   person: string;
+  /** The token belongs to a member, who made it signed in (ADR 0021). */
+  bound?: boolean;
   created_at?: string;
   expires_at: string;
 };
