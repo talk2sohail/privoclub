@@ -114,3 +114,34 @@ func TestTokenKindsAreSeparated(t *testing.T) {
 		t.Fatal("control token accepted on /mcp")
 	}
 }
+
+// F27: the principal carries the member a token belongs to, taken from the
+// token's user id. The person label alone never makes a principal a member.
+func TestVerifyCarriesTheTokensMember(t *testing.T) {
+	f := &fakeStore{tokens: map[string]store.APIToken{}}
+	a := New(f)
+	ctx := context.Background()
+	exp := time.Now().Add(time.Hour)
+
+	bound, _ := token.New()
+	f.tokens[bound.ID] = store.APIToken{OrgID: "org", ID: bound.ID, Name: "laptop", Role: store.RoleMember, Kind: store.KindGateway, Person: "ada", UserID: "u-ada", SecretHash: bound.SecretHash, ExpiresAt: exp}
+	p, _, err := a.Verify(ctx, bound.Plain)
+	if err != nil || p.UserID != "u-ada" || p.Person != "ada" {
+		t.Fatalf("bound token: %+v %v", p, err)
+	}
+	// Audit rows name a token by its id, also when it belongs to a member.
+	if p.ActorID() != bound.ID {
+		t.Fatalf("actor id %q, want the token id", p.ActorID())
+	}
+	// Cached answers carry it too.
+	if p, _, _ := a.Verify(ctx, bound.Plain); p.UserID != "u-ada" {
+		t.Fatalf("cached principal lost the member: %+v", p)
+	}
+
+	label, _ := token.New()
+	f.tokens[label.ID] = store.APIToken{OrgID: "org", ID: label.ID, Name: "ci", Role: store.RoleMember, Kind: store.KindGateway, Person: "ada", SecretHash: label.SecretHash, ExpiresAt: exp}
+	p, _, err = a.Verify(ctx, label.Plain)
+	if err != nil || p.UserID != "" || p.Person != "ada" {
+		t.Fatalf("a token that only names ada: %+v %v", p, err)
+	}
+}

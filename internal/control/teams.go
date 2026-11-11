@@ -460,15 +460,13 @@ type myServerView struct {
 	ConnectURL string `json:"connect_url,omitempty"`
 }
 
-// userOf is the member behind p, or "" when there is none.
+// userOf is the active member behind p, or "" when there is none: the
+// principal's user id, never the person it names (F27).
 func (a *API) userOf(ctx context.Context, p auth.Principal) (string, error) {
-	if p.UserID != "" {
-		return p.UserID, nil
-	}
-	if p.Person == "" {
+	if p.UserID == "" {
 		return "", nil
 	}
-	u, err := a.Store.UserByPerson(ctx, p.OrgID, p.Person)
+	u, err := a.Store.UserByID(ctx, p.OrgID, p.UserID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
 		return "", nil
 	}

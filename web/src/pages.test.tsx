@@ -135,6 +135,21 @@ describe("tokens", () => {
     navigate("/admin/tokens");
     await waitFor(() => expect(screen.queryByText("privo_pat_abc_def")).toBeNull());
   });
+
+  it("says which of my tokens is not tied to my account (ADR 0021)", async () => {
+    at("/admin/tokens");
+    await start(session("member"), {
+      "GET /admin/api/v1/me/tokens": {
+        tokens: [
+          { id: "t1", name: "laptop", kind: "gateway", role: "member", person: "ada", bound: true, expires_at: "2027-01-01T00:00:00Z" },
+          { id: "t0", name: "old-laptop", kind: "gateway", role: "member", person: "ada", bound: false, expires_at: "2027-01-01T00:00:00Z" },
+        ],
+      },
+    });
+    const old = (await screen.findByText("old-laptop")).closest("tr")!;
+    expect(old.textContent).toContain("Not tied to your account");
+    expect(screen.getByText("laptop").closest("tr")!.textContent).not.toContain("Not tied to your account");
+  });
 });
 
 describe("approvals", () => {

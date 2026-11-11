@@ -260,8 +260,12 @@ func newOAuthWorld(t *testing.T, dynamic bool) *oauthWorld {
 	}
 	res := g.api(http.MethodPost, "/api/v1/servers", g.owner, map[string]any{"alias": "linear", "transport": "http", "url": w.up.srv.URL + "/mcp", "oauth": oauth}, http.StatusCreated)
 	w.serverJS, _ = res["server"].(map[string]any)
-	tok := g.api(http.MethodPost, "/api/v1/tokens", g.owner, map[string]any{"name": "boss-agent", "role": "owner", "kind": "gateway", "person": "boss"}, http.StatusCreated)
-	w.bossTok, _ = tok["token"].(string)
+	// The boss's AI client: a token the boss makes signed in, so it belongs
+	// to the boss (F27). A token the admin API issues belongs to nobody.
+	code, tok := w.boss.app(http.MethodPost, "/v1/me/tokens", map[string]any{"name": "boss-agent"}, nil)
+	if w.bossTok, _ = tok["token"].(string); code != http.StatusCreated || w.bossTok == "" {
+		t.Fatalf("boss's token: %d %v", code, tok)
+	}
 	return w
 }
 
@@ -306,7 +310,13 @@ func TestUpstreamOAuthTwoPeople(t *testing.T) {
 	if cb, _ := adaWeb.signInThroughGitHub(start); cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/start" { // members land on Start
 		t.Fatalf("ada joins: %d %q", cb.StatusCode, cb.Header.Get("Location"))
 	}
-	adaAgent := g.connect(g.issue("ada")) // a gateway token whose person is "ada"
+	// Ada makes a token of her own, signed in: it belongs to her (F27).
+	code, made := adaWeb.app(http.MethodPost, "/v1/me/tokens", map[string]any{"name": "ada-laptop"}, nil)
+	adaToken, _ := made["token"].(string)
+	if code != http.StatusCreated || adaToken == "" || made["bound"] != true {
+		t.Fatalf("ada's token: %d %v", code, made)
+	}
+	adaAgent := g.connect(adaToken)
 	g.eventually("ada sees the tool", 5*time.Second, func() bool { return slices.Contains(toolList(t, adaAgent), "linear__whoami") })
 	text, isErr := call(t, adaAgent, "linear__whoami", nil)
 	if !isErr || !strings.Contains(text, g.base+"/connect/linear") {
@@ -334,11 +344,58 @@ func TestUpstreamOAuthTwoPeople(t *testing.T) {
 	if text, isErr := call(t, bossAgent, "linear__whoami", nil); isErr || text != "you are boss@linear" {
 		t.Fatalf("boss: %q (error=%v)", text, isErr)
 	}
-	// A token whose person has no account here gets told to ask for an invite.
+	// A token that belongs to no member is told to make its own.
 	stranger := g.connect(g.issue("stranger"))
-	if text, isErr := call(t, stranger, "linear__whoami", nil); !isErr || !strings.Contains(text, "invite") {
+	if text, isErr := call(t, stranger, "linear__whoami", nil); !isErr || !strings.Contains(text, "does not belong to a member") || !strings.Contains(text, g.base+"/admin/tokens") {
 		t.Fatalf("stranger: %q", text)
 	}
+	// F27 (review 2026-11-03, F07 R-01): the owner issues gateway tokens that
+	// name Ada. They are tokens of nobody: no call with them runs as Ada, and
+	// none reaches the upstream at all.
+	up.mu.Lock()
+	seenBefore := len(up.subjectSeen)
+	up.mu.Unlock()
+	for name, body := range map[string]map[string]any{
+		"person ada": {"name": "as-ada", "role": "member", "kind": "gateway", "person": "ada"},
+		"named ada":  {"name": "ada", "role": "member", "kind": "gateway"},
+		"owner role": {"name": "boss-as-ada", "role": "owner", "kind": "gateway", "person": "ada"},
+	} {
+		res := g.api(http.MethodPost, "/api/v1/tokens", g.owner, body, http.StatusCreated)
+		if res["bound"] != false {
+			t.Errorf("%s: %v, want bound=false", name, res)
+		}
+		impostor := g.connect(res["token"].(string))
+		text, isErr := call(t, impostor, "linear__whoami", nil)
+		if !isErr || !strings.Contains(text, "does not belong to a member") || strings.Contains(text, "ada@linear") {
+			t.Errorf("%s: %q (error=%v), want a refusal", name, text, isErr)
+		}
+	}
+	// A control token that names Ada cannot make "her" gateway token either.
+	script := g.issueControl("script-as-ada", "admin", "ada")
+	if code, raw := g.raw(http.MethodPost, "/api/v1/me/tokens", script, map[string]any{"name": "via-me"}); code != http.StatusForbidden {
+		t.Errorf("an API token made a member's token: %d %s", code, raw)
+	}
+	up.mu.Lock()
+	if len(up.subjectSeen) != seenBefore {
+		t.Errorf("calls with tokens that only name ada reached the upstream as %q", up.subjectSeen[seenBefore:])
+	}
+	up.mu.Unlock()
+	// The audit says whose account each call ran as: Ada's own calls name
+	// her; the refused ones name nobody.
+	g.eventually("the audit names the member", 5*time.Second, func() bool {
+		events, _ := g.api(http.MethodGet, "/api/v1/audit/events?limit=100", g.owner, nil, http.StatusOK)["events"].([]any)
+		own, others := false, true
+		for _, raw := range events {
+			ev := raw.(map[string]any)
+			switch ev["actor"] {
+			case "ada-laptop":
+				own = own || (ev["user"] == "ada" && ev["outcome"] == "ok")
+			case "as-ada", "ada", "boss-as-ada", "stranger":
+				others = others && ev["user"] == nil
+			}
+		}
+		return own && others
+	})
 
 	// Expired access tokens are refreshed by Privo.
 	up.mu.Lock()

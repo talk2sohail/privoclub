@@ -84,7 +84,15 @@ export function Tokens({ session }: PageProps) {
                 <tbody>
                   {mine.data.tokens.map((t) => (
                     <tr key={t.id}>
-                      <td>{t.name}</td>
+                      <td>
+                        {t.name}
+                        {t.bound === false && (
+                          <>
+                            <br />
+                            <small class="meta">Not tied to your account: it reaches only what everyone can use. Make a new token and revoke this one.</small>
+                          </>
+                        )}
+                      </td>
                       <td>{when(t.created_at)}</td>
                       <td>{when(t.expires_at)}</td>
                       <td>
@@ -127,7 +135,10 @@ export function Tokens({ session }: PageProps) {
                 <tbody>
                   {allTokens.map((t) => (
                     <tr key={t.id}>
-                      <td>{t.person}</td>
+                      <td>
+                        {t.person}
+                        {t.kind === "gateway" && !t.bound && <small class="meta"> (a label: the token has no member's teams or accounts)</small>}
+                      </td>
                       <td>{t.name}</td>
                       <td>{t.kind === "gateway" ? "AI client" : "API"}</td>
                       <td>{t.role}</td>
@@ -150,7 +161,8 @@ export function Tokens({ session }: PageProps) {
                 Name <input name="name" required maxLength={64} autocomplete="off" />
               </label>
               <label>
-                Person <small class="meta">who it acts for</small> <input name="person" maxLength={128} autocomplete="off" />
+                Person <small class="meta">a label for approvals and the audit; it gives the token nobody's teams or accounts</small>{" "}
+                <input name="person" maxLength={128} autocomplete="off" />
               </label>
               <label>
                 Role

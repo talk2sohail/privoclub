@@ -755,3 +755,64 @@ Tasks and the tests that name them:
 - [ ] Adding a server whose provider is slow waits about 10 s on "Adding…" and ends in "context deadline exceeded"; say which step timed out at which host in plain words (Figma's authorization server metadata answered 503 or hung most of the time on 2026-11-04 while its status page was green)
 - [ ] Discovered: token names are unique in the whole org, so two people cannot both call their token `claude-code`; make them unique per person (with the person in the name shown to admins)
 - [ ] Later: tool-level toolsets inside a server (F08); a team's own rule presets; identity provider groups mapped onto teams (F20)
+
+## F27. A token belongs to a member by user id
+Status: Built, tested; waits for the owner's review of the pull request (2026-11-11)
+ADRs: 0021 (amends 0014 point 3, 0017 and 0020)
+
+Closes the High finding of the independent reviews of 2026-11-03 (F07 R-01,
+which is F14 R-02 as seen from the app): an owner or admin could issue a
+gateway token that named a member and call upstream servers with that member's
+own account, and see the servers of their teams.
+
+### Goal
+Whose account and whose teams a call uses is decided by the member a token
+belongs to, set once when a signed-in member makes the token for themselves.
+The person a token names is a label and is never looked up.
+
+### Acceptance
+1. A token made on the Tokens page (`POST /api/v1/me/tokens`, signed in)
+   belongs to that member: `bound: true`, the member's teams, the member's own
+   accounts on OAuth servers.
+2. A token issued with `POST /api/v1/tokens` or `privo token create` belongs to
+   nobody, whatever `person` or name it carries: `bound: false`, team
+   "everyone" only, and on an own-account server the answer "this token does
+   not belong to a member" with the address of the Tokens page. No call with it
+   reaches the upstream as anyone.
+3. An API token that names a member cannot make "its own" gateway token
+   (`POST /api/v1/me/tokens` answers 403).
+4. Nothing in a request sets the owner; an unknown field is refused.
+5. The call audit names the member a call ran as (`user`, `user_id`) and names
+   nobody for a token of nobody.
+6. Tokens made before this version get no owner from the migration. Each
+   person sees them on the Tokens page as "not tied to your account" and can
+   revoke them.
+7. Removing a member revokes the tokens that belong to them and the tokens of
+   nobody that name them; a token that belongs to someone else stays.
+
+### Threat note
+- The attacker is an owner or admin (or anyone holding their control token)
+  who wants to act as another member at that member's provider. After this
+  change they cannot do it with a token. They can still remove the member,
+  disconnect an account or change teams, and the audit shows each.
+- Binding is by user id only. A user id of another org, of a removed member or
+  one that does not exist is refused in the same statement that inserts.
+- A token keeps the role its member had when it was made (not new; noted).
+- The self-approval check still compares person labels (ADR 0014; F05 R-04 is
+  the open item). An administrator can still issue a token of nobody with a
+  label of their choice; it gets nobody's accounts.
+
+### Tasks
+- [x] ADR 0021
+- [x] Migration `00007_token_owner.sql`: `api_tokens.user_id`, `audit_events.user_id`; no backfill, on purpose
+- [x] Store: `CreateToken` binds only to an active member of the org; `UserByID`. Tests: `TestTokenBelongsToAMember`, `TestTokenCannotBeBoundToSomeoneWhoIsNotAnActiveMember`, `TestMigrationLeavesExistingTokensWithoutAnOwner`, `TestUserByID`, `TestAuditRecordsWhoseAccountACallRanAs`
+- [x] Auth: the principal carries the token's member. Test: `TestVerifyCarriesTheTokensMember`
+- [x] Gateway: team access and the per-person session read the user id, never the person. Tests: `TestAccessUsesTheUserIDNeverThePersonName`, `TestAccessFailsClosed`, `TestGrantOwnerIsTheTokensMember`, `TestTokenOfNobodyIsToldToMakeItsOwn`
+- [x] Admin API: `/me/tokens` binds, lists and revokes by member; `/tokens` never binds; `bound` in the token views; `user` in the call audit; member removal. Tests: `TestMyTokenBelongsToTheSignedInMember`, `TestAnAdministratorCannotIssueATokenThatIsAMember`, `TestAnAPITokenCannotMakeAMembersToken`, `TestMyTokensAreFoundByMemberNotByName`, `TestRemovingAMemberRevokesTheirTokensAndTheOnesThatNameThem`, `TestAuditListNamesTheMemberACallRanAs`
+- [x] Acceptance, with the real binary: `TestUpstreamOAuthTwoPeople` (three tokens that name Ada and a control token that names her are refused, nothing reaches the upstream, the audit names Ada only for her own calls), `TestTeamsLimitWhatEachPersonSees` (a token that names Ada sees and calls only what everyone reaches). The fixtures that had relied on the hole (`g.issue("ada")`, the owner's `boss-agent`) now make their tokens signed in
+- [x] The new tests fail with the hole put back (name looked up at issue time): checked 2026-11-11, the upstream answered "you are ada@linear"
+- [x] Admin app: the Tokens page marks a token that is not tied to the account, and says that the person of an API token is a label. Test: "says which of my tokens is not tied to my account"
+- [x] Docs: README (Tokens, invites), `docs/deploy-coolify.md` ("Tokens belong to members (0.7.0)", breaking), version 0.7.0
+- [ ] Owner on app.privo.club after the deploy: make a new token on the Tokens page, put it in Claude Code, revoke the old one
+- [ ] Independent review of this change (auth, tenancy, the request pipeline: required by CLAUDE.md; run when the owner says go)
+- [ ] Follow-up, not in this change: tick F07 R-01 and F14 R-02 in their sections once both this and the audit pull request are merged; record the member (user id) on approvals so the self-approval check compares members, not labels (with F05 R-04)

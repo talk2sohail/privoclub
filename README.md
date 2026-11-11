@@ -130,8 +130,8 @@ privo admin invite --person ada [--role member|approver|auditor|admin]
 
 prints a link that works once, for 72 hours (also `POST /api/v1/invites` with
 `{"person": "ada", "role": "member"}`). Ada opens it and signs in with GitHub;
-her account is bound by its numeric GitHub id. Give her AI client a gateway
-token whose person is `ada`.
+her account is bound by its numeric GitHub id. She then makes a token for each
+of her AI clients on the **Tokens** page.
 
 ## Servers where each person uses their own account
 
@@ -202,11 +202,19 @@ Privo has two kinds of personal token (ADR 0014):
 - **Control tokens** are for people administering Privo and work only on the
   admin API. Approvers only get control tokens.
 
+A gateway token **belongs to the member who made it** on the Tokens page,
+signed in (ADR 0021). Only such a token uses that member's teams and their own
+accounts on OAuth servers, and the audit names the member with every call
+(`user`). A token issued any other way (`POST /api/v1/tokens`,
+`privo token create`) belongs to nobody, whatever `person` it names: it
+reaches the servers everyone can use and never anyone's account. `person` is a
+label for approvals and the audit. The lists show which is which (`bound`).
+
 First setup, where you have a shell on the server:
 
 ```sh
 privo token create --name you --role owner --kind control       # admin API
-privo token create --name you-agent --role owner --kind gateway --person you   # AI client
+privo token create --name ci --role member --kind gateway        # a script: servers everyone can use
 ```
 
 Backups and restore (ADR 0010, `docs/deploy-coolify.md`):

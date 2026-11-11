@@ -100,6 +100,22 @@ Nothing new to configure: once sign-in with GitHub works, add a remote server wi
 
 Invite people with `privo admin invite --person NAME` in the container's terminal, or with `POST /api/v1/invites`.
 
+## Tokens belong to members (0.7.0)
+
+0.7.0 adds migration `00007_token_owner.sql` (two columns; it has a down step,
+and restoring the backup is the way back) and closes a hole: an owner or admin
+could issue a token that named a member and use that member's own accounts
+(ADR 0021).
+
+**Breaking:** a gateway token made before 0.7.0 belongs to nobody. It keeps
+working on servers that everyone reaches with a shared credential. On a server
+where each person uses their own account it is answered with "this token does
+not belong to a member" and the address of the Tokens page; servers given to a
+team disappear from its list. Each person signs in, makes a new token on
+**Tokens** and puts it in their AI client; the old one is listed there as "not
+tied to your account" and can be revoked. Tokens issued with
+`POST /api/v1/tokens` or `privo token create` are for scripts from now on.
+
 ## Teams (0.6.0)
 
 0.6.0 adds teams (ADR 0020) and migration `00006_teams.sql`, which runs on the
