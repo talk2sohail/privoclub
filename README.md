@@ -9,7 +9,7 @@ per feature is in `docs/todo.md`.
 
 ## Build
 
-Requires Go 1.26 or later; `go.mod` pins the 1.27.3 toolchain.
+Requires Go 1.26 or later; `go.mod` pins the toolchain (1.27.4 or later: GO-2026-6859).
 
 ```sh
 make            # vet, lint, test, build
