@@ -3,6 +3,26 @@
 Date: 2026-11-12. Asked by ADR 0022 point 16 and ADR 0003 section 2 ("built on
 a maintained library, chosen by a spike, not hand-rolled").
 
+## Decided by the owner, 2026-11-12 (after this report)
+
+1. **The library is `authelia.com/provider/oauth2`, pinned at v0.3.3**
+   (option 1 below). Recorded in ADR 0022 point 16.
+2. **No grace window for refresh tokens.** A refresh token that was already
+   rotated is refused at once and its use revokes the grant. This is what the
+   library does by itself, so item 3 of "Left to Privo" is **not built**, and
+   the row "Rotation, 30-second same successor" in the table reads: rotation
+   and reuse detection in the library, nothing in front. Recorded in ADR 0022
+   point 9, with what it costs under its Consequences.
+
+The rest of this report is as written before those decisions.
+
+One thing this report missed when first written: **ADR 0012** (2026-10-28,
+proposed, never accepted) had already chosen `ory/fosite` from a desk
+comparison, to be confirmed by a prototype. This spike is that confirmation
+and it came out differently, so 0012 is marked superseded by ADR 0022 point
+16. Its list of what Privo builds around the library was right except for the
+library's name: `resource` and `iss` turned out to be in the fork.
+
 ## Result
 
 **Neither of the two libraries the decision records name passes as named.**
@@ -84,6 +104,8 @@ decision is the owner's; the options are at the end.
   is made for an authorization request (`TestAuthorizeFetchesNothing`).
 
 ## For the owner to decide
+
+*(Decided 2026-11-12: option 1, and no grace at all. See the top.)*
 
 1. **Adopt `authelia.com/provider/oauth2`, pinned at v0.3.3** (recommended).
    It is fosite, maintained, and the only candidate that passes without
