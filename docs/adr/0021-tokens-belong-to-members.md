@@ -1,6 +1,6 @@
 # 0021. A token belongs to a member by user id, never by the name it carries
 
-- Status: Proposed, 2026-11-11 (the owner accepts it by merging F27)
+- Status: Accepted, 2026-11-11 (the owner merged F27, pull request 2)
 - Date: 2026-11-11
 - Related: 0014 (token kinds and persons; this amends point 3), 0017 (each
   person's own account; amends "maps the token's person to the member"),

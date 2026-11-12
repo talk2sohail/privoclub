@@ -30,4 +30,5 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0018](0018-admin-ui-server-rendered.md) | Admin UI: server-rendered pages over the admin API | Superseded by 0019 |
 | [0019](0019-admin-app-preact.md) | Admin app: Preact and Vite, embedded in the binary | Accepted |
 | [0020](0020-teams-and-server-catalog.md) | Teams decide which servers a person reaches; a built-in catalog adds them | Proposed (accept after the F26 review) |
-| [0021](0021-tokens-belong-to-members.md) | A token belongs to a member by user id, never by the name it carries | Proposed (the owner accepts it by merging F27) |
+| [0021](0021-tokens-belong-to-members.md) | A token belongs to a member by user id, never by the name it carries | Accepted (merged 2026-11-11) |
+| [0022](0022-gateway-sign-in-with-oauth.md) | AI clients sign in to the gateway with OAuth; Privo is the authorization server | Proposed (for the owner's review before any code) |
