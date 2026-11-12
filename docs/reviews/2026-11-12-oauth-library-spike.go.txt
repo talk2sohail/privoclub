@@ -1,0 +1,376 @@
+package spike
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+	"time"
+
+	oauth2 "authelia.com/provider/oauth2"
+	"authelia.com/provider/oauth2/compose"
+	"authelia.com/provider/oauth2/storage"
+)
+
+const (
+	issuer   = "https://privo.example"
+	resource = "https://privo.example/mcp"
+	cimd     = "https://claude.ai/oauth/claude-code-client-metadata"
+)
+
+// store is Privo's storage standing in: the library's memory store with the
+// client lookup and the refresh rotation replaced by our own code.
+type store struct {
+	*storage.MemoryStore
+	lookups   []string
+	rotations int
+}
+
+var registered = []string{"http://localhost/callback", "http://127.0.0.1/callback", "https://claude.ai/api/mcp/auth_callback"}
+
+type acceptedKey struct{}
+
+// accept is Privo's own redirect rule (ADR 0022 point 11): exact, except that
+// a loopback address (127.0.0.1, [::1], localhost) matches with any port.
+func accept(requested string) bool {
+	u, err := url.Parse(requested)
+	if err != nil || u.User != nil || u.Fragment != "" {
+		return false
+	}
+	for _, raw := range registered {
+		if raw == requested {
+			return true
+		}
+		r, _ := url.Parse(raw)
+		h := u.Hostname()
+		if u.Scheme == "http" && r.Scheme == "http" && (h == "localhost" || h == "127.0.0.1" || h == "::1") && h == r.Hostname() && u.Path == r.Path && u.RawQuery == r.RawQuery {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *store) GetClient(ctx context.Context, id string) (oauth2.Client, error) {
+	s.lookups = append(s.lookups, id)
+	if id != cimd {
+		return nil, oauth2.ErrNotFound
+	}
+	uris := registered
+	if ok, _ := ctx.Value(acceptedKey{}).(string); ok != "" {
+		uris = []string{ok} // the one address Privo's rule accepted for this request
+	}
+	return &oauth2.DefaultClient{ID: id, Public: true,
+		RedirectURIs:  uris,
+		GrantTypes:    []string{"authorization_code", "refresh_token"},
+		ResponseTypes: []string{"code"},
+		Scopes:        []string{"mcp", "offline_access"},
+		Audience:      []string{resource},
+	}, nil
+}
+
+func (s *store) RotateRefreshToken(ctx context.Context, requestID, signature string) error {
+	s.rotations++
+	return s.MemoryStore.RotateRefreshToken(ctx, requestID, signature)
+}
+
+func (s *store) rows() int {
+	return len(s.AuthorizeCodes) + len(s.AccessTokens) + len(s.RefreshTokens) + len(s.PKCES) + len(s.IDSessions)
+}
+
+type world struct {
+	st  *store
+	srv *httptest.Server
+	c   *http.Client
+}
+
+func newWorld(t *testing.T) *world {
+	t.Helper()
+	st := &store{MemoryStore: storage.NewMemoryStore()}
+	cfg := &oauth2.Config{
+		GlobalSecret:                            []byte("0123456789abcdef0123456789abcdef"),
+		EnforcePKCE:                             true,
+		EnforcePKCEForPublicClients:             true,
+		EnablePKCEPlainChallengeMethod:          false,
+		AccessTokenLifespan:                     time.Hour,
+		AuthorizeCodeLifespan:                   time.Minute,
+		RefreshTokenLifespan:                    30 * 24 * time.Hour,
+		AuthorizationServerIdentificationIssuer: issuer,
+		ScopeStrategy:                           oauth2.ExactScopeStrategy,
+		RefreshTokenScopes:                      []string{},
+	}
+	cfg.ResponseModeParameterHandlers = oauth2.ResponseModeParameterHandlers{&oauth2.RFC9207ResponseModeParameterHandler{Config: cfg}}
+	p := compose.Compose(cfg, st, compose.NewOAuth2HMACStrategy(cfg),
+		compose.OAuth2AuthorizeExplicitFactory, compose.OAuth2RefreshTokenGrantFactory,
+		compose.OAuth2PKCEFactory, compose.OAuth2TokenRevocationFactory)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/oauth/authorize", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		if uri := r.URL.Query().Get("redirect_uri"); accept(uri) {
+			ctx = context.WithValue(ctx, acceptedKey{}, uri)
+		} else {
+			http.Error(w, "redirect_uri not accepted", http.StatusBadRequest) // never redirected to
+			return
+		}
+		ar, err := p.NewAuthorizeRequest(ctx, r)
+		if err != nil {
+			p.WriteAuthorizeError(ctx, w, ar, err)
+			return
+		}
+		w.Header().Set("X-Rows-Before-Consent", itoa(st.rows()))
+		for _, sc := range ar.GetRequestedScopes() {
+			ar.GrantScope(sc)
+		}
+		for _, a := range ar.GetRequestedAudience() {
+			ar.GrantAudience(a)
+		}
+		for _, res := range ar.GetRequestedResource() {
+			ar.GrantResource(res)
+		}
+		resp, err := p.NewAuthorizeResponse(ctx, ar, &oauth2.DefaultSession{Subject: "u-ada"})
+		if err != nil {
+			p.WriteAuthorizeError(ctx, w, ar, err)
+			return
+		}
+		p.WriteAuthorizeResponse(ctx, w, ar, resp)
+	})
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		ar, err := p.NewAccessRequest(ctx, r, &oauth2.DefaultSession{})
+		if err != nil {
+			p.WriteAccessError(ctx, w, ar, err)
+			return
+		}
+		resp, err := p.NewAccessResponse(ctx, ar)
+		if err != nil {
+			p.WriteAccessError(ctx, w, ar, err)
+			return
+		}
+		p.WriteAccessResponse(ctx, w, ar, resp)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &world{st: st, srv: srv, c: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+}
+
+func itoa(n int) string { b, _ := json.Marshal(n); return string(b) }
+
+func challenge(verifier string) string {
+	h := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(h[:])
+}
+
+const verifier = "a-verifier-that-is-long-enough-for-rfc7636-0123456789"
+
+func (w *world) authorize(t *testing.T, over map[string]string) (*http.Response, url.Values) {
+	t.Helper()
+	q := url.Values{"response_type": {"code"}, "client_id": {cimd}, "redirect_uri": {"http://localhost:3118/callback"},
+		"scope": {"mcp"}, "state": {"state-0123456789"}, "code_challenge": {challenge(verifier)}, "code_challenge_method": {"S256"}, "resource": {resource}}
+	for k, v := range over {
+		if v == "" {
+			q.Del(k)
+		} else {
+			q.Set(k, v)
+		}
+	}
+	res, err := w.c.Get(w.srv.URL + "/oauth/authorize?" + q.Encode())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	loc, _ := url.Parse(res.Header.Get("Location"))
+	out := url.Values{}
+	if loc != nil {
+		out = loc.Query()
+		out.Set("_redirect", loc.Scheme+"://"+loc.Host+loc.Path)
+	}
+	out.Set("_status", res.Status)
+	out.Set("_body", string(body))
+	out.Set("_rows", res.Header.Get("X-Rows-Before-Consent"))
+	return res, out
+}
+
+func (w *world) token(t *testing.T, form url.Values) (int, map[string]any) {
+	t.Helper()
+	res, err := w.c.PostForm(w.srv.URL+"/oauth/token", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var m map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&m)
+	return res.StatusCode, m
+}
+
+func TestChecks(t *testing.T) {
+	w := newWorld(t)
+
+	t.Run("1 client lookup is ours (a URL as client id)", func(t *testing.T) {
+		_, out := w.authorize(t, nil)
+		if out.Get("code") == "" {
+			t.Fatalf("no code: %v", out)
+		}
+		if len(w.st.lookups) == 0 || w.st.lookups[0] != cimd {
+			t.Errorf("lookups %v", w.st.lookups)
+		}
+	})
+	t.Run("2 loopback redirect ignores the port (localhost, 127.0.0.1)", func(t *testing.T) {
+		for _, uri := range []string{"http://localhost:3118/callback", "http://localhost:50123/callback", "http://127.0.0.1:41000/callback"} {
+			if _, out := w.authorize(t, map[string]string{"redirect_uri": uri}); out.Get("code") == "" || out.Get("_redirect") != strings.Split(uri, "?")[0] {
+				t.Errorf("%s: %s %s %s", uri, out.Get("_status"), out.Get("error"), out.Get("_body"))
+			}
+		}
+	})
+	t.Run("3 other redirects match exactly; a mismatch is not redirected to", func(t *testing.T) {
+		if _, out := w.authorize(t, map[string]string{"redirect_uri": "https://claude.ai/api/mcp/auth_callback"}); out.Get("code") == "" {
+			t.Errorf("exact https redirect refused: %v", out)
+		}
+		for _, uri := range []string{"https://claude.ai/api/mcp/auth_callback/x", "https://evil.example/api/mcp/auth_callback", "http://localhost:3118/other", "http://localhost.evil.example/callback"} {
+			res, out := w.authorize(t, map[string]string{"redirect_uri": uri})
+			if out.Get("code") != "" || res.Header.Get("Location") != "" {
+				t.Errorf("%s: accepted or redirected: %v", uri, out)
+			}
+		}
+	})
+	t.Run("4 PKCE with S256 is required", func(t *testing.T) {
+		for name, over := range map[string]map[string]string{
+			"no challenge": {"code_challenge": "", "code_challenge_method": ""},
+			"plain":        {"code_challenge": verifier, "code_challenge_method": "plain"},
+			"no method":    {"code_challenge_method": ""},
+		} {
+			if _, out := w.authorize(t, over); out.Get("code") != "" {
+				t.Errorf("%s: a code was issued", name)
+			} else {
+				t.Logf("%s: %s", name, out.Get("error"))
+			}
+		}
+	})
+	t.Run("5 nothing is stored before consent", func(t *testing.T) {
+		fresh := newWorld(t)
+		_, out := fresh.authorize(t, nil)
+		if out.Get("_rows") != "0" {
+			t.Errorf("rows in storage after the request was validated and before consent: %q, want 0", out.Get("_rows"))
+		}
+		if n := fresh.st.rows(); n == 0 {
+			t.Errorf("nothing stored after consent either?")
+		} else {
+			t.Logf("0 rows before consent, %d after (code and PKCE session)", n)
+		}
+	})
+	t.Run("6 resource: this gateway only", func(t *testing.T) {
+		if _, out := w.authorize(t, map[string]string{"resource": "https://other.example/mcp"}); out.Get("code") != "" {
+			t.Errorf("another resource was accepted")
+		} else {
+			t.Logf("another resource: %s", out.Get("error"))
+		}
+		_, out := w.authorize(t, map[string]string{"resource": ""})
+		t.Logf("no resource at all: code=%v error=%s (Privo must refuse this itself if the library does not)", out.Get("code") != "", out.Get("error"))
+	})
+	t.Run("7 iss in the authorization response", func(t *testing.T) {
+		if _, out := w.authorize(t, nil); out.Get("iss") != issuer {
+			t.Errorf("iss=%q", out.Get("iss"))
+		}
+	})
+
+	var access, refresh string
+	t.Run("8 code exchange by a public client; opaque tokens; code works once", func(t *testing.T) {
+		_, out := w.authorize(t, nil)
+		form := url.Values{"grant_type": {"authorization_code"}, "code": {out.Get("code")}, "client_id": {cimd},
+			"redirect_uri": {"http://localhost:3118/callback"}, "code_verifier": {verifier}, "resource": {resource}}
+		code, tok := w.token(t, form)
+		if code != 200 {
+			t.Fatalf("exchange: %d %v", code, tok)
+		}
+		access, _ = tok["access_token"].(string)
+		refresh, _ = tok["refresh_token"].(string)
+		t.Logf("access token looks like %.14s… (%d chars), refresh %.14s…, expires_in=%v, scope=%v", access, len(access), refresh, tok["expires_in"], tok["scope"])
+		if refresh == "" {
+			t.Errorf("no refresh token although none was asked for by scope (ADR 0022 point 9: always issued)")
+		}
+		for sig := range w.st.AccessTokens {
+			if strings.Contains(access, sig) && sig == access {
+				t.Errorf("the store holds the token itself")
+			}
+		}
+		for k := range w.st.AccessTokens {
+			t.Logf("stored under %.12s… (%d chars): the signature part, not the token", k, len(k))
+			break
+		}
+		if code, tok := w.token(t, form); code == 200 {
+			t.Errorf("the code worked twice")
+		} else {
+			t.Logf("second use of the code: %d %v", code, tok["error"])
+		}
+		// ADR 0022 point 8: a second use revokes what the first use created.
+		if code, tok := w.token(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {cimd}}); code == 200 {
+			t.Errorf("the refresh token from a code that was used twice still works")
+		} else {
+			t.Logf("refresh token of the twice-used code: %d %v (revoked by the library)", code, tok["error"])
+		}
+		// Fresh tokens for the next check.
+		_, again := w.authorize(t, nil)
+		form.Set("code", again.Get("code"))
+		if code, tok = w.token(t, form); code != 200 {
+			t.Fatalf("second exchange: %d %v", code, tok)
+		}
+		access, _ = tok["access_token"].(string)
+		refresh, _ = tok["refresh_token"].(string)
+		bad := url.Values{}
+		for k, v := range form {
+			bad[k] = v
+		}
+		_, out2 := w.authorize(t, nil)
+		bad.Set("code", out2.Get("code"))
+		bad.Set("code_verifier", "wrong-verifier-wrong-verifier-wrong-verifier-000")
+		if code, _ := w.token(t, bad); code == 200 {
+			t.Errorf("a wrong verifier was accepted")
+		}
+	})
+	t.Run("10 the library fetches nothing on behalf of a request", func(t *testing.T) {
+		hits := 0
+		probe := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+		defer probe.Close()
+		for _, param := range []string{"request_uri", "sector_identifier_uri", "jwks_uri"} {
+			_, out := w.authorize(t, map[string]string{param: probe.URL + "/x"})
+			t.Logf("%s: code=%v error=%s", param, out.Get("code") != "", out.Get("error"))
+		}
+		_, out := w.authorize(t, map[string]string{"request": "eyJhbGciOiJub25lIn0.eyJyZWRpcmVjdF91cmkiOiJodHRwczovL2V2aWwuZXhhbXBsZS8ifQ."})
+		t.Logf("request object (alg none, another redirect_uri): code=%v error=%s redirect=%s", out.Get("code") != "", out.Get("error"), out.Get("_redirect"))
+		if strings.Contains(out.Get("_redirect"), "evil") {
+			t.Errorf("a request object changed where the response goes")
+		}
+		if hits != 0 {
+			t.Errorf("the library made %d outbound requests", hits)
+		}
+	})
+	t.Run("9 refresh rotates through our storage hook; reuse is refused", func(t *testing.T) {
+		if refresh == "" {
+			t.Skip("no refresh token")
+		}
+		form := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {cimd}}
+		before := w.st.rotations
+		code, tok := w.token(t, form)
+		if code != 200 {
+			t.Fatalf("refresh: %d %v", code, tok)
+		}
+		if w.st.rotations != before+1 {
+			t.Errorf("our RotateRefreshToken was called %d times", w.st.rotations-before)
+		}
+		if tok["refresh_token"] == refresh || tok["refresh_token"] == nil {
+			t.Errorf("not rotated: %v", tok["refresh_token"])
+		}
+		code, tok2 := w.token(t, form)
+		t.Logf("old refresh token used again: %d %v (the 30-second same-successor grace is ours to build in the hook)", code, tok2["error"])
+		if code == 200 {
+			t.Errorf("the old refresh token still works")
+		}
+		code, tok3 := w.token(t, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tok["refresh_token"].(string)}, "client_id": {cimd}})
+		t.Logf("successor after the reuse: %d %v", code, tok3["error"])
+	})
+}

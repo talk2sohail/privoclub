@@ -1,6 +1,8 @@
 # 0022. AI clients sign in to the gateway with OAuth; Privo is the authorization server
 
-- Status: Proposed, 2026-11-11 (for the owner's review before any code)
+- Status: Accepted, 2026-11-12 (the owner merged pull request 5 and agreed
+  points 7, 12 and 13 as written and 2 seconds for point 10). Point 16, the
+  library, is open: see `docs/reviews/2026-11-12-oauth-library-spike.md`
 - Date: 2026-11-11
 - Related: 0003 section 2 (the accepted decision this builds on and, in four
   marked places, makes precise), 0021 (a caller is a member by user id), 0016
