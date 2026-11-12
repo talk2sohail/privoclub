@@ -12,7 +12,7 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | --- | --- | --- |
 | [0001](0001-request-pipeline.md) | Request pipeline and extension points | Accepted (rev 2) |
 | [0002](0002-data-model-and-tenancy.md) | Data model and tenancy | Accepted (rev 2) |
-| [0003](0003-secrets-and-authentication.md) | Secrets and authentication | Accepted (rev 2) |
+| [0003](0003-secrets-and-authentication.md) | Secrets and authentication | Accepted (rev 2); the 5 seconds for token revocation in section 2 is 2 seconds (owner, 2026-11-12, ADR 0022 point 10) |
 | [0004](0004-protocol-versions.md) | Protocol versions, statelessness and notifications | Accepted |
 | [0005](0005-approvals.md) | Approvals | Accepted |
 | [0006](0006-audit.md) | Audit delivery and integrity | Accepted |
@@ -31,4 +31,4 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0019](0019-admin-app-preact.md) | Admin app: Preact and Vite, embedded in the binary | Accepted |
 | [0020](0020-teams-and-server-catalog.md) | Teams decide which servers a person reaches; a built-in catalog adds them | Proposed (accept after the F26 review) |
 | [0021](0021-tokens-belong-to-members.md) | A token belongs to a member by user id, never by the name it carries | Accepted (merged 2026-11-11) |
-| [0022](0022-gateway-sign-in-with-oauth.md) | AI clients sign in to the gateway with OAuth; Privo is the authorization server | Proposed (for the owner's review before any code) |
+| [0022](0022-gateway-sign-in-with-oauth.md) | AI clients sign in to the gateway with OAuth; Privo is the authorization server | Accepted 2026-11-12; the library (point 16) is open |

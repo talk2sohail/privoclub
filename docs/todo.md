@@ -266,7 +266,7 @@ verifier are stored in the clear for the life of a session and ten minutes.
 - [ ] Approvals page: page through more than 50 pending approvals; show decided ones
 
 ## F06. Client authentication (OAuth server and personal tokens)
-Status: In progress (personal tokens done; OAuth sign-in for AI clients: spec and ADR 0022 written 2026-11-11, waiting for the owner's review; nothing built)
+Status: In progress (personal tokens done; OAuth sign-in for AI clients: ADR 0022 accepted 2026-11-12; library spike done, the owner's choice of library is open; nothing built)
 ADRs: 0003 (section 2), 0014, 0021, 0022
 
 ### Done: personal tokens
@@ -351,7 +351,8 @@ client can be revoked by itself. Personal tokens keep working.
   grant is made only by the member's own session (ADR 0021).
 
 #### Tasks, in the order of the pull requests
-- [ ] 1. Spike: `ory/fosite` and `zitadel/oidc` against the checks of ADR 0022 point 16; result in `docs/reviews/`. If neither passes, stop and ask the owner
+- [x] 1. Spike (2026-11-12, `docs/reviews/2026-11-12-oauth-library-spike.md`): neither named library passes as named (`ory/fosite`: no release since 2024-12; `zitadel/oidc`: accepts `plain`, stores the request before login, always issues an ID token). The maintained fosite fork `authelia.com/provider/oauth2` v0.3.3 passes all checks in a working test, with the redirect rule and "resource must be present" done by Privo in front
+- [ ] 1a. **Owner's decision (ADR 0022 point 16):** adopt `authelia.com/provider/oauth2` pinned at v0.3.3 (recommended), or one of the two alternatives in the report; and whether the refresh grace returns the same successor or new tokens. Tasks 3 to 9 wait for this; task 2 does not
 - [ ] 2. F05 R-01, at the root: the state of a sign-in in flight (state, PKCE verifier, purpose, link) moves from a table row into the same kind of sealed cookie as ADR 0022 point 6, so `POST /auth/github/start` writes nothing and there is no cap to fill. `oauth_states` keeps only connect states, which need a session, with at most one per member and server (F07 R-03). This changes how ADR 0016 stores the state, so it gets a short amendment for the owner. Tests: `TestSignInStartWritesNothing`, `TestAnonymousStartsCannotBlockSetupInvitesOrSignIn`, `TestSignInCookieIsBoundExpiresAndWorksOnce`, `TestConnectStatesAreCappedPerMember`
 - [ ] 3. Store and migration `00008`: clients, grants, codes, tokens (each with `org_id`); settings `PRIVO_OAUTH_CLIENTS`, `PRIVO_OAUTH_DYNAMIC_REGISTRATION` in the registry, README and example file. Tests: `TestGrantBelongsToAMember`, `TestCodeWorksOnce`, `TestRefreshRotationGraceAndReuse`, `TestRemovingAMemberRevokesTheirGrants`
 - [ ] 4. Client acceptance: metadata documents through the egress client, the known list, loopback matching. Tests: `TestClientDocumentMustMatchItsURL`, `TestLoopbackRedirectIgnoresThePort`, `TestOtherRedirectsMatchExactly`, `TestUnknownClientIsRefusedUntilApproved`, `TestClientDocumentFetchRefusesPrivateAddresses`
