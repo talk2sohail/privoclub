@@ -55,6 +55,9 @@ curl localhost:8080/livez
 | `PRIVO_GITHUB_BASE_URL` / `PRIVO_GITHUB_API_URL` | `https://github.com` / `https://api.github.com` | Where people sign in and where the profile is read; set both for GitHub Enterprise Server (https unless loopback; a private address needs `PRIVO_EGRESS_ALLOW_CIDRS`) |
 | `PRIVO_SESSION_IDLE_TIMEOUT` | `2h` | A browser session ends after this long without a request (1m to 24h) |
 | `PRIVO_SESSION_MAX_AGE` | `12h` | A browser session ends this long after sign-in whatever happens (5m to 720h) |
+| `PRIVO_OAUTH_SERVER` | `off` | `on` lets AI clients sign in to the gateway with OAuth instead of a pasted token (ADR 0022): Privo becomes the authorization server for `/mcp`. Needs web sign-in. Off, `/oauth` answers 503 and personal tokens are the only way in |
+| `PRIVO_OAUTH_CLIENTS` | `known` | Which AI clients may ask a member for access: `known` (Privo's built-in list plus the ones an administrator approves on the Clients page), `approved` (only approved ones) or `any` (every client that publishes a metadata document) |
+| `PRIVO_OAUTH_DYNAMIC_REGISTRATION` | `off` | `on` lets a client register itself (RFC 7591), which some clients need because they publish no metadata document. Registrations are limited, labelled "not verified" on the consent page and deleted when unused |
 
 ### Configuration file
 

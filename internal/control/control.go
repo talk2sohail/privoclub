@@ -28,6 +28,7 @@ import (
 	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
+	"privo.club/privo/internal/oauthserver"
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/store"
@@ -56,7 +57,11 @@ type API struct {
 	OAuth     *upstreamauth.Client
 	Grants    *grants.Service
 	PublicURL *url.URL
-	in        internal // the mux of in-process calls (Serve)
+	// Privo's own authorization server (ADR 0022) and its client rules; nil
+	// while PRIVO_OAUTH_SERVER is off.
+	AuthServer *oauthserver.Server
+	Clients    *oauthserver.Clients
+	in         internal // the mux of in-process calls (Serve)
 }
 
 // ConnectWait bounds how long registration waits for the first connection.
@@ -73,6 +78,7 @@ func (a *API) Routes(mux *http.ServeMux) { a.register(mux, a.with) }
 func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) http.Handler) {
 	a.registerMembers(mux, wrap)
 	a.registerTeams(mux, wrap)
+	a.registerOAuthClients(mux, wrap)
 	mux.Handle("GET /api/v1/servers", wrap(auth.PermReadServers, a.listServers))
 	mux.Handle("POST /api/v1/servers", wrap(auth.PermManageServers, a.createServer))
 	mux.Handle("PATCH /api/v1/servers/{alias}", wrap(auth.PermManageServers, a.patchServer))

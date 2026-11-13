@@ -478,8 +478,8 @@ func TestRowsOfOtherPurposesAreNotConnectStates(t *testing.T) {
 	ctx := context.Background()
 	s, org := signinOrg(t)
 	for _, purpose := range []string{"signin", "setup", "invite"} {
-		if _, err := s.w.Exec(`INSERT INTO oauth_states (org_id, state_hash, purpose, verifier, created_at, expires_at) VALUES (?, ?, ?, 'v', ?, ?)`,
-			org, "legacy-"+purpose, purpose, ts(t0), ts(t0.Add(10*time.Minute))); err != nil {
+		if _, err := s.w.Exec(`INSERT INTO oauth_states (org_id, state_hash, purpose, verifier, server_id, created_at, expires_at) VALUES (?, ?, ?, 'v', ?, ?, ?)`,
+			org, "legacy-"+purpose, purpose, "legacy-"+purpose, ts(t0), ts(t0.Add(10*time.Minute))); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.UseConnectState(ctx, org, "legacy-"+purpose, t0); !errors.Is(err, ErrNotFound) {

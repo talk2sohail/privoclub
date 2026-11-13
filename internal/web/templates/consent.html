@@ -1,0 +1,16 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>Let {{.ClientName}} use Privo as you?</h1>
+  <p><strong>{{.ClientName}}</strong>{{if .ClientHost}} ({{.ClientHost}}){{end}} is asking to use this Privo as <strong>{{.User.Name}}</strong>.</p>
+  <p>If you allow it, it can use the servers your teams reach and your connected accounts, as you, through Privo. It cannot change settings, members or rules.</p>
+  <p class="meta">Afterwards you are sent back to <code>{{.RedirectHost}}</code>. You can take the access away at any time under Tokens, Connected clients.</p>
+{{range .Lines}}  <p class="flash warn">{{.}}</p>
+{{end}}
+  <form method="post" action="/oauth/authorize">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <input type="hidden" name="request" value="{{.Sealed}}">
+    <button type="submit" class="primary" name="decision" value="allow">Allow</button>
+    <button type="submit" name="decision" value="deny">Deny</button>
+  </form>
+</section>
+{{end}}

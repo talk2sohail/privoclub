@@ -60,6 +60,9 @@ var Settings = []Setting{
 	{Name: "PRIVO_GITHUB_API_URL"},
 	{Name: "PRIVO_SESSION_IDLE_TIMEOUT"},
 	{Name: "PRIVO_SESSION_MAX_AGE"},
+	{Name: "PRIVO_OAUTH_SERVER"},
+	{Name: "PRIVO_OAUTH_CLIENTS"},
+	{Name: "PRIVO_OAUTH_DYNAMIC_REGISTRATION"},
 }
 
 // Lookup returns the registered setting with the given variable name.
