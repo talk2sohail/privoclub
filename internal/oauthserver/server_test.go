@@ -2,11 +2,13 @@ package oauthserver
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -635,6 +637,28 @@ func TestVerifyReadsTheMembersRoleLive(t *testing.T) {
 	}
 	if e.verifies(bobs.AccessToken) {
 		t.Error("a removed member's token works")
+	}
+	// The store ends a member's grants when their role or membership ends,
+	// so the checks above pass by that alone. Verification does not rely on
+	// it: with the grant still there (the rows changed behind the store's
+	// back), the member's role and membership are still read.
+	for _, change := range []string{`role = 'auditor'`, `role = 'approver'`, `disabled_at = '2026-01-01T00:00:00Z'`} {
+		who := e.member("w"+fmt.Sprint(len(change)), store.RoleMember)
+		theirs := e.signedIn(who)
+		rw, err := sql.Open("sqlite", "file:"+filepath.Join(e.dir, "privo.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rw.Exec(`UPDATE users SET `+change+` WHERE id = ?`, who.ID); err != nil {
+			t.Fatal(err)
+		}
+		_ = rw.Close()
+		if e.rows("oauth_grants") == 0 {
+			t.Fatal("the grant is gone: this check proves nothing")
+		}
+		if e.verifies(theirs.AccessToken) {
+			t.Errorf("with %s and the grant still stored, the token works", change)
+		}
 	}
 }
 

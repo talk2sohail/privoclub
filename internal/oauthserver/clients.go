@@ -34,7 +34,7 @@ type Client struct {
 
 // Host is the host of a metadata document client, "" for a registered one.
 func (c Client) Host() string {
-	if u, err := url.Parse(c.ID); err == nil && u.Scheme == "https" {
+	if u, err := url.Parse(c.ID); err == nil && (u.Scheme == "https" || u.Scheme == "http") {
 		return u.Host
 	}
 	return ""

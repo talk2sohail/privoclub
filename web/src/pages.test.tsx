@@ -390,3 +390,82 @@ describe("review fixes (F26)", () => {
     expect(srv.writes()).toHaveLength(0);
   });
 });
+
+describe("AI clients that signed in with OAuth", () => {
+  const client = { id: "g1", client: evil, client_id: "https://c.example/doc", kind: "registered", allowed_at: "2026-11-14T10:00:00Z", last_used_at: "2026-11-14T11:00:00Z", expires_at: "2027-02-12T10:00:00Z" };
+
+  it("shows a member their clients as text and takes one away", async () => {
+    at("/admin/tokens");
+    const srv = await start(session("member"), {
+      "GET /admin/api/v1/me/tokens": { tokens: [] },
+      "GET /admin/api/v1/me/clients": { enabled: true, clients: [client] },
+      "DELETE /admin/api/v1/me/clients/g1": { revoked: "g1" },
+    });
+    await screen.findByText("AI clients that signed in");
+    await screen.findByText(evil);
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByText("(registered itself, not verified)")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Take access away" }));
+    await waitFor(() => expect(srv.calls.some((c) => c.method === "DELETE" && c.url === "/admin/api/v1/me/clients/g1")).toBe(true));
+  });
+
+  it("says nothing about OAuth clients while the server is off", async () => {
+    at("/admin/tokens");
+    await start(session("member"), { "GET /admin/api/v1/me/tokens": { tokens: [] }, "GET /admin/api/v1/me/clients": { enabled: false, clients: [] } });
+    await screen.findByText("Your AI clients");
+    await waitFor(() => expect(screen.queryByText("AI clients that signed in")).toBeNull());
+  });
+
+  it("lets an administrator approve a client, end a connection and see the rules", async () => {
+    at("/admin/clients");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/oauth/clients": {
+        enabled: true,
+        policy: "known",
+        registration: false,
+        clients: [
+          { client_id: "https://claude.ai/oauth/claude-code-client-metadata", name: "Claude Code", kind: "known", grants: 0 },
+          { client_id: "https://tool.example/c.json", name: evil, kind: "approved", grants: 2 },
+        ],
+      },
+      "GET /admin/api/v1/oauth/grants": { enabled: true, clients: [{ ...client, person: "ada", kind: "known", client: "Claude Code" }] },
+      "POST /admin/api/v1/oauth/clients": () => [201, { client_id: "https://new.example/c.json", name: "New", kind: "approved", grants: 0 }],
+      "POST /admin/api/v1/oauth/clients:remove": { removed: true, ended: 2 },
+      "DELETE /admin/api/v1/oauth/grants/g1": { revoked: "g1" },
+    });
+    await screen.findByText("Clients that may ask");
+    expect(screen.getByText(/The clients on Privo’s list and the ones approved here/)).toBeTruthy();
+    await screen.findByText(evil);
+    expect(document.querySelector("img")).toBeNull();
+    fireEvent.input(screen.getByLabelText("Address of the client's metadata document"), { target: { value: "https://new.example/c.json" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Approve client" }).closest("form")!);
+    await waitFor(() => {
+      const call = srv.calls.find((c) => c.method === "POST" && c.url === "/admin/api/v1/oauth/clients");
+      expect(call?.body).toEqual({ client_id: "https://new.example/c.json" });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => {
+      const call = srv.calls.find((c) => c.url === "/admin/api/v1/oauth/clients:remove");
+      expect(call?.body).toEqual({ client_id: "https://tool.example/c.json" });
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Take access away" }));
+    await waitFor(() => expect(srv.calls.some((c) => c.method === "DELETE" && c.url === "/admin/api/v1/oauth/grants/g1")).toBe(true));
+  });
+
+  it("tells an administrator how to switch OAuth on while it is off", async () => {
+    at("/admin/clients");
+    await start(session("owner"), {
+      "GET /admin/api/v1/oauth/clients": { enabled: false, policy: "", registration: false, clients: [] },
+      "GET /admin/api/v1/oauth/grants": { enabled: false, clients: [] },
+    });
+    await screen.findByText("Signing in with OAuth is off");
+    expect(screen.queryByRole("button", { name: "Approve client" })).toBeNull();
+  });
+
+  it("is not a page for a member", async () => {
+    at("/admin/clients");
+    const srv = await start(session("member"), {});
+    expect(screen.getByText("Your role cannot use this page.")).toBeTruthy();
+    expect(srv.calls.filter((c) => c.url.startsWith("/admin/api/v1/oauth"))).toHaveLength(0);
+  });
+});
