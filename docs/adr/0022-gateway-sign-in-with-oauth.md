@@ -1,13 +1,15 @@
 # 0022. AI clients sign in to the gateway with OAuth; Privo is the authorization server
 
 - Status: Accepted, 2026-11-12 (the owner merged pull request 5 and agreed
-  points 7, 12 and 13 as written and 2 seconds for point 10). Point 16, the
-  library, is open: see `docs/reviews/2026-11-12-oauth-library-spike.md`
+  points 7, 12 and 13 as written and 2 seconds for point 10). Amended by the
+  owner the same day in two places, both marked below: point 9 (no grace for
+  a refresh token that was already rotated) and point 16 (the library)
 - Date: 2026-11-11
-- Related: 0003 section 2 (the accepted decision this builds on and, in four
-  marked places, makes precise), 0021 (a caller is a member by user id), 0016
+- Related: 0003 section 2 (the accepted decision this builds on; the marked
+  places make it precise, and points 9, 10 and 16 replace a detail of it), 0021 (a caller is a member by user id), 0016
   (how a person signs in), 0008 (egress), 0014 (token kinds), 0004 (stateless
-  gateway)
+  gateway), 0012 (the earlier, never accepted choice of library; superseded
+  by point 16)
 
 ## Context
 
@@ -107,16 +109,21 @@ Three things are known now that were not then:
    bound to the gateway's canonical URL: `resource` must be present on the
    authorization and the token request and equal `<public URL>/mcp`. A refresh
    token is **always** issued with a code exchange (no client has to ask),
-   stored hashed, bound to the client, and rotated on every use. Within 30
-   seconds of a rotation the old refresh token returns the same successor;
-   after that its use revokes the whole grant. Idle 30 days, absolute 90 days
-   from consent. A dead refresh token is answered `invalid_grant`. *(0003,
-   unchanged, except "always issued".)*
+   stored hashed, bound to the client, and rotated on every use. **A refresh
+   token that was already rotated is refused the moment it is used again, and
+   that use revokes the whole grant**: the access and refresh tokens that came
+   after it stop working (on `/mcp` within the verification cache, point 10),
+   and the person signs in again. There is no grace window. Idle 30 days,
+   absolute 90 days from consent. A dead refresh token is answered
+   `invalid_grant`. *(Amended by the owner, 2026-11-12. As first accepted this
+   point kept 0003's 30-second grace, in which the old token returned the same
+   successor. The owner chose immediate revocation instead; that part of 0003
+   section 2 no longer holds. What it costs is under Consequences.)*
 10. **Verification** goes through the one authenticator that verifies personal
     tokens today, by prefix, with the same 2-second cache, so revocation and
     removal are as fast as for personal tokens. *(0003 says 5 seconds; the
     code and every other document have said 2 since F06's first slice. The
-    owner amends 0003 or this number.)*
+    owner chose 2 seconds on 2026-11-12.)*
 
 ### Which clients are accepted
 
@@ -160,17 +167,32 @@ Three things are known now that were not then:
 ### The library
 
 16. ADR 0003 decided "built on a maintained library, not hand-rolled", chosen
-    by a spike. That stands. **The spike is the first task of the build**, and
-    it passes a candidate (`ory/fosite`, `zitadel/oidc`) only if all of this
-    can be done without forking it: public clients with S256 required; client
-    lookup that Privo implements (for points 11 to 13); the redirect matching
-    of point 11; opaque tokens that Privo stores hashed in SQLite; rotation
-    with the 30-second same-successor grace of point 9; no server-side row
-    before consent (point 6); `resource` and `iss` handled (in the library or
-    around it). Maintenance is checked too: a release in the last six months,
-    and what its dependencies add to the binary. **If neither passes, the work
-    stops and the owner decides** between a narrower library and amending
-    0003; it is not hand-rolled quietly.
+    by a spike. That stands. **The library is `authelia.com/provider/oauth2`,
+    pinned at v0.3.3** (owner's decision, 2026-11-12). It is the maintained
+    hard fork of `ory/fosite`; 0003's "fosite or zitadel" becomes this, and
+    ADR 0012 (proposed 2026-10-28, `ory/fosite` from a desk comparison) is
+    superseded. The
+    spike and its working test are in
+    `docs/reviews/2026-11-12-oauth-library-spike.md`: of the two libraries
+    first named here, `ory/fosite` has had no release since 2024-12 and
+    `zitadel/oidc` accepts `plain`, stores the request before sign-in and
+    always issues an ID token. Three rules with the library:
+    - **The version is pinned and moved on purpose.** It is 0.3.x and its API
+      can change; a bump is its own change, with the diff read and the
+      acceptance test run.
+    - **Two checks are Privo's own, in front of the library**, because the
+      library does not make them: the redirect rule of point 11 for
+      `localhost` (the library then compares against the one address that
+      rule accepted) and "`resource` must be present" (point 9).
+    - **Nothing is hand-rolled around it quietly.** Code exchange, PKCE,
+      rotation and the revocation on reuse of points 8 and 9 are the
+      library's; Privo supplies storage and the client lookup.
+
+    *(Amended by the owner, 2026-11-12. As first accepted this point made the
+    spike the first task, named the two candidates, listed what a candidate
+    must do, among it "rotation with the 30-second same-successor grace of
+    point 9", and said the work stops for the owner if neither passes.
+    Neither passed, the work stopped, and this is the decision.)*
 
 ## Consequences
 
@@ -181,6 +203,17 @@ Three things are known now that were not then:
 - For the hosted Claude apps and ChatGPT the gateway must be reachable from
   their servers, and Privo must be allowed to fetch their metadata documents.
   A Privo on a private network keeps personal tokens for those.
+- **No grace for refresh tokens has a price, and the owner took it
+  knowingly.** If a client refreshes twice at once (two windows or two
+  processes sharing one stored token), or the answer to a refresh is lost on
+  the way, the client's next refresh presents a token that was already
+  rotated: the grant is revoked and the person signs in to that client again.
+  0003's grace existed for those two cases. In exchange a stolen refresh token
+  is worth nothing once the real client has refreshed, there is no window to
+  race, and there is no extra code in front of the library. The audit records
+  every such revocation with the client and the member, so if real clients
+  trip it in ordinary use it shows, and the point can be revisited with
+  numbers.
 - The audit gains who allowed which client, code exchanges, reuse detection
   and revocations. A call names the client and the member (ADR 0021).
 - The authorization server is the largest piece of auth code in Privo. It is
@@ -205,5 +238,6 @@ Three things are known now that were not then:
   https://claude.com/docs/connectors/building/authentication
 - "CIMD adoption three months in" (2026-10-27), per-client table:
   https://gofranz.com/blog/state-of-cimd-adoption/
-- Ory, graceful refresh token rotation (the behaviour a library offers):
+- Ory, graceful refresh token rotation (the grace that point 9 does not
+  have):
   https://www.ory.com/docs/hydra/guides/graceful-token-refresh

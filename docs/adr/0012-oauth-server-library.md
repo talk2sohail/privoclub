@@ -1,6 +1,12 @@
 # 0012. OAuth authorization server library
 
-- Status: Proposed (desk spike); to be accepted after the prototype in F06
+- Status: Superseded by ADR 0022 point 16 (2026-11-12). This record was never
+  accepted: it chose `ory/fosite` from a desk comparison, "to be accepted
+  after the prototype in F06". The working test of 2026-11-12
+  (`docs/reviews/2026-11-12-oauth-library-spike.md`) found fosite without a
+  release since 2024-12, and the owner chose its maintained fork,
+  `authelia.com/provider/oauth2`. Item 4 below (the 30-second grace) is also
+  gone: ADR 0022 point 9. Kept as history
 - Date: 2026-10-28
 - Related: 0003
 
