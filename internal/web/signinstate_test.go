@@ -65,7 +65,7 @@ func dataVersion(t *testing.T, c *sql.Conn) int {
 func TestSignInStartWritesNothing(t *testing.T) {
 	e := newConnEnv(t)
 	e.member(octo, "octocat", store.RoleOwner)
-	setup, invite := e.setupLink(""), e.invite("ada", store.RoleMember)
+	setup, invite := e.setupLink(""), e.invite("ada", store.RoleApprover)
 	e.audit.Close() // nothing of the setup above is still on its way to the database
 
 	db := e.db()
