@@ -86,7 +86,7 @@ func (s *Server) invitePage(w http.ResponseWriter, r *http.Request) {
 		Expires: in.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC")})
 }
 
-func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, st store.OAuthState, p githubauth.Profile) {
+func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, in signIn, p githubauth.Profile) {
 	secret, sess, err := s.newSession("")
 	if err != nil {
 		s.log.Error("web: start session", "err", err)
@@ -96,7 +96,7 @@ func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, st store.O
 	userID := ids.New()
 	sess.UserID = userID
 	u, err := s.o.Store.ClaimInvite(r.Context(), s.o.Org, store.Claim{
-		LinkID: st.InviteID, UserID: userID, Subject: p.Subject(), Login: p.Login,
+		LinkID: in.Link, UserID: userID, Subject: p.Subject(), Login: p.Login,
 		DisplayName: displayName(p), Session: sess, Now: s.now(),
 	}, s.event("invite.claim", strings.ToLower(p.Login), "github:"+p.Subject(), "allow", "ok"))
 	switch {
@@ -250,19 +250,17 @@ func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
 		s.connectFailed(w, http.StatusInternalServerError, "The server's sign-in address is not usable. An administrator has to add it again.")
 		return
 	}
+	// The one row a member has for this server: a new start replaces the old
+	// (F07 R-03). Only a signed-in member gets here.
 	now := s.now()
-	st := store.OAuthState{Hash: stateHash(state, nonce), Purpose: store.PurposeConnect, Verifier: verifier, UserID: u.ID,
+	st := store.ConnectState{Hash: stateHash(state, nonce), Verifier: verifier, UserID: u.ID,
 		SessionID: sess.ID, ServerID: srv.ID, Issuer: srv.Config.OAuth.Issuer, ExpiresAt: now.Add(StateTTL)}
-	switch err := s.o.Store.CreateOAuthState(r.Context(), s.o.Org, st, now, s.o.StateCap); {
-	case errors.Is(err, store.ErrTooManyStates):
-		s.pageFor(w, http.StatusServiceUnavailable, sess, u, "Too many sign-ins in progress", "Wait a few minutes and try again.")
-		return
-	case err != nil:
+	if err := s.o.Store.CreateConnectState(r.Context(), s.o.Org, st, now); err != nil {
 		s.log.Error("web: store connect state", "err", err)
 		s.connectFailed(w, http.StatusInternalServerError, "Something went wrong on the server.")
 		return
 	}
-	s.setCookie(w, s.stateCookie, nonce, int(StateTTL.Seconds()))
+	s.setCookie(w, s.connectCookie, nonce, int(StateTTL.Seconds()))
 	redirect(w, authURL)
 }
 
@@ -272,20 +270,22 @@ func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
 func (s *Server) connectCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state, code := q.Get("state"), q.Get("code")
-	c, err := r.Cookie(s.stateCookie)
-	s.clearCookie(w, s.stateCookie)
+	c, err := r.Cookie(s.connectCookie)
 	if err != nil || !validSecret(c.Value) || !validSecret(state) {
 		s.connectFailed(w, http.StatusBadRequest, "This connection was not started in this browser, or it has expired.")
 		return
 	}
-	st, err := s.o.Store.UseOAuthState(r.Context(), s.o.Org, stateHash(state, c.Value), s.now())
-	if err != nil || st.Purpose != store.PurposeConnect {
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
+	st, err := s.o.Store.UseConnectState(r.Context(), s.o.Org, stateHash(state, c.Value), s.now())
+	if err != nil {
+		// The cookie is left as it is, so a request that is not this
+		// browser's connection cannot cancel the one in progress.
+		if !errors.Is(err, store.ErrNotFound) {
 			s.log.Error("web: use connect state", "err", err)
 		}
 		s.connectFailed(w, http.StatusBadRequest, "This connection was not started in this browser, or it has expired.")
 		return
 	}
+	s.clearCookie(w, s.connectCookie)
 	sess, u, ok := s.session(r)
 	if !ok || sess.ID != st.SessionID || u.ID != st.UserID {
 		s.connectFailed(w, http.StatusForbidden, "This connection was started by another sign-in. Sign in and start it again.")

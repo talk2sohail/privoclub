@@ -357,7 +357,7 @@ func TestConnectStateSingleUseExpiresAndBoundToBrowser(t *testing.T) {
 		t.Fatalf("the right browser after the attempt: %d %s", p.StatusCode, p.Body)
 	}
 	// Replay.
-	b.cookies[e.srv.stateCookie] = &http.Cookie{Name: e.srv.stateCookie, Value: strings.Repeat("A", 43)}
+	b.cookies[e.srv.connectCookie] = &http.Cookie{Name: e.srv.connectCookie, Value: strings.Repeat("A", 43)}
 	if p := b.get(cbURL); p.StatusCode != http.StatusBadRequest {
 		t.Fatalf("replay: %d", p.StatusCode)
 	}

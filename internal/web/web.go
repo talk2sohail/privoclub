@@ -36,11 +36,9 @@ var assets embed.FS
 
 // Defaults.
 const (
-	// StateTTL is how long a person has to finish signing in at GitHub.
+	// StateTTL is how long a person has to finish signing in at GitHub, or
+	// connecting an account at an upstream's authorization server.
 	StateTTL = 10 * time.Minute
-	// DefaultStateCap bounds the sign-ins in flight, so unauthenticated
-	// requests cannot fill the database.
-	DefaultStateCap = 500
 
 	defaultIdle   = 2 * time.Hour
 	defaultMaxAge = 12 * time.Hour
@@ -54,8 +52,6 @@ const (
 
 // Store is the store subset the website needs.
 type Store interface {
-	CreateOAuthState(ctx context.Context, org store.OrgID, st store.OAuthState, now time.Time, limit int) error
-	UseOAuthState(ctx context.Context, org store.OrgID, hash string, now time.Time) (store.OAuthState, error)
 	SetupLink(ctx context.Context, org store.OrgID, secretHash string, now time.Time) (store.SetupLink, error)
 	ClaimSetup(ctx context.Context, org store.OrgID, c store.Claim, ev store.AuditEvent) (store.User, error)
 	UserByIdentity(ctx context.Context, org store.OrgID, provider, subject string) (store.User, error)
@@ -72,6 +68,10 @@ type Store interface {
 	ServerByAlias(ctx context.Context, org store.OrgID, alias string) (store.Server, error)
 	ServerByID(ctx context.Context, org store.OrgID, id string) (store.Server, error)
 	ListGrants(ctx context.Context, org store.OrgID, userID string) ([]store.Grant, error)
+	// A connection in flight, written only for a signed-in member. A sign-in
+	// in flight is not stored: see signinstate.go.
+	CreateConnectState(ctx context.Context, org store.OrgID, st store.ConnectState, now time.Time) error
+	UseConnectState(ctx context.Context, org store.OrgID, hash string, now time.Time) (store.ConnectState, error)
 	// Teams (ADR 0020): which servers a person reaches.
 	AccessFor(ctx context.Context, org store.OrgID, userID string) (store.Access, error)
 }
@@ -97,8 +97,8 @@ type Options struct {
 	PublicURL *url.URL
 	// IdleTimeout and MaxAge bound a session (defaults 2h and 12h).
 	IdleTimeout, MaxAge time.Duration
-	// StateCap bounds the sign-ins in flight (default 500).
-	StateCap int
+	// Keys seals the cookie of a sign-in in flight (ADR 0016 amendment 1).
+	Keys Keys
 	// Missing names what is not configured. A Server with anything missing
 	// answers every request with 503 and says what to set.
 	Missing []string
@@ -124,13 +124,17 @@ type Server struct {
 	tmpl    map[string]*template.Template
 	app     *app
 
-	origin                     string // the public origin, as browsers send it in Origin
-	secure                     bool
-	csp                        string
-	callback                   string
-	connectCallback            string
-	missing                    []string
-	sessionCookie, stateCookie string
+	origin          string // the public origin, as browsers send it in Origin
+	secure          bool
+	csp             string
+	callback        string
+	connectCallback string
+	missing         []string
+	// One cookie per flow, so two flows in one browser cannot end each other
+	// and a callback only ever reads its own (F07 R-07): the session, the
+	// sealed sign-in in flight, and the nonce of a connection in flight.
+	sessionCookie, signInCookie, connectCookie string
+	finished                                   finished
 }
 
 // New builds a Server. It never fails: a missing setting disables the site and
@@ -148,9 +152,6 @@ func New(o Options) *Server {
 	}
 	if s.o.MaxAge <= 0 {
 		s.o.MaxAge = defaultMaxAge
-	}
-	if s.o.StateCap <= 0 {
-		s.o.StateCap = DefaultStateCap
 	}
 	for _, name := range []string{"signin", "setup", "message", "invite", "connect"} {
 		s.tmpl[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+name+".html"))
@@ -171,11 +172,11 @@ func New(o Options) *Server {
 		// so the sign-in form may only go on to GitHub itself.
 		s.csp = strings.Replace(s.csp, "form-action 'self'", "form-action 'self' "+originOf(o.GitHub.BaseURL), 1)
 	}
-	s.sessionCookie, s.stateCookie = "privo_session", "privo_oauth"
+	s.sessionCookie, s.signInCookie, s.connectCookie = "privo_session", "privo_signin", "privo_oauth"
 	if s.secure {
 		// The __Host- prefix makes browsers refuse a cookie that a sibling
 		// subdomain or a plain-http page tries to plant.
-		s.sessionCookie, s.stateCookie = "__Host-"+s.sessionCookie, "__Host-"+s.stateCookie
+		s.sessionCookie, s.signInCookie, s.connectCookie = "__Host-"+s.sessionCookie, "__Host-"+s.signInCookie, "__Host-"+s.connectCookie
 	}
 	if o.App != nil {
 		a, err := loadApp(o.App)
@@ -184,7 +185,7 @@ func New(o Options) *Server {
 		}
 		s.app = a
 	}
-	s.enabled = len(s.missing) == 0 && o.Store != nil && o.Audit != nil && o.GitHub != nil && o.PublicURL != nil && o.API != nil && s.app != nil
+	s.enabled = len(s.missing) == 0 && o.Store != nil && o.Audit != nil && o.GitHub != nil && o.PublicURL != nil && o.API != nil && s.app != nil && o.Keys != nil
 	if !s.enabled && len(s.missing) == 0 {
 		s.missing = []string{"the admin site is not wired up"}
 	}
@@ -230,8 +231,8 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	}
 }
 
-// Prune deletes sessions, sign-ins in flight and setup links that can no longer
-// be used. Run it from time to time; correctness never depends on it.
+// Prune deletes sessions, connections in flight, setup links and invites that
+// can no longer be used. Run it from time to time; correctness never depends on it.
 func (s *Server) Prune(ctx context.Context) error {
 	if !s.enabled {
 		return nil
