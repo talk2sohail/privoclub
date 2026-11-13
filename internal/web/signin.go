@@ -176,10 +176,22 @@ func displayName(p githubauth.Profile) string {
 
 // denied is the single answer for an account that is not a member: a stranger
 // and a disabled member see the same page.
+//
+// A refusal is the one thing a person who is not a member can make Privo
+// write, and anyone with a GitHub account can be refused as often as they
+// like. So the audit gets one row per account in ten minutes and at most
+// maxDenials rows in ten minutes over all accounts; what is left out is
+// counted and logged (F05 R-02).
 func (s *Server) denied(w http.ResponseWriter, r *http.Request, p githubauth.Profile) {
-	ev := s.event("signin.denied", p.Login, "github:"+p.Subject(), "deny", "denied")
-	if err := s.o.Audit.Admin(r.Context(), s.o.Org, ev); err != nil {
-		s.log.Error("web: audit", "action", "signin.denied", "err", err)
+	record, skipped := s.denials.record(p.Subject(), s.now())
+	if skipped > 0 {
+		s.log.Warn("web: refused sign-ins left out of the audit in the last ten minutes", "count", skipped)
+	}
+	if record {
+		ev := s.event("signin.denied", p.Login, "github:"+p.Subject(), "deny", "denied")
+		if err := s.o.Audit.Admin(r.Context(), s.o.Org, ev); err != nil {
+			s.log.Error("web: audit", "action", "signin.denied", "err", err)
+		}
 	}
 	s.message(w, http.StatusForbidden, "This GitHub account cannot sign in",
 		"It is not a member of this Privo. Ask an owner to add you.")

@@ -507,3 +507,49 @@ func TestFinishedRemembersBoundsAndForgets(t *testing.T) {
 		t.Errorf("%d of 64 callbacks at once were first, want 1", n)
 	}
 }
+
+// F05 R-02: a refused sign-in is the one write a person who is not a member
+// can cause. One row per account in ten minutes, a bound over all accounts,
+// and the rest is counted in the log.
+func TestRefusedSignInsCannotFloodTheAudit(t *testing.T) {
+	e := newEnv(t)
+	e.member(octo, "octocat", store.RoleOwner)
+	denied := func() (n int) {
+		for _, a := range e.adminActions() {
+			if a == "signin.denied" {
+				n++
+			}
+		}
+		return n
+	}
+	stranger := ghUser{ID: 4242, Login: "stranger"}
+	for i := 0; i < 5; i++ {
+		if res := e.signIn(e.browser(), stranger); res.StatusCode != http.StatusForbidden {
+			t.Fatalf("attempt %d: %d", i, res.StatusCode)
+		}
+	}
+	if n := denied(); n != 1 {
+		t.Fatalf("%d audit rows for five refusals of one account, want 1", n)
+	}
+	for i := 0; i < 2*maxDenials; i++ {
+		if res := e.signIn(e.browser(), ghUser{ID: int64(5000 + i), Login: fmt.Sprint("s", i)}); res.StatusCode != http.StatusForbidden {
+			t.Fatalf("stranger %d: %d", i, res.StatusCode)
+		}
+	}
+	if n := denied(); n != maxDenials {
+		t.Fatalf("%d audit rows after %d accounts were refused, want the bound %d", n, 2*maxDenials+1, maxDenials)
+	}
+	// A member is never in the way of this, and the next window records again
+	// and says what the last one left out.
+	if res := e.signIn(e.browser(), octo); res.StatusCode != http.StatusSeeOther {
+		t.Errorf("a member's sign-in during the flood: %d", res.StatusCode)
+	}
+	e.clock.advance(denialWindow)
+	e.signIn(e.browser(), stranger)
+	if n := denied(); n != maxDenials+1 {
+		t.Errorf("%d audit rows in the next window, want %d", n, maxDenials+1)
+	}
+	if !strings.Contains(e.logs.String(), fmt.Sprintf(`"count":%d`, 4+maxDenials+1)) {
+		t.Errorf("the log does not say how many refusals were left out:\n%s", e.logs.String())
+	}
+}

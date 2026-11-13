@@ -161,3 +161,36 @@ func (f *finished) first(state string, now time.Time, ttl time.Duration) bool {
 	f.order = append(f.order, state)
 	return true
 }
+
+// denialWindow and maxDenials bound the audit rows refused sign-ins write.
+const (
+	denialWindow = 10 * time.Minute
+	maxDenials   = 60
+)
+
+// denials decides which refused sign-ins are written to the audit. It is in
+// memory, per process: a restart or a second replica starts a new window,
+// which only means a few more rows.
+type denials struct {
+	mu      sync.Mutex
+	start   time.Time
+	seen    map[string]bool // accounts recorded in this window
+	skipped int
+}
+
+// record reports whether a refusal of subject is to be audited now. When a
+// new window begins it also returns how many the last one left out.
+func (d *denials) record(subject string, now time.Time) (ok bool, skippedBefore int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen == nil || !now.Before(d.start.Add(denialWindow)) {
+		skippedBefore = d.skipped
+		d.start, d.seen, d.skipped = now, map[string]bool{}, 0
+	}
+	if d.seen[subject] || len(d.seen) >= maxDenials {
+		d.skipped++
+		return false, skippedBefore
+	}
+	d.seen[subject] = true
+	return true, skippedBefore
+}

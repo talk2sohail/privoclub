@@ -135,6 +135,7 @@ type Server struct {
 	// sealed sign-in in flight, and the nonce of a connection in flight.
 	sessionCookie, signInCookie, connectCookie string
 	finished                                   finished
+	denials                                    denials
 }
 
 // New builds a Server. It never fails: a missing setting disables the site and

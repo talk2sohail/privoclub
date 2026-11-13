@@ -251,7 +251,7 @@ verifier are stored in the clear for the life of a session and ten minutes.
 ### Review findings, open (independent review 2026-11-03; fixes parked by the owner)
 
 - [x] R-01 (Medium): anyone can fill the 500-state cap with `POST /auth/github/start` and lock every sign-in, setup link and invite for ten minutes at a time. Rate-limit the start, or count only `signin` states against the open cap so setup and invite states keep a reserved share. Test: 500 anonymous starts do not block a setup claim **Fixed in 0.7.1 at the root (F06 task 2, ADR 0016 amendment 1):** a sign-in in flight is not stored on the server at all, so there is no cap and nothing to fill. Tests: `internal/web` `TestSignInStartWritesNothing`, `TestAnonymousStartsCannotBlockSetupInvitesOrSignIn`
-- [ ] R-02 (Low): any GitHub account can write unlimited `signin.denied` audit rows; collapse or rate-limit per GitHub id. Since 0.7.1 this is the only write left for someone who is not a member (ADR 0016 amendment 1); do it before the OAuth server is switched on (F06 task 10)
+- [x] R-02 (Low): any GitHub account can write unlimited `signin.denied` audit rows. **Fixed in 0.7.2:** one row per account in ten minutes and at most 60 rows in ten minutes over all accounts; what is left out is counted and logged. In memory, per process. Test: `internal/web` `TestRefusedSignInsCannotFloodTheAudit`
 - [x] R-03 (Low): a cross-site link to the callback clears the state cookie of a sign-in in progress; clear it only after the state was found **Fixed in 0.7.1:** the cookie is cleared only when it opened for the state the callback brought (`TestSignInCookieIsBoundExpiresAndWorksOnce`)
 - [ ] R-04 (Low): self-approval compares `person` exactly while the owner's default person is lower-cased, so `Alice` (tokens) and `alice` (session) are two people; normalise person names everywhere and make the index case-insensitive
 - [ ] R-05, R-06 (Info): the GitHub token is dropped, not revoked, at GitHub; a second `admin setup-link` makes another owner without saying so; `PRIVO_GITHUB_CLIENT_SECRET` as a plain variable gets no warning; timestamps compare as strings of uneven width (sub-second error at expiry edges)
@@ -350,8 +350,8 @@ client can be revoked by itself. Personal tokens keep working.
   host; `state` is returned untouched; `iss` is in the response (RFC 9207).
 - **Locking people out:** the sign-in state cap (F05 R-01) is gone since
   0.7.1 (task 2): a request without a session writes nothing when it starts a
-  sign-in. Left before the server is switched on: the audit row per refused
-  GitHub account (F05 R-02).
+  sign-in. The audit rows a refused GitHub account can cause are bounded
+  since 0.7.2 (F05 R-02).
 - **An administrator acting as a member:** not possible through this flow; a
   grant is made only by the member's own session (ADR 0021).
 
