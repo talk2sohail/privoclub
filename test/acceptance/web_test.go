@@ -117,19 +117,19 @@ func randomHex(n int) string {
 }
 
 // webGateway starts the gateway with web sign-in configured against gh.
-func webGateway(t *testing.T, gh *acceptanceGitHub) *gateway {
+func webGateway(t *testing.T, gh *acceptanceGitHub, extraEnv ...string) *gateway {
 	t.Helper()
 	secretFile := filepath.Join(t.TempDir(), "github-client-secret")
 	if err := os.WriteFile(secretFile, []byte(webClientSecret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return startGateway(t,
-		"PRIVO_GITHUB_CLIENT_ID="+webClientID,
-		"PRIVO_GITHUB_CLIENT_SECRET_FILE="+secretFile,
-		"PRIVO_GITHUB_BASE_URL="+gh.srv.URL,
-		"PRIVO_GITHUB_API_URL="+gh.srv.URL+"/api",
+	return startGateway(t, append([]string{
+		"PRIVO_GITHUB_CLIENT_ID=" + webClientID,
+		"PRIVO_GITHUB_CLIENT_SECRET_FILE=" + secretFile,
+		"PRIVO_GITHUB_BASE_URL=" + gh.srv.URL,
+		"PRIVO_GITHUB_API_URL=" + gh.srv.URL + "/api",
 		"PRIVO_EGRESS_ALLOW_CIDRS=127.0.0.0/8", // the fake GitHub is on loopback
-	)
+	}, extraEnv...)...)
 }
 
 // person is a browser: a cookie jar that does not follow redirects by itself.

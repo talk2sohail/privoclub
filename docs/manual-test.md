@@ -117,3 +117,27 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
    expect "Saved". Untick Everyone → **Save**.
 8. **Activity → Admin changes**: team.create, team.member.add, server.create,
    server.teams (one per Save) with you as actor.
+
+## 10. An AI client signs in with OAuth (needs 0.8.0+ and `PRIVO_OAUTH_SERVER=on`)
+
+1. In Claude Code: `claude mcp add --transport http privo https://app.privo.club/mcp`
+   (no token), then `/mcp` and **Authenticate**. Expect: a browser opens on
+   Privo; signed out, you go through GitHub first and land back on the page.
+2. Expect the page to say **Let Claude Code use Privo as you?**, name
+   `claude.ai` as the client, `localhost:<port>` as where you go back, you as
+   the person, and warn that it runs on your computer. Press **Deny**: Claude
+   Code reports the refusal. Authenticate again and press **Allow**: Claude
+   Code says it is connected.
+3. Ask Claude Code to call a tool of a server you connected your own account
+   to (8): it answers as you.
+4. **Tokens → AI clients that signed in**: Claude Code is listed. As the
+   owner, **Clients → Connected clients** shows it under your name.
+5. **Take access away**. Within seconds Claude Code's next call fails and it
+   asks to authenticate again.
+6. **Activity → Admin changes**: `oauth.grant.allow`, `oauth.token.exchange`,
+   `oauth.grant.revoke:…` with the client and "for <you>".
+7. Optional: Claude on the web (Settings → Connectors → add
+   `https://app.privo.club/mcp`) and VS Code, the same way. Cursor needs
+   `PRIVO_OAUTH_DYNAMIC_REGISTRATION=on` and is shown as "registered itself,
+   not verified".
+

@@ -218,8 +218,8 @@ func TestUnknownClientIsRefusedUntilApproved(t *testing.T) {
 	}
 	// Policy "any": every document, labelled as such.
 	e.clients.Policy = PolicyAny
-	any := e.docs.put("/any.json", "Any", "https://any.example/cb")
-	req, aerr = e.srv.ParseAuthorize(ctx, e.query(set("client_id", any), set("redirect_uri", "https://any.example/cb")))
+	unlisted := e.docs.put("/any.json", "Any", "https://any.example/cb")
+	req, aerr = e.srv.ParseAuthorize(ctx, e.query(set("client_id", unlisted), set("redirect_uri", "https://any.example/cb")))
 	if aerr != nil || req.Client.Kind != store.ClientDocument {
 		t.Errorf("under the any policy: %+v, %+v", req, aerr)
 	}

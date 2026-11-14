@@ -74,6 +74,8 @@ export type AuditEvent = {
   decision: string;
   outcome: string;
   approved_by: string;
+  user?: string; // the member the event is about or the call ran as (ADR 0021)
+  client?: string; // the AI client, when it signed in with OAuth (ADR 0022)
 };
 
 export type Approval = {

@@ -51,7 +51,10 @@ export function Activity({ loc }: PageProps) {
                   {events.map((e, i) => (
                     <tr key={i}>
                       <td>{when(e.time)}</td>
-                      <td>{e.actor}</td>
+                      <td>
+                        {e.actor}
+                        {e.user && e.user !== e.actor && <small class="meta"> for {e.user}</small>}
+                      </td>
                       <td>
                         <code>{e.action}</code>
                       </td>
@@ -66,7 +69,7 @@ export function Activity({ loc }: PageProps) {
                 <thead>
                   <tr>
                     <th>Time</th>
-                    <th>Token</th>
+                    <th>Token or client</th>
                     <th>Server</th>
                     <th>Tool</th>
                     <th>Decision</th>
@@ -77,7 +80,10 @@ export function Activity({ loc }: PageProps) {
                   {events.map((e, i) => (
                     <tr key={i}>
                       <td>{when(e.time)}</td>
-                      <td>{e.actor}</td>
+                      <td>
+                        {e.actor}
+                        {e.user && e.user !== e.actor && <small class="meta"> as {e.user}</small>}
+                      </td>
                       <td>{e.server}</td>
                       <td>
                         <code>{e.item}</code>

@@ -44,18 +44,23 @@ const (
 
 // Dynamic registration (ADR 0022 point 13).
 const (
-	maxRegistered       = 200             // registered clients in total
-	registerPerAddress  = 10              // registrations from one address in registerWindow
-	registerWindow      = time.Hour       //
-	unusedRegistration  = time.Hour       // a registration nobody allowed is deleted after this
-	idleRegistration    = DefaultGrantTTL // and one nobody has allowed for this long
-	maxRequestBody      = 16 << 10
-	registeredIDPrefix  = "privo_client_"
-	tokenPrefix         = "privo_%s_" // privo_at_, privo_rt_, privo_ac_
-	accessTokenPrefix   = "privo_at_"
-	signingKeyLen       = 32
-	signingKeyPurpose   = "oauth.signing"
-	signingKeyCredental = "oauth-signing-key"
+	maxRegistered      = 200             // registered clients in total
+	registerPerAddress = 10              // registrations from one address in registerWindow
+	registerWindow     = time.Hour       //
+	unusedRegistration = time.Hour       // a registration nobody allowed is deleted after this
+	idleRegistration   = DefaultGrantTTL // and one nobody has allowed for this long
+	maxRequestBody     = 16 << 10
+	registeredIDPrefix = "privo_client_"
+)
+
+// Names, not secrets: the shape of Privo's tokens and the labels the signing
+// secret is sealed under.
+const (
+	tokenPrefix          = "privo_%s_" //nolint:gosec // a format, not a credential: privo_at_, privo_rt_, privo_ac_
+	accessTokenPrefix    = "privo_at_" //nolint:gosec // a prefix, not a credential
+	signingKeyLen        = 32
+	signingKeyPurpose    = "oauth.signing"
+	signingKeyCredential = "oauth-signing-key" //nolint:gosec // the label the secret is sealed under, not the secret
 )
 
 // Keys gives the organisation's data key (the keyring).
@@ -171,7 +176,7 @@ func (s *Server) Registration() bool { return s.o.Registration }
 func (s *Server) Resource() string { return s.resource }
 
 func (s *Server) signingBinding(version uint32) vault.Binding {
-	return vault.Binding{OrgID: string(s.o.Org), CredentialID: signingKeyCredental, Purpose: signingKeyPurpose, KeyVersion: version, RowVersion: 1}
+	return vault.Binding{OrgID: string(s.o.Org), CredentialID: signingKeyCredential, Purpose: signingKeyPurpose, KeyVersion: version, RowVersion: 1}
 }
 
 // signingKey returns the secret the tokens are signed with. The secret is

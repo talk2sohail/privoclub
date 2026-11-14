@@ -418,7 +418,8 @@ func (s *Store) SaveOAuthClient(ctx context.Context, org OrgID, c OAuthClient, l
 	})
 }
 
-// ErrTooManyClients: the bound on self-registered clients is reached.
+// ErrTooManyClients is returned when the bound on self-registered clients is
+// reached.
 var ErrTooManyClients = errors.New("store: too many registered clients")
 
 func scanOAuthClient(row interface{ Scan(...any) error }, c *OAuthClient, extra ...any) error {

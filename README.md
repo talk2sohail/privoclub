@@ -199,6 +199,44 @@ the API without `"teams"`, are for everyone. API: `GET/POST /api/v1/teams`,
 `POST` and `PATCH /api/v1/servers`, `GET /api/v1/catalog`, and
 `GET /api/v1/me/tools` for one's own servers.
 
+## AI clients sign in with OAuth (0.8.0, off unless switched on)
+
+With `PRIVO_OAUTH_SERVER=on` an AI client needs no token at all (ADR 0022).
+Give it the gateway's address, `https://<privo>/mcp`; it finds Privo's
+authorization server by itself, opens a browser, the person signs in to Privo
+(with GitHub, as for the admin site), sees a page that names the client and
+where it will send them back, and presses **Allow**. The client then calls as
+that member: their teams' servers and their own accounts.
+
+- **Which clients may ask** (`PRIVO_OAUTH_CLIENTS`): `known` (default)
+  accepts Privo's built-in list (Claude Code, Claude on the web and desktop,
+  VS Code, ChatGPT, Codex, GitHub Copilot CLI, Zed, Antigravity) plus any
+  client an administrator approves on **Clients** by the address of its
+  metadata document; `approved` accepts only approved ones; `any` accepts
+  every client that publishes a metadata document. A member still allows
+  each client on a page that names it, every time.
+- **Clients that register themselves** (Cursor, Gemini CLI, Mistral) need
+  `PRIVO_OAUTH_DYNAMIC_REGISTRATION=on`. They are shown as "registered
+  itself, not verified", limited per address and in total, and removed when
+  unused.
+- **Tokens:** access tokens live an hour and work only on `/mcp`, never on
+  the admin API. A refresh token rotates on every use; a refresh token that
+  was already used, presented again, ends that client's access at once (no
+  grace window). A client that is not used for 30 days, or 90 days after the
+  person allowed it, has to ask again.
+- **Taking access away:** each person on **Tokens → AI clients that signed
+  in**; an administrator for everyone on **Clients**. Removing a member, or
+  giving them a role that cannot use the gateway, ends their clients' access.
+  Every case counts within 2 seconds.
+- The protected resource metadata names the authorization server only while
+  it is on. Off, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` and
+  `/oauth/register` answer 503, and personal tokens are the only way in.
+- The hosted Claude apps and ChatGPT must reach Privo from their own servers,
+  and Privo must be allowed to fetch their metadata documents (public
+  addresses only, through the egress policy).
+
+Personal tokens keep working for clients without OAuth and for scripts.
+
 ## Tokens
 
 Privo has two kinds of personal token (ADR 0014):

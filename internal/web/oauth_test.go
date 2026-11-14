@@ -99,8 +99,11 @@ func hidden(t *testing.T, body, name string) string {
 	if i < 0 {
 		t.Fatalf("no %s field in the page:\n%s", name, body)
 	}
-	rest := body[i+len(marker):]
-	return rest[:strings.Index(rest, `"`)]
+	value, _, found := strings.Cut(body[i+len(marker):], `"`)
+	if !found {
+		t.Fatalf("the %s field has no end", name)
+	}
+	return value
 }
 
 func (o *oauthEnv) grants() (n int) {

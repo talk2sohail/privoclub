@@ -738,6 +738,9 @@ func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal
 		if c.Intent.UserID != "" {
 			e["user_id"], e["user"] = c.Intent.UserID, persons[c.Intent.UserID]
 		}
+		if c.Intent.Client != "" {
+			e["client"] = c.Intent.Client // the AI client, when it signed in with OAuth (ADR 0022)
+		}
 		if c.Completion != nil {
 			e["outcome"], e["latency_ms"] = c.Completion.Outcome, c.Completion.LatencyMS
 		}
@@ -759,11 +762,29 @@ func (a *API) listAdminAudit(w http.ResponseWriter, r *http.Request, p auth.Prin
 	if err != nil {
 		return err
 	}
+	// Whom an event is about, when it names a member (an AI client allowed,
+	// revoked or ended by reuse, ADR 0022): their person, by user id.
+	persons := map[string]string{}
+	if slices.ContainsFunc(events, func(ev store.AuditEvent) bool { return ev.UserID != "" }) {
+		users, err := a.Store.ListUsers(r.Context(), p.OrgID)
+		if err != nil {
+			return err
+		}
+		for _, u := range users {
+			persons[u.ID] = u.Person
+		}
+	}
 	out := make([]map[string]any, 0, len(events))
 	for _, ev := range events {
 		e := map[string]any{"id": ev.ID, "time": ev.Time, "actor": ev.Actor, "actor_id": ev.ActorID, "action": ev.Action, "decision": ev.Decision, "outcome": ev.Outcome}
 		if ev.Server != "" {
 			e["server"] = ev.Server
+		}
+		if ev.Client != "" {
+			e["client"] = ev.Client
+		}
+		if ev.UserID != "" {
+			e["user_id"], e["user"] = ev.UserID, persons[ev.UserID]
 		}
 		out = append(out, e)
 	}

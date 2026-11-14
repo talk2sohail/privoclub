@@ -230,6 +230,52 @@ Three things are known now that were not then:
   needs the identity-provider sign-in first; toolset scopes (F08); a
   confidential client for server-side agents.
 
+## As built (0.8.0, 2026-11-14)
+
+The decision above is built as written. What the build had to settle, and
+settled without the owner because he asked for "what is best industry
+standard, only ask for critical things" (2026-11-14):
+
+- **Off until switched on: `PRIVO_OAUTH_SERVER=on`.** Not in the decision
+  above. The endpoints are open to the internet without a session, and the
+  independent review CLAUDE.md requires (task 10) has not run; with the
+  switch, merging and deploying 0.8.0 changes nothing on app.privo.club until
+  someone turns it on. Off, the protected resource metadata names no
+  authorization server and the OAuth endpoints answer 503.
+- **The known list (point 12) as checked on 2026-11-14.** The documents of
+  Claude Code, Claude, VS Code, Codex, Zed and Antigravity were fetched and
+  each names itself by its URL. ChatGPT's and Copilot CLI's could not be
+  fetched from here (their sites refuse automated requests); their URLs are
+  from the survey in the sources. A wrong URL cannot accept a wrong client:
+  the document is fetched when the client is used and must name itself by the
+  same URL. Cursor now publishes a document too
+  (`https://cursor.com/oauth/mcp-client.json`); it is not on the agreed list,
+  and an administrator can approve it on the Clients page.
+- **`state` of at least 8 characters is required** (the library's rule). Every
+  client named above sends one.
+- **The request on its way through sign-in (point 6)** is sealed into
+  `__Host-privo_authz` with the organisation's data key, ten minutes. On the
+  consent page it travels in a hidden field sealed again and bound to the
+  session, so Allow answers exactly what was shown and only for the person it
+  was shown to. The authorization request is checked again when Allow is
+  pressed.
+- **Tokens.** `privo_at_`, `privo_rt_` and `privo_ac_` followed by a key and an
+  HMAC signature; rows are stored by signature only. The HMAC secret is random,
+  one per org, sealed with the org's data key and made at startup, so tokens
+  survive restarts. Revoking either token of a grant (RFC 7009) ends the whole
+  grant: a client that revokes is done with it.
+- **Dynamic registration (point 13) limits:** ten per address per hour, 200 in
+  total; a registration nobody allowed is removed after an hour, one nobody has
+  allowed for 90 days and with no grant left after that.
+- **Admin API:** `GET/DELETE /api/v1/me/clients[/{id}]` (a member's own),
+  `GET/DELETE /api/v1/oauth/grants[/{id}]`, `GET/POST /api/v1/oauth/clients`,
+  `POST /api/v1/oauth/clients:remove` (administrators). The audit lists the
+  client and the member for these and for calls.
+- **The acceptance test uses a client that registers itself.** A client with
+  a metadata document needs an https address the binary trusts, which the
+  suite does not have; that path is tested with real HTTP fetches in
+  `internal/oauthserver`.
+
 ## Sources (read 2026-11-11)
 
 - MCP authorization specification, 2025-11-25:

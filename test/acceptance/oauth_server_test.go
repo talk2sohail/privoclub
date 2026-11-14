@@ -10,8 +10,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -24,16 +22,7 @@ import (
 
 var requestField = regexp.MustCompile(`name="request" value="([^"]+)"`)
 
-func writeTemp(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "secret")
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
-func getJSON(t *testing.T, target string) (int, map[string]any, http.Header) {
+func getJSON(t *testing.T, target string) (int, map[string]any) {
 	t.Helper()
 	res, err := http.Get(target) //nolint:gosec // a test against a local server
 	if err != nil {
@@ -43,7 +32,7 @@ func getJSON(t *testing.T, target string) (int, map[string]any, http.Header) {
 	raw, _ := io.ReadAll(res.Body)
 	out := map[string]any{}
 	_ = json.Unmarshal(raw, &out)
-	return res.StatusCode, out, res.Header
+	return res.StatusCode, out
 }
 
 func postForm(t *testing.T, target string, form url.Values) (int, map[string]any) {
@@ -77,49 +66,42 @@ func mcpStatus(t *testing.T, g *gateway, token string) (int, string) {
 	return res.StatusCode, res.Header.Get("WWW-Authenticate")
 }
 
-func TestOAuthSignInEndToEnd(t *testing.T) {
-	gh := newAcceptanceGitHub(t)
-	secretFile := writeTemp(t, webClientSecret+"\n")
-	g := startGateway(t,
-		"PRIVO_GITHUB_CLIENT_ID="+webClientID, "PRIVO_GITHUB_CLIENT_SECRET_FILE="+secretFile,
-		"PRIVO_GITHUB_BASE_URL="+gh.srv.URL, "PRIVO_GITHUB_API_URL="+gh.srv.URL+"/api",
-		"PRIVO_EGRESS_ALLOW_CIDRS=127.0.0.0/8",
-		"PRIVO_OAUTH_SERVER=on", "PRIVO_OAUTH_DYNAMIC_REGISTRATION=on")
-	readyEcho(t, g)
-
-	// The owner exists: setup link, GitHub.
-	out, err := g.command("admin", "setup-link", "--person", "boss").Output()
-	if err != nil {
-		t.Fatalf("admin setup-link: %v", err)
+// The whole way, on the real binary: the client knows only the gateway's
+// address; the member allows it; it calls a server as the member's own
+// upstream account; a rotated refresh token used again ends its access; and
+// the member takes the access of a second sign-in away in the app.
+//
+// The client registers itself. A client with a metadata document would need
+// an https address the binary trusts, which this suite does not have; that
+// path is covered with real fetches in internal/oauthserver.
+func TestClientSignsInWithOAuthAndCallsAsTheMember(t *testing.T) {
+	w := newOAuthWorld(t, true, "PRIVO_OAUTH_SERVER=on", "PRIVO_OAUTH_DYNAMIC_REGISTRATION=on")
+	g, up, boss := w.g, w.up, w.boss
+	up.signInAs("boss@linear")
+	if back := connectAccount(t, boss, g, "linear"); back.Header.Get("Location") != "/admin/connections?result=connected" {
+		t.Fatalf("connecting the boss's upstream account: %q", back.Header.Get("Location"))
 	}
-	boss := newPerson(t, g)
-	_, body := boss.do(http.MethodGet, strings.TrimSpace(string(out)), nil, nil)
-	gh.as = fakeGitHubUser{ID: 424242, Login: "BossHuman", Name: "The Boss"}
-	start, _ := boss.do(http.MethodPost, g.base+"/auth/github/start", url.Values{"setup_token": {setupTokenField.FindStringSubmatch(body)[1]}}, nil)
-	if res, _ := boss.signInThroughGitHub(start); res.StatusCode != http.StatusSeeOther {
-		t.Fatalf("setup: %d", res.StatusCode)
-	}
+	g.eventually("linear comes up", 10*time.Second, func() bool { return g.serverStatus("linear") == "up" })
+	g.acceptPins("linear")
 
-	// 1. The client knows only the gateway. A call without a token tells it
-	// where the metadata is and which scope to ask for.
+	// 1. Discovery from nothing but the gateway's address.
 	status, challenge := mcpStatus(t, g, "")
 	prmURL := g.base + "/.well-known/oauth-protected-resource/mcp"
 	if status != http.StatusUnauthorized || !strings.Contains(challenge, `resource_metadata="`+prmURL+`"`) || !strings.Contains(challenge, `scope="mcp"`) {
 		t.Fatalf("no token: %d, WWW-Authenticate %q", status, challenge)
 	}
-	_, prm, _ := getJSON(t, prmURL)
+	_, prm := getJSON(t, prmURL)
 	servers, _ := prm["authorization_servers"].([]any)
 	if prm["resource"] != g.base+"/mcp" || len(servers) != 1 || servers[0] != g.base {
 		t.Fatalf("protected resource metadata: %v", prm)
 	}
-	status, meta, _ := getJSON(t, g.base+"/.well-known/oauth-authorization-server")
+	status, meta := getJSON(t, g.base+"/.well-known/oauth-authorization-server")
 	if status != http.StatusOK || meta["issuer"] != g.base || meta["client_id_metadata_document_supported"] != true {
 		t.Fatalf("authorization server metadata: %d %v", status, meta)
 	}
 	authorizeEP, tokenEP, registerEP := meta["authorization_endpoint"].(string), meta["token_endpoint"].(string), meta["registration_endpoint"].(string)
 
-	// 2. It registers itself (this test's client has no https address to
-	// publish a metadata document at).
+	// 2. The client registers itself.
 	const redirect = "http://127.0.0.1:45871/callback"
 	reg, _ := json.Marshal(map[string]any{"client_name": "Acceptance Client", "redirect_uris": []string{"http://127.0.0.1/callback"}, "token_endpoint_auth_method": "none"})
 	res, err := http.Post(registerEP, "application/json", bytes.NewReader(reg)) //nolint:gosec // a test against a local server
@@ -135,85 +117,116 @@ func TestOAuthSignInEndToEnd(t *testing.T) {
 		t.Fatalf("registration: %d", res.StatusCode)
 	}
 
-	// 3. It sends the person's browser to the authorization endpoint. The
-	// person is signed in already and sees the consent page.
-	verifier := strings.Repeat("a", 64)
-	sum := sha256.Sum256([]byte(verifier))
-	q := url.Values{"response_type": {"code"}, "client_id": {registered.ClientID}, "redirect_uri": {redirect}, "scope": {"mcp"}, "state": {"state-from-the-client"},
-		"code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "code_challenge_method": {"S256"}, "resource": {g.base + "/mcp"}}
-	page, body := boss.do(http.MethodGet, authorizeEP+"?"+q.Encode(), nil, nil)
-	if page.StatusCode != http.StatusOK || !strings.Contains(body, "Acceptance Client") || !strings.Contains(body, "registered itself") || !strings.Contains(body, "127.0.0.1:45871") {
-		t.Fatalf("consent page: %d\n%s", page.StatusCode, body)
+	// signIn is what the client and the member do together: the browser goes
+	// to the authorization endpoint, the member allows, the code becomes
+	// tokens. The boss is signed in to Privo already.
+	var codes []string
+	signIn := func() (access, refresh string) {
+		t.Helper()
+		verifier := strings.Repeat("a", 43) + randomHex(8)
+		sum := sha256.Sum256([]byte(verifier))
+		q := url.Values{"response_type": {"code"}, "client_id": {registered.ClientID}, "redirect_uri": {redirect}, "scope": {"mcp"}, "state": {"state-from-the-client"},
+			"code_challenge": {base64.RawURLEncoding.EncodeToString(sum[:])}, "code_challenge_method": {"S256"}, "resource": {g.base + "/mcp"}}
+		page, body := boss.do(http.MethodGet, authorizeEP+"?"+q.Encode(), nil, nil)
+		if page.StatusCode != http.StatusOK || !strings.Contains(body, "Acceptance Client") || !strings.Contains(body, "registered itself") || !strings.Contains(body, "127.0.0.1:45871") {
+			t.Fatalf("consent page: %d\n%s", page.StatusCode, body)
+		}
+		allowed, _ := boss.do(http.MethodPost, authorizeEP, url.Values{"csrf": {csrfField.FindStringSubmatch(body)[1]},
+			"request": {requestField.FindStringSubmatch(body)[1]}, "decision": {"allow"}}, nil)
+		back, err := url.Parse(allowed.Header.Get("Location"))
+		if err != nil || back.Host != "127.0.0.1:45871" || back.Query().Get("state") != "state-from-the-client" || back.Query().Get("iss") != g.base || back.Query().Get("code") == "" {
+			t.Fatalf("after Allow: %d %q", allowed.StatusCode, allowed.Header.Get("Location"))
+		}
+		codes = append(codes, back.Query().Get("code"))
+		status, tok := postForm(t, tokenEP, url.Values{"grant_type": {"authorization_code"}, "code": {back.Query().Get("code")}, "redirect_uri": {redirect},
+			"client_id": {registered.ClientID}, "code_verifier": {verifier}, "resource": {g.base + "/mcp"}})
+		access, _ = tok["access_token"].(string)
+		refresh, _ = tok["refresh_token"].(string)
+		if status != http.StatusOK || access == "" || refresh == "" {
+			t.Fatalf("code exchange: %d %v", status, tok)
+		}
+		return access, refresh
 	}
-	// Someone who is not signed in is sent to sign in, and nothing is stored.
-	if res, _ := newPerson(t, g).do(http.MethodGet, authorizeEP+"?"+q.Encode(), nil, nil); res.StatusCode != http.StatusSeeOther || !strings.HasPrefix(res.Header.Get("Location"), "/admin/signin") {
+
+	// Someone who is not signed in is sent to sign in first.
+	anon := newPerson(t, g)
+	if res, _ := anon.do(http.MethodGet, authorizeEP+"?"+url.Values{"response_type": {"code"}, "client_id": {registered.ClientID}, "redirect_uri": {redirect},
+		"state": {"state-from-the-client"}, "code_challenge": {strings.Repeat("c", 43)}, "code_challenge_method": {"S256"}, "resource": {g.base + "/mcp"}}.Encode(), nil, nil); res.StatusCode != http.StatusSeeOther ||
+		!strings.HasPrefix(res.Header.Get("Location"), "/admin/signin") {
 		t.Errorf("the authorization endpoint without a session: %d %q", res.StatusCode, res.Header.Get("Location"))
 	}
-	allowed, _ := boss.do(http.MethodPost, authorizeEP, url.Values{"csrf": {csrfField.FindStringSubmatch(body)[1]},
-		"request": {requestField.FindStringSubmatch(body)[1]}, "decision": {"allow"}}, nil)
-	back, err := url.Parse(allowed.Header.Get("Location"))
-	if err != nil || back.Host != "127.0.0.1:45871" || back.Query().Get("state") != "state-from-the-client" || back.Query().Get("iss") != g.base || back.Query().Get("code") == "" {
-		t.Fatalf("after Allow: %d %q", allowed.StatusCode, allowed.Header.Get("Location"))
-	}
 
-	// 4. The code becomes tokens.
-	exchange := url.Values{"grant_type": {"authorization_code"}, "code": {back.Query().Get("code")}, "redirect_uri": {redirect},
-		"client_id": {registered.ClientID}, "code_verifier": {verifier}, "resource": {g.base + "/mcp"}}
-	status, tok := postForm(t, tokenEP, exchange)
-	access, _ := tok["access_token"].(string)
-	refresh, _ := tok["refresh_token"].(string)
-	if status != http.StatusOK || access == "" || refresh == "" {
-		t.Fatalf("code exchange: %d %v", status, tok)
-	}
-
-	// 5. The gateway takes the access token: the person's tools, as the person.
+	// 3. Signed in: the client calls the upstream as the boss's own account.
+	access, refresh := signIn()
 	session := g.connect(access)
-	if names := toolNames(t, session); len(names) == 0 {
-		t.Fatal("no tools for a client that signed in with OAuth")
+	if text, isErr := call(t, session, "linear__whoami", nil); isErr || text != "you are boss@linear" {
+		t.Fatalf("a call over OAuth: %q (error=%v), want the boss's own upstream account", text, isErr)
 	}
-	if got := callEcho(t, session, "over oauth"); !strings.Contains(got, "over oauth") {
-		t.Errorf("echo over OAuth: %q", got)
-	}
-	// The admin API does not take it, although the person is the owner.
+	// The admin API does not take the access token, although the boss is the owner.
 	if code, _ := g.raw(http.MethodGet, "/api/v1/tokens", access, nil); code != http.StatusUnauthorized {
 		t.Errorf("the admin API with an OAuth access token: %d, want 401", code)
 	}
-	// The app shows the client to the person.
 	code, mine := boss.app(http.MethodGet, "/v1/me/clients", nil, nil)
-	list, _ := mine["clients"].([]any)
-	if code != http.StatusOK || len(list) != 1 {
+	if list, _ := mine["clients"].([]any); code != http.StatusOK || len(list) != 1 || list[0].(map[string]any)["client"] != "Acceptance Client" {
 		t.Fatalf("connected clients: %d %v", code, mine)
 	}
-	grantID, _ := list[0].(map[string]any)["id"].(string)
-	if list[0].(map[string]any)["client"] != "Acceptance Client" {
-		t.Errorf("the connected client: %v", list[0])
-	}
 
-	// 6. Refresh: new tokens; the old access token stops within the cache time.
+	// 4. Refresh: new tokens; the old access token stops within the cache time.
 	status, tok2 := postForm(t, tokenEP, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {registered.ClientID}})
 	access2, _ := tok2["access_token"].(string)
-	if status != http.StatusOK || access2 == "" || access2 == access {
+	refresh2, _ := tok2["refresh_token"].(string)
+	if status != http.StatusOK || access2 == "" || access2 == access || refresh2 == refresh {
 		t.Fatalf("refresh: %d %v", status, tok2)
 	}
 	g.eventually("the old access token stops working", 5*time.Second, func() bool { s, _ := mcpStatus(t, g, access); return s == http.StatusUnauthorized })
 	if s, _ := mcpStatus(t, g, access2); s == http.StatusUnauthorized {
 		t.Fatal("the refreshed access token does not work")
 	}
-	// 7. The person takes the access away in the app.
-	if code, out := boss.app(http.MethodDelete, "/v1/me/clients/"+grantID, nil, nil); code != http.StatusOK {
-		t.Fatalf("revoking the client: %d %v", code, out)
+
+	// 5. No grace (ADR 0022 point 9): the rotated refresh token used again is
+	// refused, and the tokens issued after it stop on the gateway.
+	if status, out := postForm(t, tokenEP, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh}, "client_id": {registered.ClientID}}); status != http.StatusBadRequest || out["error"] != "invalid_grant" {
+		t.Fatalf("a rotated refresh token used again: %d %v", status, out)
 	}
-	g.eventually("the revoked client gets 401", 5*time.Second, func() bool {
-		s, challenge := mcpStatus(t, g, access2)
+	g.eventually("the access token issued after the reused one stops", 5*time.Second, func() bool { s, _ := mcpStatus(t, g, access2); return s == http.StatusUnauthorized })
+	if status, out := postForm(t, tokenEP, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh2}, "client_id": {registered.ClientID}}); status != http.StatusBadRequest || out["error"] != "invalid_grant" {
+		t.Errorf("the successor refresh token: %d %v", status, out)
+	}
+	g.eventually("the reuse is in the audit, naming the client and the member", 5*time.Second, func() bool {
+		_, out := boss.app(http.MethodGet, "/v1/audit/events?limit=100&kind=admin", nil, nil)
+		events, _ := out["events"].([]any)
+		for _, e := range events {
+			ev, _ := e.(map[string]any)
+			if ev["action"] == "oauth.grant.reuse" && ev["client"] == "Acceptance Client" && ev["user"] == "boss" {
+				return true
+			}
+		}
+		return false
+	})
+
+	// 6. Signed in again; the member takes the access away in the app.
+	access3, refresh3 := signIn()
+	if s, _ := mcpStatus(t, g, access3); s == http.StatusUnauthorized {
+		t.Fatal("the second sign-in's access token does not work")
+	}
+	_, mine = boss.app(http.MethodGet, "/v1/me/clients", nil, nil)
+	list, _ := mine["clients"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("connected clients after signing in again: %v", mine)
+	}
+	if code, out := boss.app(http.MethodDelete, "/v1/me/clients/"+list[0].(map[string]any)["id"].(string), nil, nil); code != http.StatusOK {
+		t.Fatalf("taking the access away: %d %v", code, out)
+	}
+	g.eventually("the revoked client gets 401 with the metadata address", 5*time.Second, func() bool {
+		s, challenge := mcpStatus(t, g, access3)
 		return s == http.StatusUnauthorized && strings.Contains(challenge, "resource_metadata=")
 	})
-	refresh2, _ := tok2["refresh_token"].(string)
-	if status, out := postForm(t, tokenEP, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh2}, "client_id": {registered.ClientID}}); status != http.StatusBadRequest || out["error"] != "invalid_grant" {
-		t.Errorf("refresh after the revocation: %d %v", status, out)
+	if status, out := postForm(t, tokenEP, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh3}, "client_id": {registered.ClientID}}); status != http.StatusBadRequest || out["error"] != "invalid_grant" {
+		t.Errorf("refresh after the access was taken away: %d %v", status, out)
 	}
 
 	// Nothing a client holds is on disk or in the log.
-	for _, secret := range []string{access, access2, refresh, refresh2, back.Query().Get("code")} {
+	for _, secret := range append([]string{access, access2, access3, refresh, refresh2, refresh3}, codes...) {
 		g.assertNotOnDisk(secret)
 		if strings.Contains(g.logs.String(), secret) {
 			t.Errorf("the log holds a token or code: %.14s…", secret)
@@ -226,7 +239,7 @@ func TestOAuthSignInEndToEnd(t *testing.T) {
 func TestOAuthServerIsOffByDefault(t *testing.T) {
 	gh := newAcceptanceGitHub(t)
 	g := webGateway(t, gh)
-	_, prm, _ := getJSON(t, g.base+"/.well-known/oauth-protected-resource/mcp")
+	_, prm := getJSON(t, g.base+"/.well-known/oauth-protected-resource/mcp")
 	if servers, _ := prm["authorization_servers"].([]any); len(servers) != 0 {
 		t.Errorf("authorization servers with the server off: %v", servers)
 	}
@@ -236,7 +249,7 @@ func TestOAuthServerIsOffByDefault(t *testing.T) {
 	if status, _ := postForm(t, g.base+"/oauth/token", url.Values{"grant_type": {"refresh_token"}}); status != http.StatusServiceUnavailable {
 		t.Errorf("/oauth/token with the server off: %d, want 503", status)
 	}
-	if status, _, _ := getJSON(t, g.base+"/.well-known/oauth-authorization-server"); status != http.StatusNotFound {
+	if status, _ := getJSON(t, g.base+"/.well-known/oauth-authorization-server"); status != http.StatusNotFound {
 		t.Errorf("authorization server metadata with the server off: %d, want 404", status)
 	}
 	if s, _ := mcpStatus(t, g, "privo_at_anything.anything"); s != http.StatusUnauthorized {

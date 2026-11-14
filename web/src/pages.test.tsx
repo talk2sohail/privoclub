@@ -469,3 +469,26 @@ describe("AI clients that signed in with OAuth", () => {
     expect(srv.calls.filter((c) => c.url.startsWith("/admin/api/v1/oauth"))).toHaveLength(0);
   });
 });
+
+describe("activity", () => {
+  it("names the member a client acted as, as text", async () => {
+    at("/admin/activity");
+    await start(session("owner"), {
+      "GET /admin/api/v1/audit/events?limit=100": {
+        events: [{ time: "2026-11-14T10:00:00Z", actor: "Claude Code", user: evil, client: "Claude Code", server: "linear", item: "whoami", action: "tools/call", decision: "allow", outcome: "ok", approved_by: "" }],
+      },
+    });
+    await screen.findByText(`as ${evil}`);
+    expect(document.querySelector("img")).toBeNull();
+  });
+
+  it("names the member an admin event is about", async () => {
+    at("/admin/activity?view=admin");
+    await start(session("owner"), {
+      "GET /admin/api/v1/audit/events?limit=100&kind=admin": {
+        events: [{ time: "2026-11-14T10:00:00Z", actor: "Cursor", user: "ada", client: "Cursor", server: "", item: "", action: "oauth.grant.reuse", decision: "deny", outcome: "a refresh token that was already used was presented again", approved_by: "" }],
+      },
+    });
+    await screen.findByText("for ada");
+  });
+});

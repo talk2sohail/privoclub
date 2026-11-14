@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -297,10 +298,18 @@ func TestListAndRevokeClientGrants(t *testing.T) {
 	if _, err := s.RevokeClientGrant(ctx, org, "gb", "", adminEv("oauth.grant.revoke:3")); err != nil {
 		t.Fatal(err)
 	}
-	var n int
-	_ = s.r.QueryRow(`SELECT COUNT(*) FROM audit_events WHERE action LIKE 'oauth.grant.revoke:%' AND client = 'Client' AND user_id <> ''`).Scan(&n)
+	events, err := s.RecentAdminEvents(ctx, org, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, ev := range events {
+		if strings.HasPrefix(ev.Action, "oauth.grant.revoke:") && ev.Client == "Client" && (ev.UserID == ada.ID || ev.UserID == bob.ID) {
+			n++
+		}
+	}
 	if n != 2 {
-		t.Errorf("%d audit rows naming the client and the member, want 2", n)
+		t.Errorf("%d admin audit events naming the client and the member, want 2", n)
 	}
 	other, _ := s.EnsureOrg(ctx, "other", "Other")
 	if _, err := s.RevokeClientGrant(ctx, other.ID, "spent", "", adminEv("oauth.grant.revoke:4")); !errors.Is(err, ErrNotFound) {
