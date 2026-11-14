@@ -10,9 +10,10 @@ export type ServerView = {
   target: string;
   items: Record<string, number>;
   pending_review: number;
-  auth?: string;
+  auth?: string; // "" | oauth | key
   registration?: string;
   connect_url?: string;
+  key_header?: string;
   teams?: string[];
 };
 
@@ -94,6 +95,7 @@ export type Approval = {
 
 export type MyConnection = {
   alias: string;
+  kind?: string; // oauth | key
   issuer: string;
   connected: boolean;
   scopes?: string;

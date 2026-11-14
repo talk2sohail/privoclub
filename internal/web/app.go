@@ -308,7 +308,8 @@ func (s *Server) bridge(w http.ResponseWriter, r *http.Request) {
 
 type myConnection struct {
 	Alias       string `json:"alias"`
-	Issuer      string `json:"issuer"`
+	Kind        string `json:"kind"`   // oauth | key (ADR 0023)
+	Issuer      string `json:"issuer"` // where the person signs in, or the server's host for a key
 	Connected   bool   `json:"connected"`
 	Scopes      string `json:"scopes,omitempty"`
 	ConnectedAt string `json:"connected_at,omitempty"`
@@ -320,7 +321,7 @@ func (s *Server) myConnections(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	servers, err := s.oauthServers(r.Context(), u)
+	servers, err := s.personalServers(r.Context(), u)
 	var grants []store.Grant
 	if err == nil {
 		grants, err = s.o.Store.ListGrants(r.Context(), s.o.Org, u.ID)
@@ -336,7 +337,12 @@ func (s *Server) myConnections(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []myConnection{}
 	for _, srv := range servers {
-		c := myConnection{Alias: srv.Alias, Issuer: hostOf(srv.Config.OAuth.Issuer)}
+		c := myConnection{Alias: srv.Alias, Kind: srv.Config.Auth}
+		if srv.Config.OAuth != nil {
+			c.Issuer = hostOf(srv.Config.OAuth.Issuer)
+		} else {
+			c.Issuer = hostOf(srv.Config.URL)
+		}
 		if g, ok := byServer[srv.ID]; ok {
 			c.Connected, c.Scopes = true, g.Scopes
 			c.ConnectedAt, c.LastUsedAt = g.ConnectedAt.UTC().Format(timeJSON), g.LastUsedAt.UTC().Format(timeJSON)

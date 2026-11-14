@@ -71,7 +71,7 @@ describe("servers", () => {
     expect(screen.getByText("2 to review")).toBeTruthy();
     fireEvent.input(screen.getByPlaceholderText("deepwiki"), { target: { value: "linear" } });
     fireEvent.input(screen.getByPlaceholderText("https://mcp.example.com/mcp"), { target: { value: "https://mcp.linear.app/mcp" } });
-    fireEvent.click(screen.getByLabelText(/A shared API key/));
+    fireEvent.click(screen.getByLabelText(/One shared account/));
     fireEvent.input(screen.getByPlaceholderText("Bearer sk-…"), { target: { value: "Bearer s3cret" } });
     fireEvent.click(screen.getByRole("button", { name: "Add server" }));
     await waitFor(() => expect(window.location.pathname).toBe("/admin/servers/linear"));
@@ -517,5 +517,63 @@ describe("the tool review (F14 R-01)", () => {
     expect(diff.querySelector(".del")?.textContent).toContain('"Reads a file."');
     // The full definition, with the schema, is one click away.
     expect(screen.getAllByText("Full definition (what is accepted)").length).toBeGreaterThan(0);
+  });
+});
+
+describe("servers where each person brings their own key (ADR 0023)", () => {
+  it("asks whose account the server sees and sends the key settings", async () => {
+    at("/admin/servers");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [] },
+      "GET /admin/api/v1/teams": { teams: [], profiles: [] },
+      "GET /admin/api/v1/catalog": { entries: [], profiles: [], oauth_available: true },
+      "POST /admin/api/v1/servers": () => [201, { server: { alias: "acme" } }],
+      "GET /admin/api/v1/servers/acme/pins": { pins: [] },
+    });
+    await screen.findByText("Whose account does this server see?");
+    await waitFor(() => expect((screen.getByRole("button", { name: "Add server" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.input(screen.getByPlaceholderText("deepwiki"), { target: { value: "acme" } });
+    fireEvent.input(screen.getByPlaceholderText("https://mcp.example.com/mcp"), { target: { value: "https://mcp.acme.example/mcp" } });
+    fireEvent.click(screen.getByLabelText(/by their own API key/));
+    fireEvent.input(screen.getByPlaceholderText("Authorization"), { target: { value: "X-Api-Key" } });
+    fireEvent.input(screen.getByPlaceholderText("Settings, then API keys."), { target: { value: "Profile, then Keys." } });
+    fireEvent.submit(screen.getByRole("button", { name: "Add server" }).closest("form")!);
+    await waitFor(() => {
+      const call = srv.calls.find((c) => c.method === "POST" && c.url === "/admin/api/v1/servers");
+      expect(call?.body).toMatchObject({ alias: "acme", url: "https://mcp.acme.example/mcp", personal_key: { header: "X-Api-Key", help: "Profile, then Keys." } });
+      expect((call?.body as { personal_key: Record<string, unknown> }).personal_key.prefix).toBeUndefined();
+    });
+  });
+
+  it("sends OAuth settings entered by hand", async () => {
+    at("/admin/servers");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [] },
+      "GET /admin/api/v1/teams": { teams: [], profiles: [] },
+      "GET /admin/api/v1/catalog": { entries: [], profiles: [], oauth_available: true },
+      "POST /admin/api/v1/servers": () => [201, { server: { alias: "legacy" } }],
+      "GET /admin/api/v1/servers/legacy/pins": { pins: [] },
+    });
+    await screen.findByText("Whose account does this server see?");
+    await waitFor(() => expect((screen.getByRole("button", { name: "Add server" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.input(screen.getByPlaceholderText("deepwiki"), { target: { value: "legacy" } });
+    fireEvent.input(screen.getByPlaceholderText("https://mcp.example.com/mcp"), { target: { value: "https://legacy.example/mcp" } });
+    fireEvent.click(screen.getByLabelText(/by signing in/));
+    fireEvent.input(screen.getByPlaceholderText("https://login.example.com"), { target: { value: "https://login.legacy.example" } });
+    fireEvent.input(screen.getByLabelText(/Scopes/), { target: { value: "read  write" } });
+    fireEvent.submit(screen.getByRole("button", { name: "Add server" }).closest("form")!);
+    await waitFor(() => {
+      const call = srv.calls.find((c) => c.method === "POST" && c.url === "/admin/api/v1/servers");
+      expect(call?.body).toMatchObject({ oauth: { issuer: "https://login.legacy.example", scopes: ["read", "write"] } });
+    });
+  });
+
+  it("tells a member to enter their key on Start and Connections", async () => {
+    at("/admin/connections");
+    await start(session("member"), {
+      "GET /admin/api/me/connections": { can_connect: true, connections: [{ alias: "acme", kind: "key", issuer: "mcp.acme.example", connected: false }] },
+    });
+    expect((await screen.findByText("Enter your API key")).getAttribute("href")).toBe("/connect/acme");
+    expect(screen.getByText(/takes your own API key \(mcp.acme.example\)/)).toBeTruthy();
   });
 });

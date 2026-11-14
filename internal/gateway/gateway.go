@@ -431,6 +431,10 @@ func (g *Gateway) session(ctx context.Context, c call) (*mcp.ClientSession, erro
 	if errors.Is(err, grants.ErrNotConnected) {
 		return nil, g.connectFirst(c.item.Alias)
 	}
+	if errors.Is(err, grants.ErrKeyRefused) {
+		// The handshake with the person's own key was refused (ADR 0023).
+		return nil, g.keyRefused(c.item.Alias)
+	}
 	return s, err
 }
 
@@ -471,7 +475,7 @@ func (g *Gateway) noAccount(alias string) error {
 
 func (g *Gateway) connectFirst(alias string) error {
 	if g.BaseURL == "" {
-		return &accountError{fmt.Sprintf("Connect your %s account on the Privo admin site first, then try again.", alias)}
+		return &accountError{fmt.Sprintf("Connect your %s account (or enter your API key for it) on the Privo admin site first, then try again.", alias)}
 	}
 	link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias)
 	return &accountError{fmt.Sprintf("Connect your %s account first: open %s in your browser, then try again.", alias, link)}
@@ -494,7 +498,20 @@ func (g *Gateway) callUpstream(ctx context.Context, c call, session *mcp.ClientS
 	if err != nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 		err = fmt.Errorf("%w (server %q, limit %s)", errCallTimeout, c.item.Alias, g.CallTimeout)
 	}
+	if errors.Is(err, grants.ErrKeyRefused) {
+		err = g.keyRefused(c.item.Alias)
+	}
 	return outcome, err
+}
+
+// keyRefused tells the person that the server refused their own API key
+// (ADR 0023) and where to enter a new one.
+func (g *Gateway) keyRefused(alias string) error {
+	if g.BaseURL == "" {
+		return &accountError{fmt.Sprintf("%s refused your API key. Enter a new one on the Privo admin site, then try again.", alias)}
+	}
+	link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias)
+	return &accountError{fmt.Sprintf("%s refused your API key. Enter a new one: open %s in your browser, then try again.", alias, link)}
 }
 
 // sdkLocalCode reports the JSON-RPC codes the SDK raises itself (unknown error,

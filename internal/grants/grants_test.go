@@ -437,3 +437,66 @@ func TestRefreshUsesTheClientStoredNow(t *testing.T) {
 		t.Error("a server that does not exist was refreshed")
 	}
 }
+
+// ADR 0023: each person's own API key, kept like a grant.
+func TestPersonalKey(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	keySrv := store.Server{OrgID: e.org, ID: "srv-key", Alias: "acme", Transport: "http", Enabled: true, CreatedAt: t0,
+		Config: store.ServerConfig{URL: e.as.srv.URL + "/mcp", Auth: store.AuthKey, Key: &store.ServerKey{Header: "X-Api-Key"}}}
+	if err := e.st.CreateServer(ctx, keySrv, nil); err != nil {
+		t.Fatal(err)
+	}
+	ev := func() store.AuditEvent {
+		return store.AuditEvent{ID: fmt.Sprintf("ev-k-%d", evSeq.Add(1)), CallID: "c", Time: t0, Actor: "ada", Action: "upstream.connect:acme", Decision: "allow", Outcome: "ok"}
+	}
+	if _, err := e.svc.AccessToken(ctx, e.org, keySrv, e.ada.ID); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("before a key: %v", err)
+	}
+	g, err := e.svc.SaveKey(ctx, e.org, keySrv, e.ada, "ada-key-0123456789", false, ev())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Credential.Purpose != store.PurposeKeyGrant || g.Credential.OwnerID != e.ada.ID || bytes.Contains(g.Credential.Ciphertext, []byte("ada-key-0123456789")) {
+		t.Errorf("stored as %q for %q, sealed=%v", g.Credential.Purpose, g.Credential.OwnerID, !bytes.Contains(g.Credential.Ciphertext, []byte("ada-key")))
+	}
+	if k, err := e.svc.AccessToken(ctx, e.org, keySrv, e.ada.ID); err != nil || k != "ada-key-0123456789" {
+		t.Fatalf("AccessToken = %q, %v", k, err)
+	}
+	// Refused: never refreshed at the token endpoint, and the key is kept.
+	if _, err := e.svc.RefreshAfterReject(ctx, e.org, keySrv, e.ada.ID, "ada-key-0123456789"); !errors.Is(err, ErrKeyRefused) {
+		t.Fatalf("after a refusal: %v, want ErrKeyRefused", err)
+	}
+	if e.as.refreshes.Load() != 0 {
+		t.Error("a key server's token endpoint was called")
+	}
+	if _, err := e.st.Grant(ctx, e.org, keySrv.ID, e.ada.ID); err != nil {
+		t.Errorf("the refused key was deleted: %v", err)
+	}
+	// A new key replaces it; a request that was refused with the old one gets it.
+	if _, err := e.svc.SaveKey(ctx, e.org, keySrv, e.ada, "ada-key-new", false, ev()); err != nil {
+		t.Fatal(err)
+	}
+	if k, err := e.svc.RefreshAfterReject(ctx, e.org, keySrv, e.ada.ID, "ada-key-0123456789"); err != nil || k != "ada-key-new" {
+		t.Errorf("after a new key: %q, %v", k, err)
+	}
+	// What a key can be, and where it can go.
+	for _, bad := range []string{"", "has space", "line\nbreak", "tab\tkey", "é", strings.Repeat("k", 4097)} {
+		if _, err := e.svc.SaveKey(ctx, e.org, keySrv, e.ada, bad, false, ev()); err == nil {
+			t.Errorf("key %q was saved", bad)
+		}
+	}
+	if _, err := e.svc.SaveKey(ctx, e.org, e.srv, e.ada, "a-key", false, ev()); err == nil {
+		t.Error("a key was saved for an OAuth server")
+	}
+	// Removing it calls nothing at the server and deletes it.
+	if err := e.svc.Disconnect(ctx, e.org, keySrv, e.ada.ID, ev()); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.as.revoked) != 0 {
+		t.Errorf("revocation was called for a key: %v", e.as.revoked)
+	}
+	if _, err := e.svc.AccessToken(ctx, e.org, keySrv, e.ada.ID); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("after removing: %v", err)
+	}
+}

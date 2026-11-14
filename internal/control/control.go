@@ -203,6 +203,9 @@ type serverView struct {
 	Auth         string `json:"auth,omitempty"`
 	Registration string `json:"registration,omitempty"`
 	ConnectURL   string `json:"connect_url,omitempty"`
+	// KeyHeader is the header each person's own key goes in (ADR 0023);
+	// shown to admins only.
+	KeyHeader string `json:"key_header,omitempty"`
 	// Teams that reach the server (ADR 0020); shown to admins only, and
 	// always to them, so an empty list ("nobody") is visible (F26 R-04).
 	Teams *[]string `json:"teams,omitempty"`
@@ -226,10 +229,13 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams 
 	if !s.Enabled {
 		v.Status = upstream.StatusDisabled
 	}
-	if s.Config.Auth == store.AuthOAuth {
-		v.Auth, v.ConnectURL = store.AuthOAuth, a.connectURL(s.Alias)
+	if s.Config.PerPerson() {
+		v.Auth, v.ConnectURL = s.Config.Auth, a.connectURL(s.Alias)
 		if s.Config.OAuth != nil && admin {
 			v.Registration = s.Config.OAuth.Registration
+		}
+		if s.Config.Key != nil && admin {
+			v.KeyHeader = s.Config.Key.Header
 		}
 	}
 	if st, ok := a.Upstream.State(s.ID); ok {
@@ -289,6 +295,9 @@ type createServerReq struct {
 	Env     map[string]string `json:"env"`
 	// OAuth makes every call run with the caller's own account (ADR 0017).
 	OAuth *oauthReq `json:"oauth"`
+	// PersonalKey makes every call run with the caller's own API key, which
+	// each person enters once on the connect page (ADR 0023).
+	PersonalKey *personalKeyReq `json:"personal_key"`
 	// Teams that reach the server (ADR 0020); absent means everyone.
 	Teams *[]string `json:"teams"`
 }
@@ -328,6 +337,20 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	}
 	if req.OAuth != nil && len(req.Headers) > 0 {
 		return errorf(http.StatusUnprocessableEntity, "a server that uses each person's own account (oauth) takes no static headers")
+	}
+	if req.PersonalKey != nil && req.OAuth != nil {
+		return errorf(http.StatusUnprocessableEntity, "a server takes each person's own account (oauth) or each person's own key (personal_key), not both")
+	}
+	var key *store.ServerKey
+	if req.PersonalKey != nil {
+		if req.Transport != "http" && req.Transport != "sse" {
+			return errorf(http.StatusUnprocessableEntity, "only http and sse servers can take each person's own key")
+		}
+		k, err := req.PersonalKey.check(req.Headers)
+		if err != nil {
+			return err
+		}
+		key = &k
 	}
 	switch req.Transport {
 	case "stdio":
@@ -371,6 +394,13 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err != nil {
 		return err
 	}
+	if key != nil {
+		if a.Grants == nil || a.PublicURL == nil {
+			return errorf(http.StatusUnprocessableEntity,
+				"servers that take each person's own key need PRIVO_PUBLIC_URL and the admin site (GitHub sign-in) to be configured")
+		}
+		srv.Config.Auth, srv.Config.Key = store.AuthKey, key
+	}
 	if req.OAuth != nil {
 		o, secret, err := a.configureOAuth(ctx, srv, req.OAuth)
 		if err != nil {
@@ -401,6 +431,9 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	a.adminEvent(ctx, p, "server.teams="+strings.Join(srv.Teams, ","), srv.Alias)
 	if srv.Config.OAuth != nil {
 		a.adminEvent(ctx, p, "server.oauth_register:"+srv.Alias+":"+srv.Config.OAuth.Registration, srv.Alias)
+	}
+	if srv.Config.Key != nil {
+		a.adminEvent(ctx, p, "server.personal_key:"+srv.Alias+":"+srv.Config.Key.Header, srv.Alias)
 	}
 	if err := a.Upstream.Sync(ctx, p.OrgID); err != nil {
 		return err

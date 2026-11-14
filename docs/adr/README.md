@@ -32,3 +32,4 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0020](0020-teams-and-server-catalog.md) | Teams decide which servers a person reaches; a built-in catalog adds them | Proposed (accept after the F26 review) |
 | [0021](0021-tokens-belong-to-members.md) | A token belongs to a member by user id, never by the name it carries | Accepted (merged 2026-11-11) |
 | [0022](0022-gateway-sign-in-with-oauth.md) | AI clients sign in to the gateway with OAuth; Privo is the authorization server | Accepted 2026-11-12; points 9 and 16 amended by the owner the same day; built in 0.8.0, off unless `PRIVO_OAUTH_SERVER=on` ("As built") |
+| [0023](0023-each-server-as-it-presents-itself.md) | Each upstream server is reached the way it presents itself: each person's own API key, OAuth settings entered by hand | Accepted 2026-11-14; built in 0.9.0 |

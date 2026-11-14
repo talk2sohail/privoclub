@@ -537,8 +537,8 @@ func (a *API) myTools(w http.ResponseWriter, r *http.Request, p auth.Principal) 
 				}
 			}
 		}
-		if s.Config.Auth == store.AuthOAuth {
-			v.Auth, v.Connected, v.ConnectURL = store.AuthOAuth, connected[s.ID], a.connectURL(s.Alias)
+		if s.Config.PerPerson() {
+			v.Auth, v.Connected, v.ConnectURL = s.Config.Auth, connected[s.ID], a.connectURL(s.Alias)
 		}
 		out = append(out, v)
 	}

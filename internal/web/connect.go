@@ -10,6 +10,7 @@ import (
 
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/githubauth"
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/upstreamauth"
@@ -23,6 +24,7 @@ type Grants interface {
 	Save(ctx context.Context, org store.OrgID, srv store.Server, user store.User, tok upstreamauth.Token, catalogOK bool, ev store.AuditEvent) (store.Grant, error)
 	Disconnect(ctx context.Context, org store.OrgID, srv store.Server, userID string, ev store.AuditEvent) error
 	Reregister(ctx context.Context, org store.OrgID, srv store.Server) error
+	SaveKey(ctx context.Context, org store.OrgID, srv store.Server, user store.User, key string, catalogOK bool, ev store.AuditEvent) (store.Grant, error)
 }
 
 // Upstreams is what the website tells the upstream manager.
@@ -122,14 +124,27 @@ func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, in signIn,
 
 // ---- connections
 
-func (s *Server) oauthServers(ctx context.Context, u store.User) ([]store.Server, error) {
+// connectable reports whether a server takes each person's own credential
+// and has what connecting needs: OAuth settings, or how a key is sent.
+func connectable(srv store.Server) bool {
+	switch srv.Config.Auth {
+	case store.AuthOAuth:
+		return srv.Config.OAuth != nil
+	case store.AuthKey:
+		return srv.Config.Key != nil
+	}
+	return false
+}
+
+// personalServers lists the servers u may bring their own credential to.
+func (s *Server) personalServers(ctx context.Context, u store.User) ([]store.Server, error) {
 	all, err := s.o.Store.ListServers(ctx, s.o.Org)
 	if err != nil {
 		return nil, err
 	}
 	var out []store.Server
 	for _, srv := range all {
-		if srv.Config.Auth != store.AuthOAuth || srv.Config.OAuth == nil {
+		if !connectable(srv) {
 			continue
 		}
 		ok, err := s.mayConnect(ctx, u, srv)
@@ -186,7 +201,7 @@ func (s *Server) connectTarget(w http.ResponseWriter, r *http.Request, sess stor
 		return store.Server{}, false
 	}
 	srv, err := s.o.Store.ServerByAlias(r.Context(), s.o.Org, alias)
-	if err == nil && (srv.Config.Auth != store.AuthOAuth || srv.Config.OAuth == nil) {
+	if err == nil && !connectable(srv) {
 		err = store.ErrNotFound
 	}
 	if err == nil {
@@ -218,12 +233,57 @@ func (s *Server) connectPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if srv.Config.Auth == store.AuthKey {
+		_, err := s.o.Store.Grant(r.Context(), s.o.Org, srv.ID, u.ID)
+		k := srv.Config.Key
+		s.render(w, http.StatusOK, "connectkey", pageData{Title: srv.Alias + " API key", User: view(u), CSRF: sess.CSRF,
+			Server: srv.Alias, AuthHost: hostOf(srv.Config.URL), KeyHelp: k.Help, KeyHelpURL: k.HelpURL, Connected: err == nil})
+		return
+	}
 	o := srv.Config.OAuth
 	if au, err := url.Parse(o.AuthorizationEndpoint); err == nil && au.Host != "" {
 		w.Header().Set("Content-Security-Policy", formActionRe.ReplaceAllString(s.csp, "form-action 'self' "+originOf(au)+";"))
 	}
 	s.render(w, http.StatusOK, "connect", pageData{Title: "Connect " + srv.Alias, User: view(u), CSRF: sess.CSRF,
 		Server: srv.Alias, AuthHost: hostOf(o.AuthorizationEndpoint), Scopes: strings.Join(o.Scopes, " ")})
+}
+
+// connectKey saves a person's own API key for a server that takes one (ADR
+// 0023). The key is checked for shape only: Privo does not call the server
+// to try it, so a mistyped key shows up on the first call, with the address
+// to enter a new one.
+func (s *Server) connectKey(w http.ResponseWriter, r *http.Request) {
+	sess, u, ok := s.guarded(w, r)
+	if !ok {
+		return
+	}
+	srv, ok := s.connectTarget(w, r, sess, u)
+	if !ok {
+		return
+	}
+	if srv.Config.Auth != store.AuthKey {
+		s.pageFor(w, http.StatusNotFound, sess, u, "No such server", "There is no server with that name that takes your own key.")
+		return
+	}
+	key := strings.TrimSpace(r.PostForm.Get("key"))
+	if !grants.ValidKey(key) {
+		s.pageFor(w, http.StatusBadRequest, sess, u, "That key cannot be used",
+			"An API key is printable characters without spaces, at most 4096. Nothing was saved.")
+		return
+	}
+	ev := s.event("upstream.connect:"+srv.Alias, u.Person, "user:"+u.ID, "allow", "ok")
+	ev.Server = srv.Alias
+	g, err := s.o.Grants.SaveKey(r.Context(), s.o.Org, srv, u, key, s.principal(u).Can(auth.PermManageServers), ev)
+	if err != nil {
+		s.log.Error("web: save key", "server", srv.Alias, "err", err)
+		s.connectFailed(w, http.StatusInternalServerError, "Something went wrong on the server. Nothing was saved.")
+		return
+	}
+	s.o.Upstream.ClosePerson(srv.ID, u.ID)
+	if g.Catalog {
+		s.o.Upstream.Kick(srv.ID)
+	}
+	redirect(w, "/admin/connections?result=connected")
 }
 
 func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +293,10 @@ func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
 	}
 	srv, ok := s.connectTarget(w, r, sess, u)
 	if !ok {
+		return
+	}
+	if srv.Config.Auth != store.AuthOAuth {
+		s.pageFor(w, http.StatusNotFound, sess, u, "No such server", "There is no server with that name that uses sign-in with your own account.")
 		return
 	}
 	e, err := s.o.Grants.Endpoint(r.Context(), s.o.Org, srv)
@@ -302,8 +366,10 @@ func (s *Server) connectCallbackHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	// Mix-up defence (RFC 9207): an iss that differs is always refused; a
 	// missing one only when the authorization server promised to send it.
+	// Settings entered by hand without an issuer (ADR 0023) have nothing to
+	// compare with; the state still binds the answer to this server.
 	iss, hasIss := q["iss"]
-	if (hasIss && (len(iss) != 1 || iss[0] != st.Issuer)) || (!hasIss && srv.Config.OAuth.IssParameter) {
+	if st.Issuer != "" && ((hasIss && (len(iss) != 1 || iss[0] != st.Issuer)) || (!hasIss && srv.Config.OAuth.IssParameter)) {
 		s.log.Warn("web: connect callback from an unexpected issuer", "server", srv.Alias)
 		s.connectFailed(w, http.StatusBadRequest, "The answer did not come from the server's own sign-in.")
 		return

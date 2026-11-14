@@ -130,3 +130,33 @@ func TestAuditRecordsWhoseAccountACallRanAs(t *testing.T) {
 		t.Fatalf("users in the audit: %v", got)
 	}
 }
+
+// A grant is an OAuth grant or a person's own key (ADR 0023): a grant row that
+// points at a credential of any other purpose (a server's shared header, say)
+// is never handed out as a person's credential.
+func TestGrantCredentialMustBeAGrant(t *testing.T) {
+	ctx := context.Background()
+	s, org := signinOrg(t)
+	u := member(t, s, org, "1", "ada", RoleMember)
+	srv := Server{OrgID: org, ID: "srv-x", Alias: "x", Transport: "http", Enabled: true, CreatedAt: t0, Config: ServerConfig{URL: "https://x.example/mcp", Auth: AuthKey, Key: &ServerKey{Header: "Authorization"}}}
+	shared := Credential{ID: "cred-shared", ServerID: "srv-x", Purpose: "header:Authorization", KeyVersion: 1, RowVersion: 1, Ciphertext: []byte("sealed")}
+	if err := s.CreateServer(ctx, srv, []Credential{shared}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.w.Exec(`INSERT INTO upstream_grants (org_id, server_id, user_id, credential_id, scopes, catalog, connected_at, last_used_at, refreshed_at) VALUES (?, ?, ?, ?, '', 1, ?, ?, ?)`,
+		org, "srv-x", u.ID, "cred-shared", ts(t0), ts(t0), ts(t0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Grant(ctx, org, "srv-x", u.ID); err == nil {
+		t.Error("a shared header was handed out as a person's grant")
+	}
+	if _, err := s.CatalogGrant(ctx, org, "srv-x"); err == nil {
+		t.Error("a shared header was handed out as the catalog grant")
+	}
+	for _, purpose := range []string{"header:X", "env:Y", PurposeOAuthClient} {
+		bad := Grant{ServerID: "srv-x", UserID: u.ID, ConnectedAt: t0, Credential: Credential{ID: "c-" + purpose, ServerID: "srv-x", OwnerID: u.ID, Purpose: purpose, KeyVersion: 1, RowVersion: 1, Ciphertext: []byte("x")}}
+		if _, err := s.SaveGrant(ctx, org, bad, false, AuditEvent{ID: "e-" + purpose, CallID: "e", Time: t0, Actor: "t", Action: "x", Decision: "allow", Outcome: "ok"}); err == nil {
+			t.Errorf("a credential of purpose %q was saved as a grant", purpose)
+		}
+	}
+}
