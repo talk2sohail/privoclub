@@ -21,7 +21,7 @@ export type Pin = {
   name: string;
   hash: string;
   status: string;
-  definition: { description?: string; title?: string } | null;
+  definition: { description?: string; title?: string; [key: string]: unknown } | null;
 };
 
 export type ServerConnection = {

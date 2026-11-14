@@ -27,3 +27,10 @@ form.row { margin-top: 8px; }
 .client-setup .tabs { margin-bottom: 4px; }
 h3 { font-size: 1rem; margin: 16px 0 8px; }
 table.list tr.current td { background: var(--code-bg); }
+/* Tool review (F14 R-01): the whole definition, as text. */
+.definition .description { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0 0 6px; }
+.definition .changed { font-weight: 600; margin: 0 0 6px; }
+.definition pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24rem; overflow: auto; background: var(--code-bg); padding: 8px; border-radius: 6px; font-size: 0.85rem; }
+.definition .diff .add { color: var(--ok); }
+.definition .diff .del { color: var(--danger); text-decoration: line-through; }
+
