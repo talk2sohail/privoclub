@@ -472,7 +472,7 @@ describe("AI clients that signed in with OAuth", () => {
 
 describe("activity", () => {
   it("names the member a client acted as, as text", async () => {
-    at("/admin/activity");
+    at("/admin/activity?view=calls");
     await start(session("owner"), {
       "GET /admin/api/v1/audit/events?limit=100": {
         events: [{ time: "2026-11-14T10:00:00Z", actor: "Claude Code", user: evil, client: "Claude Code", server: "linear", item: "whoami", action: "tools/call", decision: "allow", outcome: "ok", approved_by: "" }],
@@ -490,6 +490,59 @@ describe("activity", () => {
       },
     });
     await screen.findByText("for ada");
+  });
+});
+
+describe("activity overview and log (ADR 0024)", () => {
+  const stats = (p50: number) => ({ p50, p95: p50 * 2, p99: p50 * 3, min: 0, max: p50 * 4, avg: p50 });
+  const group = (key: string, calls: number, errors: number) => ({
+    key, calls, ok: calls - errors, tool_errors: 0, errors, refused: 0, error_rate: errors / calls,
+    total_ms: stats(12), decide_ms: stats(0.1), audit_ms: stats(0.5), connect_ms: stats(1), upstream_ms: stats(10),
+    args_bytes: stats(20), result_bytes: stats(2048),
+  });
+
+  it("is the default tab: totals, a chart and the breakdown, with names as text", async () => {
+    at("/admin/activity");
+    await start(session("owner"), {
+      "GET /admin/api/v1/telemetry/summary?window=24h&by=server": {
+        window: "24h0m0s", by: "server", total: group("", 12, 1), groups: [group(evil, 10, 0), group("linear", 2, 1)], truncated: false, recording: true,
+      },
+      "GET /admin/api/v1/telemetry/timeseries?window=24h": {
+        bucket: "30m0s", truncated: false,
+        buckets: [{ start: "2026-11-14T10:00:00Z", calls: 12, errors: 1, tool_errors: 0, refused: 0, p50_ms: 12, p95_ms: 24 }],
+      },
+      "GET /admin/api/v1/telemetry/storage": { recording: true, retention_days: 30, calls: 12, oldest_call: "2026-11-01T00:00:00Z", logs: 1, oldest_log: null, dropped: 0 },
+    });
+    await screen.findByText(evil);
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByText("linear")).toBeTruthy();
+    expect(screen.getByRole("img", { name: "12 calls, 1 failed, over 1 intervals" })).toBeTruthy();
+    expect(screen.getAllByText("2.0 KB").length).toBe(2);
+    await screen.findByText(/Kept for 30 days/);
+  });
+
+  it("says when statistics are off", async () => {
+    at("/admin/activity?view=overview&window=7d&by=member");
+    await start(session("owner"), {
+      "GET /admin/api/v1/telemetry/summary?window=7d&by=member": { window: "168h0m0s", by: "member", total: group("", 0, 0), groups: [], labels: {}, truncated: false, recording: false },
+      "GET /admin/api/v1/telemetry/timeseries?window=7d": { bucket: "6h0m0s", buckets: [], truncated: false },
+      "GET /admin/api/v1/telemetry/storage": { recording: false, retention_days: 0, calls: 0, oldest_call: null, logs: 0, oldest_log: null, dropped: 0 },
+    });
+    await screen.findByText(/Call statistics are off/);
+    expect(screen.getByText("No calls in this window.")).toBeTruthy();
+  });
+
+  it("shows the log with repeats, as text", async () => {
+    at("/admin/activity?view=log");
+    await start(session("owner"), {
+      "GET /admin/api/v1/telemetry/logs?limit=200": {
+        logs: [{ id: "d1", time: "2026-11-14T10:00:00Z", level: "warn", category: "upstream", server: "linear", message: evil, repeats: 3 }],
+      },
+    });
+    await screen.findByText(evil);
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByText("×3")).toBeTruthy();
+    expect(screen.getByText("Connections", { selector: "td" })).toBeTruthy();
   });
 });
 

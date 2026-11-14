@@ -61,6 +61,13 @@
 #backup_keep: 7
 #backup_dir: ./data/backups
 
+# Call statistics and the diagnostic log behind the Activity page (ADR 0024),
+# kept this many days; 0 records none. Nothing leaves the server.
+#telemetry_retention_days: 30
+# Prometheus metrics at /metrics on their own listener. Off unless set. They
+# have no sign-in: use localhost or an internal network, never the public port.
+#metrics_addr: 127.0.0.1:9464
+
 # Signing in to the admin site with GitHub (ADR 0016). Create an OAuth App in
 # GitHub (callback URL: <public_url>/auth/github/callback), put its client ID
 # here and its secret in a file. Web sign-in is on only when the ID, the secret

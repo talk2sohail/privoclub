@@ -30,6 +30,7 @@ import (
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/safe"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/vault"
 )
 
@@ -97,6 +98,10 @@ type Options struct {
 	Grants   GrantSource
 	PoolIdle time.Duration // a per-person session closes after this long unused: default 5 min
 	PoolCap  int           // per-person sessions kept at most: default 500
+
+	// Diagnostics receives connection events for the diagnostic log (ADR
+	// 0024); nil records none.
+	Diagnostics *telemetry.Recorder
 }
 
 // Manager supervises upstream connections for every org.
@@ -315,10 +320,14 @@ func (m *Manager) Session(org store.OrgID, serverID string) (*mcp.ClientSession,
 func (m *Manager) supervise(ctx context.Context, e *entry) {
 	defer close(e.done)
 	attempt := 0
+	wasDown := false
 	for {
 		session, release, err := m.connect(ctx, e)
 		if err == nil {
 			attempt = 0
+			if wasDown {
+				m.diagnose(e, store.LevelInfo, "connected again")
+			}
 			_ = session.Wait() // returns when the connection ends
 			release()
 			if ctx.Err() != nil {
@@ -326,6 +335,7 @@ func (m *Manager) supervise(ctx context.Context, e *entry) {
 			}
 			e.setDown("connection closed")
 			m.opts.Logger.Warn("upstream disconnected", "server", e.srv.Alias)
+			m.diagnose(e, store.LevelWarn, "connection closed")
 		} else {
 			if ctx.Err() != nil {
 				return
@@ -333,7 +343,9 @@ func (m *Manager) supervise(ctx context.Context, e *entry) {
 			msg := redactError(err.Error(), e.srv.Config.URL)
 			e.setDown(msg)
 			m.opts.Logger.Warn("upstream connect failed", "server", e.srv.Alias, "err", msg)
+			m.diagnose(e, store.LevelWarn, "connection failed: "+msg)
 		}
+		wasDown = true
 		delay := m.opts.RetryBase << min(attempt, 10)
 		if delay > m.opts.RetryMax || delay <= 0 {
 			delay = m.opts.RetryMax
@@ -347,6 +359,34 @@ func (m *Manager) supervise(ctx context.Context, e *entry) {
 			attempt = 0
 		}
 	}
+}
+
+// diagnose writes a connection event of e's server to the diagnostic log. msg
+// must already be redacted.
+func (m *Manager) diagnose(e *entry, level, msg string) {
+	m.opts.Diagnostics.Diagnose(e.org, store.Diagnostic{Level: level, Category: store.CategoryUpstream, Server: e.srv.Alias, Message: msg})
+}
+
+// UpstreamStates is each shared connection's state for the metrics: a server
+// is up when its shared connection is. Servers where each person uses their
+// own account have no shared connection and are left out.
+func (m *Manager) UpstreamStates() []telemetry.UpstreamState {
+	m.mu.Lock()
+	entries := make([]*entry, 0, len(m.entries))
+	for _, e := range m.entries {
+		entries = append(entries, e)
+	}
+	m.mu.Unlock()
+	out := make([]telemetry.UpstreamState, 0, len(entries))
+	for _, e := range entries {
+		if e.srv.Config.PerPerson() {
+			continue
+		}
+		e.mu.Lock()
+		out = append(out, telemetry.UpstreamState{Server: e.srv.Alias, Up: e.state.Status == StatusUp})
+		e.mu.Unlock()
+	}
+	return out
 }
 
 func (e *entry) setDown(msg string) {
@@ -449,7 +489,9 @@ func (m *Manager) scheduleLoad(ctx context.Context, e *entry, s *mcp.ClientSessi
 				err := m.load(lctx, e, s)
 				cancel()
 				if err != nil {
-					m.opts.Logger.Warn("upstream refresh failed", "server", e.srv.Alias, "err", redactError(err.Error(), e.srv.Config.URL))
+					msg := redactError(err.Error(), e.srv.Config.URL)
+					m.opts.Logger.Warn("upstream refresh failed", "server", e.srv.Alias, "err", msg)
+					m.diagnose(e, store.LevelWarn, "refreshing the list of tools failed: "+msg)
 				}
 			}
 			e.loading.Store(false)

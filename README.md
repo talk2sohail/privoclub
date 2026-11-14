@@ -45,6 +45,8 @@ curl localhost:8080/livez
 | `PRIVO_BACKUP_INTERVAL` | unset (off) | Write a database snapshot this often (`24h`); see `docs/deploy-coolify.md`, Backups |
 | `PRIVO_BACKUP_KEEP` | `7` | Snapshots to keep (1 to 1000) |
 | `PRIVO_BACKUP_DIR` | `<data dir>/backups` | Where snapshots go |
+| `PRIVO_TELEMETRY_RETENTION_DAYS` | `30` | How long call statistics and the diagnostic log behind the Activity page are kept, 0 to 400 days; `0` records none (ADR 0024). Nothing leaves the server |
+| `PRIVO_METRICS_ADDR` | unset (off) | Serve Prometheus metrics at `/metrics` on this address, such as `127.0.0.1:9464`. No sign-in: keep it private (localhost or an internal network), never the public port |
 | `PRIVO_TOKEN_TTL` | `2160h` | Default personal token lifetime |
 | `PRIVO_UPSTREAM_RETRY_BASE` / `PRIVO_UPSTREAM_RETRY_MAX` | `2s` / `30s` | Backoff bounds when an upstream server drops and is reconnected |
 | `PRIVO_RUNNER` / `PRIVO_INSECURE_LOCAL_RUNNER` | unset | Stdio servers: empty refuses them; `local` runs them unisolated on this host and needs `PRIVO_INSECURE_LOCAL_RUNNER=i-understand` (development only, ADR 0007) |
@@ -266,6 +268,35 @@ that member: their teams' servers and their own accounts.
   addresses only, through the egress policy).
 
 Personal tokens keep working for clients without OAuth and for scripts.
+
+## Activity: how calls went (0.10.0)
+
+**Activity → Overview** shows, for the last hour, day, week or month: how many
+calls there were, how many failed, were tool errors or were refused, the
+median and p95 time, a chart over the window, and a table by server, tool,
+member or client with p50/p95/p99, the time spent getting the server's session
+(including a sign-in refresh), the time the server itself took, and the
+average size of what it sent back (what the model reads). **Log** lists what
+happened to connections, sign-ins and keys, the audit and the process: a
+server that failed to connect and came back, a grant the provider refused, a
+person's key the server refused; the same event within a minute is one line
+with a count. **Tool calls** and **Admin changes** are the audit as before.
+
+These statistics are kept apart from the audit (ADR 0024): one row per call
+with its phases and sizes, never its arguments, result or error text. They are
+best effort (a full queue drops a row and counts it rather than slow a call),
+kept `PRIVO_TELEMETRY_RETENTION_DAYS` days (30 by default; `0` turns them off),
+and nothing leaves the server. Owners, admins and auditors see them, like the
+audit. The same figures come from the admin API under `/api/v1/telemetry/`
+(`summary`, `timeseries`, `calls`, `logs`, `storage`).
+
+For Prometheus and Grafana, set `PRIVO_METRICS_ADDR=127.0.0.1:9464` (or an
+address on an internal network): `/metrics` there gives
+`privo_mcp_calls_total{server,method,outcome}`,
+`privo_mcp_call_duration_seconds` (a histogram by server and method),
+`privo_upstream_up{server}`, `privo_audit_events_lost_total`,
+`privo_telemetry_dropped_total` and `privo_build_info`. It has no sign-in, so
+it never shares the public port.
 
 ## Tokens
 

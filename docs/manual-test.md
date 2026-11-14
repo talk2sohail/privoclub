@@ -162,3 +162,18 @@ proxy that checks a header will do.
 4. **Activity → Admin changes**: `server.personal_key:<name>:<header>` and
    `upstream.connect:<name>` for each person.
 
+## 12. Activity statistics and the log (needs 0.10.0+)
+
+1. Make a few calls from an AI client (one that works, and one to a tool a
+   rule denies, if you have one).
+2. **Activity**: the Overview is the first tab. Expect the calls counted,
+   the refused one under Refused, a bar in the chart, and the server in the
+   table with its median and p95. Switch **by tool** and **by member**: your
+   name appears, not an id.
+3. **Log**: expect "Privo 0.10.0 started" under Start and stop. Stop an
+   upstream server (or give it a wrong URL) and wait a minute: expect
+   "connection failed" with a count, and "connected again" once it is back.
+4. At the bottom of the Overview: "Kept for 30 days", and no "not recorded".
+5. Optional: with `PRIVO_METRICS_ADDR=127.0.0.1:9464`, `curl
+   127.0.0.1:9464/metrics` in the container shows `privo_mcp_calls_total`;
+   `https://<your domain>/metrics` does not.

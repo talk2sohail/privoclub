@@ -34,3 +34,17 @@ table.list tr.current td { background: var(--code-bg); }
 .definition .diff .add { color: var(--ok); }
 .definition .diff .del { color: var(--danger); text-decoration: line-through; }
 
+/* Activity overview (ADR 0024). */
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 0 0 16px; }
+.cards .stat { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--card); }
+.cards dt { color: var(--muted); font-size: 0.85rem; }
+.cards dd { margin: 2px 0 0; font-size: 1.3rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+svg.chart { width: 100%; height: 120px; display: block; margin: 0 0 16px; border-bottom: 1px solid var(--line); }
+svg.chart .calls { fill: var(--accent); opacity: 0.55; }
+svg.chart .errors { fill: var(--danger); }
+table.list tr.level-error td:nth-child(2) { color: var(--danger); font-weight: 600; }
+table.list tr.level-warn td:nth-child(2) { font-weight: 600; }
+@media (max-width: 640px) {
+  table.list.stats td[data-label] { display: flex; justify-content: space-between; }
+  table.list.stats td[data-label]::before { content: attr(data-label); color: var(--muted); }
+}

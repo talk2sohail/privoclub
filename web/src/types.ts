@@ -178,3 +178,58 @@ export type OAuthClient = {
   authorized_at?: string;
   grants: number;
 };
+
+/** Durations in milliseconds, or sizes in bytes (ADR 0024). */
+export type Stats = { p50: number; p95: number; p99: number; min: number; max: number; avg: number };
+
+export type StatGroup = {
+  key: string;
+  calls: number;
+  ok: number;
+  tool_errors: number;
+  errors: number;
+  refused: number;
+  error_rate: number;
+  total_ms: Stats;
+  decide_ms: Stats;
+  audit_ms: Stats;
+  connect_ms: Stats;
+  upstream_ms: Stats;
+  args_bytes: Stats;
+  result_bytes: Stats;
+};
+
+export type StatSummary = {
+  window: string;
+  by: string;
+  total: StatGroup;
+  groups: StatGroup[];
+  labels?: Record<string, string>;
+  truncated: boolean;
+  recording: boolean;
+};
+
+export type StatBucket = { start: string; calls: number; errors: number; tool_errors: number; refused: number; p50_ms: number; p95_ms: number };
+
+export type StatSeries = { bucket: string; buckets: StatBucket[]; truncated: boolean };
+
+export type TelemetryStorage = {
+  recording: boolean;
+  retention_days: number;
+  calls: number;
+  oldest_call: string | null;
+  logs: number;
+  oldest_log: string | null;
+  dropped: number;
+};
+
+export type LogEntry = {
+  id: string;
+  time: string;
+  level: string;
+  category: string;
+  server?: string;
+  member?: string;
+  message: string;
+  repeats: number;
+};

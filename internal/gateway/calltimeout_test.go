@@ -17,15 +17,15 @@ import (
 // without a completion) and a goroutine for as long as the client waits.
 func TestCallUpstreamTimeout(t *testing.T) {
 	c := call{item: upstream.Item{Alias: "slow"}, action: "tools/call"}
-	waitForCancel := func(ctx context.Context, _ *mcp.ClientSession) (string, error) {
+	waitForCancel := func(ctx context.Context, _ *mcp.ClientSession) (string, any, error) {
 		<-ctx.Done()
-		return "error", ctx.Err()
+		return "error", nil, ctx.Err()
 	}
 
 	t.Run("an upstream that does not answer in time", func(t *testing.T) {
 		g := &Gateway{CallTimeout: 50 * time.Millisecond}
 		start := time.Now()
-		outcome, err := g.callUpstream(context.Background(), c, nil, waitForCancel)
+		outcome, _, err := g.callUpstream(context.Background(), c, nil, waitForCancel)
 		if !errors.Is(err, errCallTimeout) {
 			t.Fatalf("error %v, want errCallTimeout", err)
 		}
@@ -43,28 +43,28 @@ func TestCallUpstreamTimeout(t *testing.T) {
 		g := &Gateway{CallTimeout: time.Minute}
 		ctx, cancel := context.WithCancel(context.Background())
 		time.AfterFunc(20*time.Millisecond, cancel)
-		_, err := g.callUpstream(ctx, c, nil, waitForCancel)
+		_, _, err := g.callUpstream(ctx, c, nil, waitForCancel)
 		if err == nil || errors.Is(err, errCallTimeout) || !errors.Is(err, context.Canceled) {
 			t.Fatalf("error %v, want context.Canceled and not a timeout", err)
 		}
 	})
 	t.Run("a call that answers in time is left alone", func(t *testing.T) {
 		g := &Gateway{CallTimeout: time.Minute}
-		outcome, err := g.callUpstream(context.Background(), c, nil, func(context.Context, *mcp.ClientSession) (string, error) { return "ok", nil })
+		outcome, _, err := g.callUpstream(context.Background(), c, nil, func(context.Context, *mcp.ClientSession) (string, any, error) { return "ok", nil, nil })
 		if outcome != "ok" || err != nil {
 			t.Fatalf("got %q, %v", outcome, err)
 		}
 		own := errors.New("upstream said no")
-		_, err = g.callUpstream(context.Background(), c, nil, func(context.Context, *mcp.ClientSession) (string, error) { return "error", own })
+		_, _, err = g.callUpstream(context.Background(), c, nil, func(context.Context, *mcp.ClientSession) (string, any, error) { return "error", nil, own })
 		if !errors.Is(err, own) || errors.Is(err, errCallTimeout) {
 			t.Fatalf("an error before the deadline became %v", err)
 		}
 	})
 	t.Run("an answer that arrives after the deadline is still an answer", func(t *testing.T) {
 		g := &Gateway{CallTimeout: 10 * time.Millisecond}
-		outcome, err := g.callUpstream(context.Background(), c, nil, func(context.Context, *mcp.ClientSession) (string, error) {
+		outcome, _, err := g.callUpstream(context.Background(), c, nil, func(context.Context, *mcp.ClientSession) (string, any, error) {
 			time.Sleep(40 * time.Millisecond) // does not look at ctx
-			return "ok", nil
+			return "ok", nil, nil
 		})
 		if outcome != "ok" || err != nil {
 			t.Fatalf("got %q, %v", outcome, err)
@@ -72,11 +72,11 @@ func TestCallUpstreamTimeout(t *testing.T) {
 	})
 	t.Run("no limit configured: no deadline", func(t *testing.T) {
 		g := &Gateway{}
-		_, _ = g.callUpstream(context.Background(), c, nil, func(ctx context.Context, _ *mcp.ClientSession) (string, error) {
+		_, _, _ = g.callUpstream(context.Background(), c, nil, func(ctx context.Context, _ *mcp.ClientSession) (string, any, error) {
 			if _, ok := ctx.Deadline(); ok {
 				t.Error("a deadline was set although none is configured")
 			}
-			return "ok", nil
+			return "ok", nil, nil
 		})
 	})
 }

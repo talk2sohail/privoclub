@@ -32,6 +32,7 @@ import (
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/token"
 	"privo.club/privo/internal/upstream"
 	"privo.club/privo/internal/upstreamauth"
@@ -61,7 +62,11 @@ type API struct {
 	// while PRIVO_OAUTH_SERVER is off.
 	AuthServer *oauthserver.Server
 	Clients    *oauthserver.Clients
-	in         internal // the mux of in-process calls (Serve)
+	// Call statistics and the diagnostic log (ADR 0024). The endpoints answer
+	// with empty data while retention is 0 (recording off).
+	Telemetry              *telemetry.Recorder
+	TelemetryRetentionDays int
+	in                     internal // the mux of in-process calls (Serve)
 }
 
 // ConnectWait bounds how long registration waits for the first connection.
@@ -103,6 +108,7 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("PATCH /api/v1/settings/approvals", wrap(auth.PermManagePolicy, a.patchApprovalSettings))
 	mux.Handle("GET /api/v1/audit/events", wrap(auth.PermReadAudit, a.listAudit))
 	mux.Handle("PATCH /api/v1/settings/audit", wrap(auth.PermManageAudit, a.patchAuditSettings))
+	a.telemetryRoutes(mux, wrap)
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, p auth.Principal) error

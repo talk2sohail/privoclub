@@ -38,6 +38,7 @@ import (
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/safe"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstream"
 	"privo.club/privo/internal/vault"
 )
@@ -79,6 +80,8 @@ type Gateway struct {
 	// CallTimeout is how long one call to an upstream server may take; zero
 	// means no limit (R-04). It starts once the call is allowed and approved.
 	CallTimeout time.Duration
+	// Telemetry records how each call went (ADR 0024); nil records nothing.
+	Telemetry *telemetry.Recorder
 }
 
 // Handler returns the authenticated MCP HTTP handler.
@@ -279,7 +282,10 @@ type call struct {
 
 // refusal is a call stopped by policy or by a person; its message is shown
 // to the model as a tool error.
-type refusal struct{ msg string }
+type refusal struct {
+	msg   string
+	class string // the error class of the call statistic (ADR 0024)
+}
 
 func (r *refusal) Error() string { return r.msg }
 
@@ -319,23 +325,23 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	case store.ActionDeny:
 		g.recordRefusal(ctx, c, callID, store.ActionDeny, "denied:"+dec.Reason)
 		// The model gets no rule details: they would help it probe the policy.
-		return decision{}, &refusal{msg: "Denied by your organisation's Privo policy."}
+		return decision{}, &refusal{msg: "Denied by your organisation's Privo policy.", class: "denied"}
 	}
 	if c.action != "tools/call" {
 		// Approvals cover tool calls; for prompts and resources "ask" fails closed.
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "denied:approval not supported for "+c.action)
-		return decision{}, &refusal{msg: "Denied by your organisation's Privo policy."}
+		return decision{}, &refusal{msg: "Denied by your organisation's Privo policy.", class: "denied"}
 	}
 	if g.Approval == nil {
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "approvals_unavailable")
-		return decision{}, &refusal{msg: "This call needs approval, but approvals are not configured."}
+		return decision{}, &refusal{msg: "This call needs approval, but approvals are not configured.", class: "approvals_unavailable"}
 	}
 	out, err := g.Approval.Gate(ctx, approval.Request{Org: c.p.OrgID, RequesterID: c.p.TokenID, RequesterName: c.p.Name,
 		RequesterPerson: c.p.Person, ServerID: c.item.ServerID, ServerAlias: c.item.Alias, Tool: c.item.Name, ArgsDigest: digest,
 		Args: c.args, Reason: dec.Reason})
 	if errors.Is(err, approval.ErrTooManyPending) {
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "too_many_pending")
-		return decision{}, &refusal{msg: "Too many of your calls are already waiting for approval. Wait for decisions before asking again."}
+		return decision{}, &refusal{msg: "Too many of your calls are already waiting for approval. Wait for decisions before asking again.", class: "too_many_pending"}
 	}
 	if err != nil {
 		return decision{}, err
@@ -345,12 +351,12 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 		return decision{label: "approved:" + out.ID, approvalID: out.ID, approvedBy: out.DecidedBy}, nil
 	case approval.Denied:
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "denied_by_approver")
-		return decision{}, &refusal{msg: "A person denied this exact call. Do not retry it unchanged."}
+		return decision{}, &refusal{msg: "A person denied this exact call. Do not retry it unchanged.", class: "denied_by_approver"}
 	}
 	g.recordRefusal(ctx, c, callID, store.ActionAsk, "pending_approval")
 	return decision{}, &refusal{msg: fmt.Sprintf("Approval required: request %s is waiting for a person in Privo (%s/approvals/%s). "+
 		"Tell the user, then retry exactly the same call with the same arguments once it is approved. It expires at %s.",
-		out.ID, g.BaseURL, out.ID, out.ExpiresAt.UTC().Format("15:04 UTC"))}
+		out.ID, g.BaseURL, out.ID, out.ExpiresAt.UTC().Format("15:04 UTC")), class: "pending_approval"}
 }
 
 // recordRefusal writes an intent and its completion for a call that did not run.
@@ -368,16 +374,32 @@ func (g *Gateway) recordRefusal(ctx context.Context, c call, callID, decision, o
 	}
 }
 
-// run executes the pipeline stages around do and records the outcome.
-func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp.ClientSession) (outcome string, err error)) error {
+// run executes the pipeline stages around do and records the outcome: the
+// audit (who did what, ADR 0006) and the call statistic (how it went, ADR
+// 0024). do returns the outcome and the result it relays.
+func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp.ClientSession) (outcome string, result any, err error)) error {
 	callID := ids.New()
+	arrived := time.Now()
+	st := store.CallStat{ID: callID, Time: arrived, UserID: c.p.UserID, TokenID: c.p.TokenID, Client: c.p.Client, Server: c.item.Alias,
+		Method: c.action, Item: c.item.Name, ArgsBytes: int64(len(c.args))}
+	record := func(outcome, class string) {
+		st.Outcome, st.ErrorClass, st.TotalUS = outcome, class, time.Since(arrived).Microseconds()
+		g.Telemetry.Call(c.p.OrgID, st)
+	}
 	// c.args is already the canonical form; it is what gets hashed, approved
 	// and sent upstream (ADR 0001 stage 7).
 	sum := sha256.Sum256(c.args)
 	digest := hex.EncodeToString(sum[:])
 
 	dec, err := g.decide(ctx, c, digest, callID)
+	st.DecideUS = time.Since(arrived).Microseconds()
 	if err != nil {
+		var r *refusal
+		if errors.As(err, &r) {
+			record(store.OutcomeRefused, r.class)
+		} else {
+			record(store.OutcomeError, "internal")
+		}
 		return err
 	}
 	// If the call cannot start after an approval was consumed, put it back.
@@ -392,6 +414,7 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	payload, err := g.argumentsPayload(ctx, c, callID)
 	if err != nil {
 		restore()
+		record(store.OutcomeError, "internal")
 		return err
 	}
 	start := time.Now()
@@ -400,20 +423,97 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	if err := g.Audit.Intent(ctx, c.p.OrgID, intent); err != nil {
 		restore()
 		g.Logger.Error("audit intent failed; refusing call", "err", err)
+		st.AuditUS = time.Since(start).Microseconds()
+		record(store.OutcomeError, "audit_unavailable")
+		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelError, Category: store.CategoryAudit,
+			Message: "the audit record could not be written, so calls are refused"})
 		return errors.New("audit unavailable; call refused")
 	}
+	st.AuditUS = time.Since(start).Microseconds()
 
 	outcome := "error"
+	var result any
+	connecting := time.Now()
 	session, err := g.session(ctx, c)
+	st.ConnectUS = time.Since(connecting).Microseconds()
 	if err == nil {
-		outcome, err = g.callUpstream(ctx, c, session, do)
+		calling := time.Now()
+		outcome, result, err = g.callUpstream(ctx, c, session, do)
+		st.UpstreamUS = time.Since(calling).Microseconds()
 	}
 	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Outcome: outcome, LatencyMS: time.Since(start).Milliseconds()}
 	if aerr := g.Audit.Completion(ctx, c.p.OrgID, completion); aerr != nil {
 		g.Logger.Error("audit completion not queued", "err", aerr)
 	}
+	class := errorClass(err)
+	if class == "key_refused" {
+		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: c.item.Alias,
+			UserID: c.p.UserID, Message: "the server refused a member's own API key"})
+	}
+	if g.Telemetry != nil && err == nil && result != nil {
+		st.TotalUS = time.Since(arrived).Microseconds() // before the size is measured
+		st.ResultBytes = encodedSize(result)
+		st.Outcome, st.ErrorClass = statOutcome(outcome), ""
+		g.Telemetry.Call(c.p.OrgID, st)
+	} else {
+		if err != nil {
+			outcome = store.OutcomeError
+		}
+		record(statOutcome(outcome), class)
+	}
 	return g.clientFacing(c, err)
+}
+
+// statOutcome maps the audit outcome of a call that ran to a statistic's.
+func statOutcome(outcome string) string {
+	switch outcome {
+	case store.OutcomeOK, store.OutcomeToolError:
+		return outcome
+	}
+	return store.OutcomeError
+}
+
+// errorClass is the fixed class of a failed call for its statistic (ADR 0024
+// point 2): never the error's text, which can hold an upstream URL.
+func errorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	var acct *accountError
+	var rpc *jsonrpc.Error
+	switch {
+	case errors.As(err, &acct):
+		return acct.class
+	case errors.Is(err, grants.ErrKeyRefused):
+		return "key_refused"
+	case errors.Is(err, grants.ErrNotConnected):
+		return "not_connected"
+	case errors.Is(err, errCallTimeout):
+		return "timeout"
+	case errors.Is(err, upstream.ErrUnavailable):
+		return "unavailable"
+	case errors.Is(err, errMalformedReply), errors.Is(err, errNeedsInput):
+		return "malformed"
+	case errors.As(err, &rpc) && !sdkLocalCode(rpc.Code):
+		return "upstream_error"
+	}
+	return "transport"
+}
+
+// byteCounter counts what is written to it and keeps nothing.
+type byteCounter int64
+
+func (b *byteCounter) Write(p []byte) (int, error) { *b += byteCounter(len(p)); return len(p), nil }
+
+// encodedSize is the size of v in JSON, as relayed to the client: what the
+// result costs in the model's context (F17).
+func encodedSize(v any) int64 {
+	var n byteCounter
+	if err := json.NewEncoder(&n).Encode(v); err != nil {
+		return 0
+	}
+	return int64(n) - 1 // Encode adds a line feed
 }
 
 // session picks the upstream session for a call: the server's shared one, or,
@@ -458,7 +558,10 @@ func (g *Gateway) grantOwner(ctx context.Context, c call) (string, error) {
 
 // accountError is a call that needs the person to act in the browser first. Its
 // text is fixed and safe to show to the AI client and the person.
-type accountError struct{ msg string }
+type accountError struct {
+	msg   string
+	class string // no_account, not_connected or key_refused (ADR 0024)
+}
 
 func (e *accountError) Error() string { return e.msg }
 
@@ -467,18 +570,18 @@ func (e *accountError) Error() string { return e.msg }
 func (g *Gateway) noAccount(alias string) error {
 	const why = "%q runs with each person's own account, and this token does not belong to a member of this Privo. "
 	if g.BaseURL == "" {
-		return &accountError{fmt.Sprintf(why+"Sign in to the Privo admin site and make a token for this client on the Tokens page.", alias)}
+		return &accountError{fmt.Sprintf(why+"Sign in to the Privo admin site and make a token for this client on the Tokens page.", alias), "no_account"}
 	}
 	link := strings.TrimSuffix(g.BaseURL, "/") + "/admin/tokens"
-	return &accountError{fmt.Sprintf(why+"Sign in and make a token for this client: open %s in your browser.", alias, link)}
+	return &accountError{fmt.Sprintf(why+"Sign in and make a token for this client: open %s in your browser.", alias, link), "no_account"}
 }
 
 func (g *Gateway) connectFirst(alias string) error {
 	if g.BaseURL == "" {
-		return &accountError{fmt.Sprintf("Connect your %s account (or enter your API key for it) on the Privo admin site first, then try again.", alias)}
+		return &accountError{fmt.Sprintf("Connect your %s account (or enter your API key for it) on the Privo admin site first, then try again.", alias), "not_connected"}
 	}
 	link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias)
-	return &accountError{fmt.Sprintf("Connect your %s account first: open %s in your browser, then try again.", alias, link)}
+	return &accountError{fmt.Sprintf("Connect your %s account first: open %s in your browser, then try again.", alias, link), "not_connected"}
 }
 
 // errCallTimeout means the upstream did not answer within Gateway.CallTimeout.
@@ -488,30 +591,34 @@ var errCallTimeout = errors.New("the upstream server did not answer in time")
 // the deadline was the reason the call failed: a caller that went away, or an
 // answer that arrived anyway, is not one (R-04).
 func (g *Gateway) callUpstream(ctx context.Context, c call, session *mcp.ClientSession,
-	do func(context.Context, *mcp.ClientSession) (string, error)) (string, error) {
+	do func(context.Context, *mcp.ClientSession) (string, any, error)) (string, any, error) {
 	if g.CallTimeout <= 0 {
-		return do(ctx, session)
+		outcome, result, err := do(ctx, session)
+		if errors.Is(err, grants.ErrKeyRefused) {
+			err = g.keyRefused(c.item.Alias)
+		}
+		return outcome, result, err
 	}
 	callCtx, cancel := context.WithTimeout(ctx, g.CallTimeout)
 	defer cancel()
-	outcome, err := do(callCtx, session)
+	outcome, result, err := do(callCtx, session)
 	if err != nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 		err = fmt.Errorf("%w (server %q, limit %s)", errCallTimeout, c.item.Alias, g.CallTimeout)
 	}
 	if errors.Is(err, grants.ErrKeyRefused) {
 		err = g.keyRefused(c.item.Alias)
 	}
-	return outcome, err
+	return outcome, result, err
 }
 
 // keyRefused tells the person that the server refused their own API key
 // (ADR 0023) and where to enter a new one.
 func (g *Gateway) keyRefused(alias string) error {
 	if g.BaseURL == "" {
-		return &accountError{fmt.Sprintf("%s refused your API key. Enter a new one on the Privo admin site, then try again.", alias)}
+		return &accountError{fmt.Sprintf("%s refused your API key. Enter a new one on the Privo admin site, then try again.", alias), "key_refused"}
 	}
 	link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias)
-	return &accountError{fmt.Sprintf("%s refused your API key. Enter a new one: open %s in your browser, then try again.", alias, link)}
+	return &accountError{fmt.Sprintf("%s refused your API key. Enter a new one: open %s in your browser, then try again.", alias, link), "key_refused"}
 }
 
 // sdkLocalCode reports the JSON-RPC codes the SDK raises itself (unknown error,
@@ -597,20 +704,20 @@ func (g *Gateway) callTool(ctx context.Context, p auth.Principal, params *mcp.Ca
 	if err != nil {
 		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil //nolint:nilerr // tool-level error for the model
 	}
-	err = g.run(ctx, call{p: p, item: it, action: "tools/call", args: args}, func(ctx context.Context, s *mcp.ClientSession) (string, error) {
+	err = g.run(ctx, call{p: p, item: it, action: "tools/call", args: args}, func(ctx context.Context, s *mcp.ClientSession) (string, any, error) {
 		res, err := s.CallTool(ctx, &mcp.CallToolParams{Name: it.Name, Arguments: args})
 		if err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		if err = checkTool(res); err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		cleanForRelay(res)
 		result = res
 		if res.IsError {
-			return "tool_error", nil
+			return "tool_error", res, nil
 		}
-		return "ok", nil
+		return "ok", res, nil
 	})
 	if err != nil {
 		// MCP reports tool failures as an error result the model can read,
@@ -642,17 +749,17 @@ func (g *Gateway) getPrompt(ctx context.Context, p auth.Principal, params *mcp.G
 		return nil, err
 	}
 	var result *mcp.GetPromptResult
-	err = g.run(ctx, call{p: p, item: it, action: "prompts/get", args: args}, func(ctx context.Context, s *mcp.ClientSession) (string, error) {
+	err = g.run(ctx, call{p: p, item: it, action: "prompts/get", args: args}, func(ctx context.Context, s *mcp.ClientSession) (string, any, error) {
 		res, err := s.GetPrompt(ctx, &mcp.GetPromptParams{Name: it.Name, Arguments: params.Arguments})
 		if err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		if err = checkPrompt(res); err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		cleanForRelay(res)
 		result = res
-		return "ok", nil
+		return "ok", res, nil
 	})
 	return result, err
 }
@@ -686,18 +793,18 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 	}
 	it := items[idx]
 	var result *mcp.ReadResourceResult
-	err = g.run(ctx, call{p: p, item: it, action: "resources/read"}, func(ctx context.Context, s *mcp.ClientSession) (string, error) {
+	err = g.run(ctx, call{p: p, item: it, action: "resources/read"}, func(ctx context.Context, s *mcp.ClientSession) (string, any, error) {
 		res, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: up})
 		if err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		if err = rewriteRead(alias, res); err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		cleanForRelay(res)
 		res.Cacheable = readCache()
 		result = res
-		return "ok", nil
+		return "ok", res, nil
 	})
 	return result, err
 }
