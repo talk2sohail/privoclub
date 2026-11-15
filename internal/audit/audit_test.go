@@ -118,3 +118,27 @@ func TestSendAfterCloseDoesNotPanic(t *testing.T) {
 		t.Fatalf("err = %v, want ErrClosed", err)
 	}
 }
+
+// ADR 0024: events that cannot be stored after every retry are reported, so
+// the metrics and the diagnostic log can show them.
+func TestLostEventsAreReported(t *testing.T) {
+	old := flushBackoff
+	flushBackoff = time.Microsecond
+	t.Cleanup(func() { flushBackoff = old })
+	s := &flakyStore{fails: 1000}
+	var mu sync.Mutex
+	lost := map[store.OrgID]int{}
+	w := NewWriter(s, Options{FlushInterval: time.Millisecond, OnLost: func(org store.OrgID, n int) {
+		mu.Lock()
+		defer mu.Unlock()
+		lost[org] += n
+	}})
+	_ = w.Completion(context.Background(), "o", store.AuditEvent{ID: "a"})
+	_ = w.Completion(context.Background(), "o", store.AuditEvent{ID: "b"})
+	w.Close()
+	mu.Lock()
+	defer mu.Unlock()
+	if lost["o"] != 2 {
+		t.Fatalf("reported lost: %v, want 2 for org o", lost)
+	}
+}

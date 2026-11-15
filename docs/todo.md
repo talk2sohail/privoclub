@@ -691,7 +691,8 @@ Status: In progress (health endpoints and drain only)
 
 ADRs: 0010
 
-- [ ] OpenTelemetry span per stage; metrics without org labels in Cloud
+- [x] Prometheus metrics on their own listener (`PRIVO_METRICS_ADDR`, F28, ADR 0024)
+- [ ] OpenTelemetry span per stage (the statistic names of ADR 0024 map onto the MCP conventions); metrics without org labels in Cloud
 - [x] `/livez`, `/readyz`; 30-second drain on SIGTERM (`PRIVO_SHUTDOWN_TIMEOUT`; built in F01)
 
 ## F17. Context-cost report
@@ -1013,35 +1014,72 @@ the token's user id; hand-entered endpoints pass the egress policy.
 - [ ] Independent review (secrets and the request pipeline), on the owner's word
 
 ## F28. Activity and telemetry (the audit, reworked)
-Status: Not started (reference read 2026-11-11; spec comes after F06 and the per-server sign-in work)
-ADRs: 0006 (audit), to be written
+Status: Built in 0.10.0 (2026-11-14). Issue 3, section 3.
+ADRs: 0024 (call statistics, diagnostic log, metrics), 0006 (audit)
 
-The owner wants the audit reworked with telemetry "like Meridian"
-(https://github.com/rynfar/meridian, a local bridge between coding clients and
-model providers). What Meridian has, from its `MONITORING.md` and
-`src/telemetry/types.ts`, and what it would mean in Privo:
+Reference: Meridian (https://github.com/rynfar/meridian, `MONITORING.md`):
+one row per request with phase timings, a summary over a window, a time
+series, a diagnostic log with categories, bounded retention, a dashboard,
+Prometheus `/metrics`. Model tokens and cost have no counterpart in Privo
+(it does not see model tokens); the nearest is the size of arguments and
+results (F17).
 
-- **One row per request with the time of each phase** (queue wait, overhead,
-  time to first byte, upstream duration, total), status and error. In Privo: one
-  row per call with policy and approval wait, upstream connect, upstream
-  duration and total, the size of arguments and result, the outcome and the
-  error class, next to who (member, client, token) and what (server, tool).
-- **A summary over a window**: requests per minute, error count, p50/p95/p99,
-  min, max and average per phase, broken down by model and mode. In Privo: by
-  server, tool, member, team and client.
-- **A time series endpoint** for charts.
-- **A diagnostic log** with levels and categories (session, lineage, error,
-  lifecycle, token), a filter per category and alerts for anomalies. In Privo:
-  upstream connections, grant refreshes, approvals, sign-in, lifecycle.
-- **Storage that says what it holds**: memory ring or SQLite, retention in days,
-  size on disk, the oldest record.
-- **A dashboard**: Overview, Requests, Logs. In Privo: the Activity page.
-- **Tokens and estimated cost per model.** Privo does not see model tokens; the
-  nearest thing it can measure is what tool definitions and results cost in
-  context (F17).
+#### Goal
+An admin sees how calls went, not only who made them: which servers and tools
+are slow or failing, where the time goes, and what happened to connections and
+grants, for a bounded time and without anything leaving the server. The audit
+keeps its guarantees.
 
-To settle in the spec: the audit (who did what, kept, exportable, tamper
-evident: F12) and telemetry (how it went, bounded retention) share the call
-record but not the retention or the guarantees; whether an OpenTelemetry export
-is wanted next to the built-in pages (F16).
+#### Acceptance
+1. Every call that reaches the decision stage writes one statistic row with
+   member, token, client, server, method, item, outcome, error class, the time
+   of each phase (decide, audit, connect, upstream, total) and the sizes of
+   arguments and result; never arguments, results, credentials or error texts.
+   Refused calls are rows with outcome `refused` and their class.
+2. A full statistics queue drops and counts; a call never waits for or fails
+   because of a statistic. The audit is unchanged.
+3. `GET /api/v1/telemetry/summary?window=&by=` (server, tool, member, client,
+   method): counts, error rate, p50/p95/p99/min/max/average of the total over
+   calls that ran, p50/p95 of each phase, sizes; `truncated` past 100,000 rows.
+4. `GET /api/v1/telemetry/timeseries?window=&bucket=` with optional server and
+   tool: per bucket calls, errors, tool errors, refusals, p50 and p95; bucket
+   at least 1 minute, at most 1,000 buckets, window at most 31 days, else 400.
+5. `GET /api/v1/telemetry/calls` (filters, newest first, at most 500) and
+   `GET /api/v1/telemetry/logs` (category, level, newest first, at most 500).
+6. `GET /api/v1/telemetry/storage`: retention, rows and the oldest of each
+   table, rows dropped since start. All five need `audit.read`; another org's
+   rows are never read.
+7. Diagnostic log: upstream connect failure, disconnection and recovery; a
+   grant refused by the authorization server and failed refreshes; a person's
+   key refused; audit events lost; process start. Repeats within a minute
+   collapse into one row with a count. Messages carry no credentials.
+8. `PRIVO_TELEMETRY_RETENTION_DAYS` (default 30, 1 to 400, 0 is off); hourly
+   clean-up in batches.
+9. `PRIVO_METRICS_ADDR` (off by default) serves Prometheus `/metrics` on its
+   own listener: calls, a duration histogram, upstream state, audit lost,
+   statistics dropped, build info; labels server, method, outcome only.
+10. Activity page: Overview (window, totals, chart, breakdown), Tool calls,
+    Admin changes, Log.
 
+#### Threat note
+Statistics show who called what and when, like the audit: same permission
+(`audit.read`), same org scoping. They hold no arguments or results. The
+diagnostic messages are fixed texts or redacted upstream errors (the
+redaction used for the server status). `/metrics` has no authentication and
+therefore listens on its own address, never the public one; its labels are
+server aliases, methods and outcomes, no members or tools. A flood of calls
+cannot grow memory: the queue and the deduplication map are bounded.
+
+#### Tasks
+- [x] Spec, ADR 0024 (this section)
+- [x] Store: migration 00009, `CallStat`, `Diagnostic`, insert, query, storage, prune. Tests: `TestCallStatsRoundTripAndScope`, `TestPruneTelemetry`, `TestDiagnosticsQuery`
+- [x] `internal/telemetry`: recorder (bounded queue, drop and count, diagnostics dedupe), summaries and series, Prometheus text. Tests: `TestRecorderDropsWhenFull`, `TestRecorderCountsRowsItCannotWrite`, `TestDiagnosticsRepeatCollapse`, `TestDiagnosticsHeldRepeatsAreWrittenOnClose`, `TestSummarize`, `TestSeries`, `TestMetricsText`
+- [x] Gateway: phase timings, sizes, outcome and error class on every path. Tests: `TestCallStatisticsRecordPhases`, `TestRefusedCallsAreCounted`, `TestAuditFailureIsCountedAndLogged`, `TestErrorClasses`, `TestEncodedSizeIsTheRelayedJSON`
+- [x] Diagnostics from upstream, grants, gateway, audit, lifecycle. Tests: `TestUpstreamDiagnostics`, `TestGrantLostIsLogged`, `internal/audit` `TestLostEventsAreReported`
+- [x] Admin API: the five endpoints. Tests: `TestTelemetryAPI`, `TestTelemetryAPINeedsAuditRead`, `TestTelemetryWindowLimits`
+- [x] Settings `PRIVO_TELEMETRY_RETENTION_DAYS`, `PRIVO_METRICS_ADDR`; clean-up job; metrics listener. Test: `TestTelemetrySettings`
+- [x] Activity page: Overview (default tab), Tool calls, Admin changes, Log; labelled cells on phones. App tests: "activity overview and log", `overview.test.ts`; looked at in light and dark, desktop and phone
+- [x] Acceptance on the real binary: `TestActivityTelemetry` (calls show up with phases and sizes, share the audit's call id; /metrics answers on its own address only), `TestTelemetryOff`
+- [x] Docs: README "Activity: how calls went", deploy guide 0.10.0, manual test step 12, ADR index; version 0.10.0
+- [x] Mutation check (2026-11-14): 23 deliberate breakages of the new code (org scoping, pruning, a blocking queue, repeat collapse, refusals timed, label escaping, error classes, permissions, window limits, diagnostics, the metrics port), one at a time; all 23 made a test fail
+- [ ] Independent security review (on the owner's word)

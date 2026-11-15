@@ -86,6 +86,12 @@ type Config struct {
 	BackupKeep int
 	// BackupDir is where snapshots go (PRIVO_BACKUP_DIR, default <data dir>/backups).
 	BackupDir string
+	// TelemetryRetentionDays is how long call statistics and the diagnostic
+	// log are kept (PRIVO_TELEMETRY_RETENTION_DAYS, ADR 0024); 0 records none.
+	TelemetryRetentionDays int
+	// MetricsAddr is where Prometheus metrics are served on their own
+	// listener (PRIVO_METRICS_ADDR); empty, the default, serves none.
+	MetricsAddr string
 }
 
 // Defaults applied when a variable is unset or empty.
@@ -108,6 +114,10 @@ const (
 	DefaultBackupKeep = 7
 	MinBackupInterval = time.Second
 	MaxBackupKeep     = 1000
+
+	// Call statistics and the diagnostic log (ADR 0024).
+	DefaultTelemetryRetentionDays = 30
+	MaxTelemetryRetentionDays     = 400
 )
 
 // Load reads configuration using getenv (usually os.Getenv). All problems are
@@ -216,6 +226,25 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 	cfg.BackupDir = orDefault(getenv("PRIVO_BACKUP_DIR"), filepath.Join(cfg.DataDir, "backups"))
+
+	cfg.TelemetryRetentionDays = DefaultTelemetryRetentionDays
+	if v := getenv("PRIVO_TELEMETRY_RETENTION_DAYS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > MaxTelemetryRetentionDays {
+			errs = append(errs, fmt.Errorf("PRIVO_TELEMETRY_RETENTION_DAYS %q: must be a number of days from 0 (off) to %d", v, MaxTelemetryRetentionDays))
+		} else {
+			cfg.TelemetryRetentionDays = n
+		}
+	}
+	if v := strings.TrimSpace(getenv("PRIVO_METRICS_ADDR")); v != "" {
+		if _, port, err := net.SplitHostPort(v); err != nil || port == "" {
+			errs = append(errs, fmt.Errorf("PRIVO_METRICS_ADDR %q: must be host:port, such as 127.0.0.1:9464", v))
+		} else if v == cfg.ListenAddr {
+			errs = append(errs, fmt.Errorf("PRIVO_METRICS_ADDR %q: must differ from PRIVO_LISTEN; metrics have no sign-in and must not share the public port", v))
+		} else {
+			cfg.MetricsAddr = v
+		}
+	}
 
 	if v := getenv("PRIVO_PUBLIC_URL"); v != "" {
 		u, err := parsePublicURL(v)

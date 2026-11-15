@@ -41,6 +41,7 @@ type Writer struct {
 	batch    int
 	done     chan struct{}
 	once     sync.Once
+	onLost   func(store.OrgID, int)
 }
 
 // Options configure a Writer.
@@ -50,6 +51,9 @@ type Options struct {
 	FlushInterval time.Duration // default 50ms
 	BatchSize     int           // default 500
 	Logger        *slog.Logger
+	// OnLost is told how many completion records of an org could not be
+	// stored after retries (the metrics and the diagnostic log, ADR 0024).
+	OnLost func(org store.OrgID, n int)
 }
 
 // NewWriter starts a writer. Call Close to flush and stop it.
@@ -70,7 +74,7 @@ func NewWriter(s Store, o Options) *Writer {
 		o.Logger = slog.Default()
 	}
 	w := &Writer{store: s, log: o.Logger, queue: make(chan queued, o.QueueSize), wait: o.EnqueueWait,
-		interval: o.FlushInterval, batch: o.BatchSize, done: make(chan struct{})}
+		interval: o.FlushInterval, batch: o.BatchSize, done: make(chan struct{}), onLost: o.OnLost}
 	go w.run()
 	return w
 }
@@ -130,10 +134,9 @@ func (w *Writer) Close() {
 }
 
 // flushAttempts and flushBackoff bound retries of a failed batch.
-const (
-	flushAttempts = 8
-	flushBackoff  = 50 * time.Millisecond
-)
+const flushAttempts = 8
+
+var flushBackoff = 50 * time.Millisecond // a variable so a test can shorten it
 
 func (w *Writer) run() {
 	defer close(w.done)
@@ -160,8 +163,11 @@ func (w *Writer) run() {
 				time.Sleep(flushBackoff << attempt)
 			}
 			if err != nil {
-				// Loud and counted: an operator must see this. Metrics arrive with F16.
+				// Loud and counted: an operator must see this.
 				w.log.Error("AUDIT EVENTS LOST after retries", "org", org, "events", len(evs), "err", err)
+				if w.onLost != nil {
+					w.onLost(org, len(evs))
+				}
 			}
 		}
 		pending = pending[:0]

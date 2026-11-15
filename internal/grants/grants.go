@@ -20,6 +20,7 @@ import (
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstreamauth"
 	"privo.club/privo/internal/vault"
 )
@@ -78,6 +79,9 @@ type Service struct {
 	PublicURL *url.URL
 	Now       func() time.Time
 	Logger    *slog.Logger
+	// Diagnostics receives grant events for the diagnostic log (ADR 0024);
+	// nil records none.
+	Diagnostics *telemetry.Recorder
 
 	mu      sync.Mutex
 	flights map[string]*flight
@@ -341,9 +345,14 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 		if derr := s.Store.DeleteGrant(ctx, org, srv.ID, userID, ev); derr != nil && !errors.Is(derr, store.ErrNotFound) {
 			s.logger().Error("deleting a refused grant failed", "server", srv.Alias, "err", derr)
 		}
+		s.Diagnostics.Diagnose(org, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: srv.Alias, UserID: userID,
+			Message: "the authorization server refused a member's grant; they must connect again"})
 		return "", ErrNotConnected
 	}
 	if err != nil {
+		// The error can name the token endpoint; the log entry is a fixed text.
+		s.Diagnostics.Diagnose(org, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: srv.Alias, UserID: userID,
+			Message: "refreshing a member's grant failed"})
 		return "", fmt.Errorf("refreshing the %s grant: %w", srv.Alias, err)
 	}
 	if next.Scope == "" {

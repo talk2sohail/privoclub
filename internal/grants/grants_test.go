@@ -20,6 +20,7 @@ import (
 	"privo.club/privo/internal/egress"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstreamauth"
 	"privo.club/privo/internal/vault"
 )
@@ -507,5 +508,37 @@ func TestPersonalKey(t *testing.T) {
 	}
 	if _, err := e.svc.AccessToken(ctx, e.org, keySrv, e.ada.ID); !errors.Is(err, ErrNotConnected) {
 		t.Errorf("after removing: %v", err)
+	}
+}
+
+// ADR 0024: a grant the authorization server refuses, and a failed refresh,
+// are in the diagnostic log with the server and the member, and nothing of
+// the token or the endpoint.
+func TestGrantLostIsLogged(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	rec := telemetry.New(e.st, telemetry.Options{})
+	e.svc.Diagnostics = rec
+	e.as.answer = func(url.Values) (int, string) { return 400, `{"error":"invalid_grant"}` }
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old", RefreshToken: "rt-secret-0", Expiry: t0})
+	_, _ = e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID)
+	e.as.answer = func(url.Values) (int, string) { return 503, `busy` }
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old2", RefreshToken: "rt-secret-1", Expiry: t0})
+	_, _ = e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID)
+	rec.Close()
+	ds, err := e.st.Diagnostics(ctx, e.org, store.DiagnosticQuery{Category: store.CategoryGrant})
+	if err != nil || len(ds) != 2 {
+		t.Fatalf("grant diagnostics: %+v, %v", ds, err)
+	}
+	for _, d := range ds {
+		if d.Server != "linear" || d.UserID != e.ada.ID || d.Level != store.LevelWarn {
+			t.Errorf("diagnostic: %+v", d)
+		}
+		if strings.Contains(d.Message, "rt-secret") || strings.Contains(d.Message, e.as.srv.URL) {
+			t.Errorf("the message carries a secret or the endpoint: %q", d.Message)
+		}
+	}
+	if !strings.Contains(ds[1].Message, "must connect again") {
+		t.Errorf("the refused grant reads %q", ds[1].Message)
 	}
 }
