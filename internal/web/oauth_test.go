@@ -230,6 +230,13 @@ func TestConsentNamesClientRedirectHostAndPerson(t *testing.T) {
 		!strings.Contains(web.Header.Get("Content-Security-Policy"), "form-action 'self' https://claude.example;") {
 		t.Errorf("an https client's consent: %d, CSP %q", web.StatusCode, web.Header.Get("Content-Security-Policy"))
 	}
+	// A hosted client serves many accounts (review of 2026-11-15, S-07).
+	if !strings.Contains(web.Body, "from your own account at claude.example") {
+		t.Errorf("a hosted client's consent does not warn that anyone there can start it:\n%s", web.Body)
+	}
+	if strings.Contains(page.Body, "from your own account at") {
+		t.Error("a client on the person's computer got the hosted-client warning")
+	}
 }
 
 func TestLoopbackClientGetsAWarning(t *testing.T) {
@@ -356,6 +363,11 @@ func TestApproverCannotAuthorizeAClient(t *testing.T) {
 	res := b.post("/oauth/authorize", url.Values{"csrf": {csrfOf(t, page.Body)}, "request": {hidden(t, page.Body, "request")}, "decision": {"allow"}})
 	if queryOf(location(res), "code") != "" || o.grants() != 0 {
 		t.Errorf("a demoted member's Allow: %d %q", res.StatusCode, location(res))
+	}
+	// Refused by the page's own role check, not only by the store underneath
+	// (review of 2026-11-15, S-10, M18).
+	if res.StatusCode != http.StatusForbidden || !strings.Contains(res.Body, "cannot connect an AI client") {
+		t.Errorf("a demoted member's Allow is not refused by the role check: %d\n%s", res.StatusCode, res.Body)
 	}
 }
 

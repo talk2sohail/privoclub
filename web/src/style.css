@@ -48,3 +48,4 @@ table.list tr.level-warn td:nth-child(2) { font-weight: 600; }
   table.list.stats td[data-label] { display: flex; justify-content: space-between; }
   table.list.stats td[data-label]::before { content: attr(data-label); color: var(--muted); }
 }
+.definition .hidden-warning { color: var(--danger); font-weight: 600; margin: 0 0 6px; }

@@ -210,9 +210,13 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 	// because a person signs in to allow a client.
 	var authServer *oauthserver.Server
 	if webCfg.OAuthServer && cfg.PublicURL != nil && cfg.PublicURL.Path == "" && len(webCfg.Missing(cfg.PublicURL)) == 0 {
-		clients := &oauthserver.Clients{Org: org.ID, Store: st, Policy: webCfg.OAuthClients, HTTP: oauthserver.NewDocumentClient(policy)}
+		// Client documents are public by definition: they are fetched with no
+		// private range allowed, whatever PRIVO_EGRESS_ALLOW_CIDRS lets the
+		// upstream connections reach (review of 2026-11-15, S-05).
+		clients := &oauthserver.Clients{Org: org.ID, Store: st, Policy: webCfg.OAuthClients, HTTP: oauthserver.NewDocumentClient(egress.Policy{})}
 		authServer, err = oauthserver.New(ctx, oauthserver.Options{Org: org.ID, Store: st, Keys: kr, Audit: aw, Clients: clients,
-			Issuer: strings.TrimSuffix(cfg.PublicURL.String(), "/"), Registration: webCfg.OAuthRegistration, Logger: logger})
+			Issuer: strings.TrimSuffix(cfg.PublicURL.String(), "/"), Registration: webCfg.OAuthRegistration,
+			TrustedProxies: cfg.TrustedProxies, Logger: logger})
 		if err != nil {
 			return err
 		}

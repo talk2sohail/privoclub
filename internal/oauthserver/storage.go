@@ -248,11 +248,21 @@ func (st *storage) GetAuthorizeCodeSession(ctx context.Context, signature string
 		return nil, err
 	}
 	if !t.Active {
+		// A used code ends its grant when it comes back (RFC 6749 4.1.2), but
+		// only while it could still have been exchanged. Past its expiry it is
+		// simply unknown, so a code that leaked after use cannot be replayed
+		// to end the grant until the next prune (review of 2026-11-15, S-03).
+		if !st.s.now().Before(t.ExpiresAt.Add(codeReuseGrace)) {
+			return nil, oauth2.ErrNotFound
+		}
 		outcomeOf(ctx).codeReuse = true
 		return r, oauth2.ErrInvalidatedAuthorizeCode
 	}
 	return r, nil
 }
+
+// codeReuseGrace covers clock skew between the client and Privo.
+const codeReuseGrace = 5 * time.Second
 
 func (st *storage) InvalidateAuthorizeCodeSession(ctx context.Context, signature string) error {
 	first, err := st.s.o.Store.DeactivateOAuthToken(ctx, st.s.o.Org, store.OAuthCode, signature)

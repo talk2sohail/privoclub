@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -127,9 +129,19 @@ type Clients struct {
 	Known []KnownClient
 	// AllowHTTP accepts http metadata documents (tests with a local server).
 	AllowHTTP bool
+	// Registration says whether clients may register themselves. A client
+	// that registered itself is accepted only while it is on, and never under
+	// PolicyApproved (review of 2026-11-15, S-04).
+	Registration bool
+	// FetchesPerMinute bounds fetches of documents that are not cached, so
+	// requests nobody is signed in for cannot make Privo send requests without
+	// end (S-05). Default 30.
+	FetchesPerMinute int
 
-	mu    sync.Mutex
-	cache map[string]cachedDoc
+	mu         sync.Mutex
+	cache      map[string]cachedDoc
+	fetchStart time.Time
+	fetches    int
 }
 
 type cachedDoc struct {
@@ -197,7 +209,10 @@ func (c *Clients) kindOf(ctx context.Context, id string) (kind string, stored st
 		return "", stored, rowErr
 	}
 	if rowErr == nil {
-		return row.Kind, row, nil // approved or registered: accepted under every policy
+		if row.Kind == store.ClientRegistered && (!c.Registration || c.Policy == PolicyApproved) {
+			return "", stored, &NotAcceptedError{ClientID: id, Reason: "This client registered itself, and this Privo does not accept clients that register themselves now."}
+		}
+		return row.Kind, row, nil // approved, or registered while registration is on
 	}
 	u, urlErr := c.documentURL(id)
 	if urlErr != nil {
@@ -265,6 +280,19 @@ func (c *Clients) Document(ctx context.Context, id string) (Client, error) {
 		c.mu.Unlock()
 		return d.c, d.err
 	}
+	limit := c.FetchesPerMinute
+	if limit <= 0 {
+		limit = 30
+	}
+	if now.Sub(c.fetchStart) >= time.Minute {
+		c.fetchStart, c.fetches = now, 0
+	}
+	if c.fetches >= limit {
+		c.mu.Unlock()
+		// Not cached: the document itself is not at fault.
+		return Client{}, &NotAcceptedError{ClientID: id, Reason: "Too many client descriptions were requested just now. Try again in a minute."}
+	}
+	c.fetches++
 	c.mu.Unlock()
 
 	doc, age, err := c.fetch(ctx, id)
@@ -301,28 +329,30 @@ func (c *Clients) fetch(ctx context.Context, id string) (Client, time.Duration, 
 		return Client{}, 0, errors.New("its address cannot be requested")
 	}
 	req.Header.Set("Accept", "application/json")
+	// Every way a fetch can fail reads the same, so the page cannot be used to
+	// learn what answers at an address (review of 2026-11-15, S-05).
+	unfetched := errors.New("it could not be fetched as a JSON document")
 	res, err := c.HTTP.Do(req)
 	if err != nil {
-		// The cause can name internal addresses; the person gets the class.
-		return Client{}, 0, errors.New("it could not be fetched")
+		return Client{}, 0, unfetched
 	}
 	defer func() { _ = res.Body.Close() }()
 	if res.StatusCode != http.StatusOK {
-		return Client{}, 0, fmt.Errorf("its address answered %d", res.StatusCode)
+		return Client{}, 0, unfetched
 	}
 	if mt, _, _ := mime.ParseMediaType(res.Header.Get("Content-Type")); mt != "application/json" && !strings.HasSuffix(mt, "+json") {
-		return Client{}, 0, errors.New("it is not JSON")
+		return Client{}, 0, unfetched
 	}
 	body, err := io.ReadAll(io.LimitReader(res.Body, docMaxBytes+1))
 	if err != nil {
-		return Client{}, 0, errors.New("it could not be read")
+		return Client{}, 0, unfetched
 	}
 	if len(body) > docMaxBytes {
 		return Client{}, 0, errors.New("it is larger than 64 KiB")
 	}
 	var d document
 	if err := json.Unmarshal(body, &d); err != nil {
-		return Client{}, 0, errors.New("it is not valid JSON")
+		return Client{}, 0, unfetched
 	}
 	if d.ClientID != id {
 		return Client{}, 0, errors.New("it names another client id than its own address")
@@ -378,9 +408,22 @@ func checkRedirects(uris []string) error {
 		if u.Scheme != "https" && !loopback(u) {
 			return errors.New("it lists a redirect address that is neither https nor on the person's own computer")
 		}
+		// The host goes into the consent page's Content-Security-Policy, so
+		// only a DNS name or an IP literal (review of 2026-11-15, S-09).
+		if !hostRe.MatchString(u.Hostname()) && net.ParseIP(u.Hostname()) == nil {
+			return errors.New("it lists a redirect address whose host is not a name or an IP address")
+		}
+		if p := u.Port(); p != "" && !portRe.MatchString(p) {
+			return errors.New("it lists a redirect address with a port that is not a number")
+		}
 	}
 	return nil
 }
+
+var (
+	hostRe = regexp.MustCompile(`^(?i)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$`)
+	portRe = regexp.MustCompile(`^[0-9]{1,5}$`)
+)
 
 // loopback reports whether u is plain http on the person's own computer.
 func loopback(u *url.URL) bool {
