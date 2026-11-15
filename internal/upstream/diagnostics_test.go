@@ -83,3 +83,36 @@ func TestUpstreamDiagnostics(t *testing.T) {
 		t.Fatalf("recovery: %+v", back)
 	}
 }
+
+// Review of 2026-11-15, T-07: a connection error holds the server's URL with
+// its key; the diagnostic does not. (The test above cannot fail on this: a
+// 502 puts no URL in the error.)
+func TestUpstreamDiagnosticsRedactTheURL(t *testing.T) {
+	closed := httptest.NewServer(http.NotFoundHandler())
+	addr := closed.URL
+	closed.Close() // a closed port: the error names the URL
+	sink := &diagSink{}
+	rec := telemetry.New(sink, telemetry.Options{FlushInterval: 10 * time.Millisecond})
+	fs := &fakeStore{servers: []store.Server{{OrgID: "o", ID: "s1", Alias: "gone", Transport: "http",
+		Config: store.ServerConfig{URL: addr + "/mcp?api_key=s3cret-value"}, Enabled: true, UpdatedAt: time.Now()}}}
+	m := New(Options{Store: fs, HTTPClient: loopClient(), RetryBase: time.Hour, Diagnostics: rec})
+	t.Cleanup(m.Close)
+	if err := m.Sync(context.Background(), "o"); err != nil {
+		t.Fatal(err)
+	}
+	m.WaitSettled(context.Background(), "s1", 10*time.Second)
+	rec.Close()
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	if len(sink.ds) == 0 {
+		t.Fatal("no diagnostic")
+	}
+	for _, d := range sink.ds {
+		if strings.Contains(d.Message, "s3cret-value") || strings.Contains(d.Message, "api_key") {
+			t.Fatalf("the key is in the log: %q", d.Message)
+		}
+	}
+	if st, _ := m.State("s1"); strings.Contains(st.Error, "s3cret-value") {
+		t.Fatalf("the key is in the status: %q", st.Error)
+	}
+}

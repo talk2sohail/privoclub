@@ -1013,6 +1013,17 @@ the token's user id; hand-entered endpoints pass the egress policy.
 - [ ] Editing an existing server's way of signing in (today: add it again)
 - [ ] Independent review (secrets and the request pipeline), on the owner's word
 
+#### Independent review of 2026-11-15 (`docs/reviews/2026-11-15-f07-f29-upstream-credentials-independent-review.md`)
+Approve with changes; 0 Critical, 0 High, 2 Medium, 2 Low, 4 Info. Fixed, each with a test that fails without it:
+- [x] U-01 (Medium): mix-up through settings entered by hand without an issuer. A callback that names any issuer is refused for a server with no issuer; an administrator whose authorization server sends `iss` enters its issuer. Tests: `internal/web` `TestHandEnteredSettingsRefuseAnAnswerNamingAnIssuer`, `TestConnectWithSettingsEnteredByHand` (the connect flow with hand-entered settings had no test). Left: per-server redirect addresses would close mix-up for authorization servers that send no `iss` at all (GitHub's), at the price of every pre-registered client's callback changing
+- [x] U-02 (Medium, #11): see F14 R-01
+- [x] U-03: when the upstream refuses the key the tool list is read with, the tool list moves to another administrator's key (`store.PassCatalog`); the refused key stays its owner's. Test: acceptance `TestRefusedCatalogKeyPassesToAnotherAdmin`
+- [x] U-04: a key server's 403 is a refused key too (API gateways answer 403 to an unknown key). Test: acceptance `TestForbiddenKeyIsARefusedKey`
+- [x] U-05: a person's key cannot go in a header that names the caller or the encoding (`Forwarded`, `X-Forwarded-*`, `X-Real-Ip`, `Remote-User`, `X-Auth-Request-*`, `Cf-*`, `Accept-Encoding`, `Content-Encoding` and others). Test: `TestKeyHeadersThatNameTheCallerAreRefused`
+- [x] U-06: tests for the issuer-only path and the R-02 revocation half (acceptance `TestOAuthSettingsByIssuerAndNotOverMetadata`, `internal/grants` `TestRefreshUsesTheClientStoredNow`). The PR text said member removal was tested end to end; it is covered by the store's grant deletion tests, not by the acceptance test
+- [x] U-07: a stored credential is used only for a server of its kind; a mismatch reads as not connected. Test: `TestCredentialKindMustMatchTheServer`
+- [x] U-08: endpoints by hand are refused for a server that publishes its resource metadata. Test: acceptance `TestOAuthSettingsByIssuerAndNotOverMetadata`
+
 ## F28. Activity and telemetry (the audit, reworked)
 Status: Built in 0.10.0 (2026-11-14). Issue 3, section 3.
 ADRs: 0024 (call statistics, diagnostic log, metrics), 0006 (audit)
@@ -1040,7 +1051,8 @@ keeps its guarantees.
    because of a statistic. The audit is unchanged.
 3. `GET /api/v1/telemetry/summary?window=&by=` (server, tool, member, client,
    method): counts, error rate, p50/p95/p99/min/max/average of the total over
-   calls that ran, p50/p95 of each phase, sizes; `truncated` past 100,000 rows.
+   calls that ran, p50/p95 of each phase, sizes; counts cover every call, times
+   come from the most recent 100,000 calls that ran (`sampled`).
 4. `GET /api/v1/telemetry/timeseries?window=&bucket=` with optional server and
    tool: per bucket calls, errors, tool errors, refusals, p50 and p95; bucket
    at least 1 minute, at most 1,000 buckets, window at most 31 days, else 400.
@@ -1052,7 +1064,9 @@ keeps its guarantees.
 7. Diagnostic log: upstream connect failure, disconnection and recovery; a
    grant refused by the authorization server and failed refreshes; a person's
    key refused; audit events lost; process start. Repeats within a minute
-   collapse into one row with a count. Messages carry no credentials.
+   collapse into one row with a count. Messages are fixed texts, or a fixed
+   text and the upstream's answer with every URL reduced to scheme, host and
+   path, cut at 512 bytes; what an upstream echoes of its own is its text.
 8. `PRIVO_TELEMETRY_RETENTION_DAYS` (default 30, 1 to 400, 0 is off); hourly
    clean-up in batches.
 9. `PRIVO_METRICS_ADDR` (off by default) serves Prometheus `/metrics` on its
@@ -1083,3 +1097,16 @@ cannot grow memory: the queue and the deduplication map are bounded.
 - [x] Docs: README "Activity: how calls went", deploy guide 0.10.0, manual test step 12, ADR index; version 0.10.0
 - [x] Mutation check (2026-11-14): 23 deliberate breakages of the new code (org scoping, pruning, a blocking queue, repeat collapse, refusals timed, label escaping, error classes, permissions, window limits, diagnostics, the metrics port), one at a time; all 23 made a test fail
 - [ ] Independent security review (on the owner's word)
+
+#### Independent review of 2026-11-15 (`docs/reviews/2026-11-15-f28-telemetry-independent-review.md`)
+Approve with changes; 0 Critical, 1 High, 1 Medium, 5 Low, 3 Info. Fixed, each with a test that fails without it:
+- [x] T-01 (High): every diagnostic message is cut at 512 bytes on a rune boundary in `Recorder.Diagnose`, whatever its source; server and member at 64. Test: `TestDiagnosticsAreClipped`
+- [x] T-02 (Medium): counts and chart buckets come from `GROUP BY` in SQL (`store.CountCallStats`) and cover every call; times from the newest 100,000 calls that ran (`store.SampleCallStats`), flagged `sampled` with `sample_from`, and the Overview says so. Tests: `internal/store` `TestCountAndSampleCallStats`, `internal/telemetry` `TestSummarize`, `TestSeries`
+- [x] T-03: compact sample rows; at most two aggregations at once; an answer reused for five seconds. Test: the cache in `TestTelemetryAPI`
+- [x] T-04: retention 0 deletes what an earlier run kept. Test: acceptance `TestSwitchingStatisticsOffDeletesThem`
+- [x] T-05: every URL in upstream text loses its query and user info (`RedactText`); the threat note no longer promises that upstream text carries nothing. Test: `TestUpstreamDiagnosticsRedactTheURL` (a closed port, so the error names the URL)
+- [x] T-06: the result size is a sum of content lengths (text; binary as base64), no second encoding. Test: `TestResultSizeFromContentLengths`
+- [x] T-07: the redaction test can fail now; the key-refused diagnostic is checked in acceptance `TestForbiddenKeyIsARefusedKey`; pruning leaves another org's diagnostics (`TestPruneTelemetry`)
+- [x] T-08: the deploy guide says what `0.0.0.0:9464` exposes to the Docker network. Open: an optional bearer token for `/metrics`
+- [x] T-09: exactly 1,000 buckets allowed; the chart counts the same window as the totals; `limit` over the bound reads the bound; a huge day count is refused before multiplying
+- [x] T-10: the time held for a person's approval is its own phase (`wait_us`) and is left out of latency and the duration histogram (`TestMetricsText`, `TestCountAndSampleCallStats`)

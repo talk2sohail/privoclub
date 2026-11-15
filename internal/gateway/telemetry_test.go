@@ -175,13 +175,26 @@ func TestErrorClasses(t *testing.T) {
 	}
 }
 
-func TestEncodedSizeIsTheRelayedJSON(t *testing.T) {
-	res := &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "hello <world> & ünïcode"}}}
-	b, err := json.Marshal(res)
-	if err != nil {
-		t.Fatal(err)
+// Review of 2026-11-15, T-06: the size is read from the content's lengths,
+// without encoding the result again: text as it is, binary data as base64.
+func TestResultSizeFromContentLengths(t *testing.T) {
+	tool := &mcp.CallToolResult{Content: []mcp.Content{
+		&mcp.TextContent{Text: "hello"},             // 5
+		&mcp.ImageContent{Data: []byte{1, 2, 3, 4}}, // 8 as base64
+		&mcp.EmbeddedResource{Resource: &mcp.ResourceContents{URI: "x", Text: "abc", Blob: []byte{1, 2, 3}}}, // 3 + 4
+	}, StructuredContent: json.RawMessage(`{"a":1}`)} // 7
+	if got := resultSize(tool); got != 5+8+3+4+7 {
+		t.Errorf("tool result: %d", got)
 	}
-	if got := encodedSize(res); got != int64(len(b)) {
-		t.Fatalf("encodedSize %d, json.Marshal %d", got, len(b))
+	prompt := &mcp.GetPromptResult{Messages: []*mcp.PromptMessage{{Role: "user", Content: &mcp.TextContent{Text: "hi there"}}, nil}}
+	if got := resultSize(prompt); got != 8 {
+		t.Errorf("prompt: %d", got)
+	}
+	read := &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: "u", Text: "0123456789"}, nil}}
+	if got := resultSize(read); got != 10 {
+		t.Errorf("resource: %d", got)
+	}
+	if resultSize(nil) != 0 {
+		t.Error("nil")
 	}
 }

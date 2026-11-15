@@ -33,6 +33,7 @@ type oauthUpstream struct {
 	mu  sync.Mutex
 
 	dynamic     bool   // offer dynamic registration
+	hidePRM     bool   // publish no protected resource metadata (ADR 0023)
 	clientID    string // the registered or pre-registered client id
 	secret      string // its secret ("" for a public client)
 	as          string // subject of the next authorization
@@ -78,13 +79,27 @@ func newOAuthUpstream(t *testing.T, dynamic bool) *oauthUpstream {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		if u.subject(r) == "" {
-			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token", resource_metadata="`+u.srv.URL+`/.well-known/oauth-protected-resource/mcp"`)
+			u.mu.Lock()
+			hide := u.hidePRM
+			u.mu.Unlock()
+			if hide {
+				w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+			} else {
+				w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token", resource_metadata="`+u.srv.URL+`/.well-known/oauth-protected-resource/mcp"`)
+			}
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		mcpHandler.ServeHTTP(w, r)
 	})
-	mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, r *http.Request) {
+		u.mu.Lock()
+		hide := u.hidePRM
+		u.mu.Unlock()
+		if hide {
+			http.NotFound(w, r)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"resource": u.srv.URL + "/mcp", "authorization_servers": []string{u.srv.URL}, "scopes_supported": []string{"read"}})
 	})
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
@@ -202,7 +217,7 @@ func (u *oauthUpstream) signInAs(subject string) {
 
 // connectAccount plays the browser: the connect page, the start, the
 // authorization server, back to Privo. It returns the final redirect.
-func connectAccount(t *testing.T, p *person, g *gateway, alias string) *http.Response { //nolint:unparam // the suite has one OAuth server today; the alias keeps the helper honest about which
+func connectAccount(t *testing.T, p *person, g *gateway, alias string) *http.Response {
 	t.Helper()
 	page, body := p.do(http.MethodGet, g.base+"/connect/"+alias, nil, nil)
 	m := csrfField.FindStringSubmatch(body)

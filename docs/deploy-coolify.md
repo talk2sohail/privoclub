@@ -100,6 +100,13 @@ Nothing new to configure: once sign-in with GitHub works, add a remote server wi
 
 Invite people with `privo admin invite --person NAME` in the container's terminal, or with `POST /api/v1/invites`.
 
+## Review fixes (0.10.1)
+
+The fixes from the independent reviews of 2026-11-15 for pull requests #12
+and #13. Migration 00010 adds one column to the call statistics (the time a
+call waited for an approval); it runs on start. Nothing to set. Going back to
+0.10.0 is the older image; it ignores the column.
+
 ## Activity statistics and metrics (0.10.0)
 
 Migration 00009 adds two tables (call statistics and the diagnostic log); it
@@ -107,7 +114,10 @@ runs on start. Nothing to set: statistics are kept 30 days by default
 (`PRIVO_TELEMETRY_RETENTION_DAYS`, `0` turns them off) and pruned hourly.
 Prometheus metrics are off; to scrape them from another container on the same
 Docker network, set `PRIVO_METRICS_ADDR=0.0.0.0:9464` and **do not** add a
-domain or port mapping for 9464 in Coolify (the metrics have no sign-in).
+domain or port mapping for 9464 in Coolify (the metrics have no sign-in). Every container on
+that Docker network can then read them: the server aliases, call counts by
+outcome, whether each upstream is up, and the exact version. Put Prometheus
+and Privo on a network of their own if other services share it.
 Going back to 0.9.x is the older image; it ignores the two new tables.
 
 ## Each person's own API key; OAuth settings by hand (0.9.0)

@@ -42,9 +42,11 @@ chart.
    (`tools/call`, `prompts/get`, `resources/read`), tool or item name,
    outcome (`ok`, `tool_error`, `error`, `refused`), an error class (below),
    the time of each phase in microseconds (decide: rules and approval;
-   audit: the intent write; connect: getting the upstream session, including
-   a grant refresh; upstream: the call itself; total), and the size in bytes
-   of the arguments and of the result relayed to the client. **Never** the
+   wait: held for a person's approval; audit: the intent write; connect:
+   getting the upstream session, including a grant refresh; upstream: the
+   call itself; total), and the size in bytes of the arguments and of the
+   result's content (text, and binary data as base64, read from the lengths
+   without encoding the result again). **Never** the
    arguments, the result, a token, a key or an error text: the error class is
    one of a fixed list (`denied`, `pending_approval`, `denied_by_approver`,
    `too_many_pending`, `approvals_unavailable`, `audit_unavailable`,
@@ -59,17 +61,22 @@ chart.
    tool errors, refusals, p50/p95/p99/min/max/average of the total and p50/p95
    of each phase, average and p95 sizes); a time series (bucket at least one
    minute, at most 1,000 buckets, window at most 31 days); the list of calls
-   with filters; the diagnostic log; and what storage holds. Aggregates are
-   computed in the process from at most 100,000 rows per request; when more
-   rows fall in the window the answer says `truncated`. Latency percentiles
-   cover calls that ran (refusals are fast and would hide slow servers);
-   counts cover all.
+   with filters; the diagnostic log; and what storage holds. Counts come
+   from the database and cover every call. Times and sizes come from the
+   most recent 100,000 calls that ran in the window, read as compact rows;
+   when there were more the answer says `sampled` and from when. Latency
+   (the total without the approval wait) covers calls that ran: refusals are
+   fast and would hide slow servers, and the time a person takes to approve
+   is not the server's. At most two summaries or series are computed at once
+   in the process, and an answer is reused for five seconds.
 5. **Diagnostic log.** A second best-effort table holds operational events
    with a level (`info`, `warn`, `error`), a category (`upstream`, `grant`,
    `gateway`, `audit`, `lifecycle`), the server and member when there is one,
-   and a fixed message with credentials removed (the same redaction as the
-   server status). The same event repeated within a minute is written once
-   with a repeat count. Sources: upstream connect failure, disconnection and
+   and a message: a fixed text, or a fixed text followed by what the upstream
+   server answered, with every URL in it reduced to scheme, host and path.
+   Text an upstream wrote can hold anything it chose to echo, so every
+   message is cut at 512 bytes. The same event repeated within a minute is
+   written once with a repeat count. Sources: upstream connect failure, disconnection and
    recovery; a grant the authorization server refused (the person must
    connect again) and failed refreshes; a person's API key refused; audit
    events lost; start of the process.
@@ -101,8 +108,18 @@ chart.
 - Grouping by team is left out: a member can be in several teams, so a call
   would count more than once. It can come later from current membership.
 - Cost: one queued row per call and one batched insert every second; the
-  result size costs one more JSON encoding of the result into a counter (no
-  copy kept).
+  result size is a sum of lengths.
+
+## Amendment 1 (2026-11-15): the independent review
+
+The review of 2026-11-15 (`docs/reviews/2026-11-15-f28-telemetry-independent-review.md`)
+found that upstream text reached the log uncut (T-01), that more than
+100,000 calls in a window dropped the newest from the chart (T-02), and that
+re-encoding results doubled their cost (T-06). Points 2, 4 and 5 above now
+read as built after the fixes: counts in SQL and a newest-first sample,
+clipped and URL-redacted messages, the approval wait as its own phase, result
+size from lengths. Retention `0` also deletes what an earlier run kept
+(T-04).
 
 ## Alternatives considered
 

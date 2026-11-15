@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"privo.club/privo/internal/store"
 )
@@ -161,70 +162,62 @@ func TestDiagnosticsHeldRepeatsAreWrittenOnClose(t *testing.T) {
 	}
 }
 
-func row(server, item, outcome string, at time.Time, totalMS int64) store.CallStat {
-	return store.CallStat{Time: at, Server: server, Item: item, Method: "tools/call", Outcome: outcome, UserID: "u1", Client: "claude",
-		TotalUS: totalMS * 1000, UpstreamUS: totalMS * 900, DecideUS: 50, ArgsBytes: 10, ResultBytes: 100}
+func sample(key string, at time.Time, latencyMS int64) store.StatSample {
+	return store.StatSample{Key: key, Time: at, LatencyUS: latencyMS * 1000, UpstreamUS: latencyMS * 900, DecideUS: 50, ArgsBytes: 10, ResultBytes: 100}
 }
 
 func TestSummarize(t *testing.T) {
 	t0 := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
-	var rows []store.CallStat
+	var xs []store.StatSample
 	for i := 1; i <= 100; i++ { // github: 1..100 ms
-		rows = append(rows, row("github", "search", store.OutcomeOK, t0, int64(i)))
+		xs = append(xs, sample("github", t0, int64(i)))
 	}
-	rows = append(rows,
-		row("linear", "issue", store.OutcomeError, t0, 500),
-		row("linear", "issue", store.OutcomeToolError, t0, 300),
-		row("linear", "issue", store.OutcomeRefused, t0, 0))
-
-	total, groups, err := Summarize(rows, "server")
-	if err != nil {
-		t.Fatal(err)
+	xs = append(xs, sample("linear", t0, 500), sample("linear", t0, 300))
+	counts := []store.StatCount{
+		{Key: "linear", Calls: 3, Errors: 1, ToolErrors: 1, Refused: 1},
+		// More github calls than the sample holds: counts cover all.
+		{Key: "github", Calls: 150, OK: 150},
 	}
-	if total.Calls != 103 || total.OK != 100 || total.Errors != 1 || total.ToolErrors != 1 || total.Refused != 1 {
+	total, groups := Summarize(counts, xs)
+	if total.Calls != 153 || total.OK != 150 || total.Errors != 1 || total.ToolErrors != 1 || total.Refused != 1 {
 		t.Fatalf("total counts: %+v", total)
 	}
 	if len(groups) != 2 || groups[0].Key != "github" || groups[1].Key != "linear" {
 		t.Fatalf("groups, largest first: %+v", groups)
 	}
 	gh := groups[0]
-	if gh.Total.P50 != 50 || gh.Total.P95 != 95 || gh.Total.P99 != 99 || gh.Total.Min != 1 || gh.Total.Max != 100 || gh.Total.Avg != 50.5 {
-		t.Fatalf("github latency: %+v", gh.Total)
+	if gh.Calls != 150 || gh.Total.P50 != 50 || gh.Total.P95 != 95 || gh.Total.P99 != 99 || gh.Total.Min != 1 || gh.Total.Max != 100 || gh.Total.Avg != 50.5 {
+		t.Fatalf("github: %+v", gh)
 	}
 	if gh.Decide.P50 != 0.05 || gh.Result.Avg != 100 {
 		t.Fatalf("phases and sizes: decide %+v result %+v", gh.Decide, gh.Result)
 	}
 	li := groups[1]
-	// The refusal is counted but not timed; the error rate is over calls that ran.
 	if li.Calls != 3 || li.Refused != 1 || li.Total.Min != 300 || li.ErrorRate != 0.5 {
 		t.Fatalf("linear: %+v", li)
 	}
-	if _, g, _ := Summarize(rows, "tool"); g[0].Key != "github/search" {
-		t.Fatalf("by tool keys server/tool: %+v", g[0].Key)
-	}
-	if _, _, err := Summarize(rows, "team"); err == nil {
-		t.Fatal("an unknown breakdown was accepted")
-	}
-	if empty, _, _ := Summarize(nil, "server"); empty.Calls != 0 || empty.Total != (Stats{}) {
+	if empty, none := Summarize(nil, nil); empty.Calls != 0 || empty.Total != (Stats{}) || len(none) != 0 {
 		t.Fatalf("empty: %+v", empty)
+	}
+	if !ValidBy("tool") || ValidBy("team") {
+		t.Fatal("ValidBy")
 	}
 }
 
 func TestSeries(t *testing.T) {
 	t0 := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
-	rows := []store.CallStat{
-		row("github", "s", store.OutcomeOK, t0, 10),
-		row("github", "s", store.OutcomeOK, t0.Add(59*time.Second), 30),
-		row("github", "s", store.OutcomeError, t0.Add(2*time.Minute), 1000),
-		row("github", "s", store.OutcomeRefused, t0.Add(2*time.Minute), 0),
-		row("github", "s", store.OutcomeOK, t0.Add(-time.Second), 5),  // before the window
-		row("github", "s", store.OutcomeOK, t0.Add(3*time.Minute), 5), // at the end: excluded
+	counts := []store.StatCount{{Key: "0", Calls: 2}, {Key: "2", Calls: 2, Errors: 1, Refused: 1}, {Key: "7", Calls: 9}, {Key: "x", Calls: 9}}
+	xs := []store.StatSample{
+		sample("", t0, 10), sample("", t0.Add(59*time.Second), 30),
+		sample("", t0.Add(2*time.Minute), 1000),
+		sample("", t0.Add(-time.Second), 5),  // before the window
+		sample("", t0.Add(3*time.Minute), 5), // at the end: excluded
 	}
 	from, to := t0, t0.Add(3*time.Minute)
 	if err := CheckSeries(from, to, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	s := Series(rows, from, to, time.Minute)
+	s := Series(counts, xs, from, to, time.Minute)
 	if len(s) != 3 {
 		t.Fatalf("buckets: %d", len(s))
 	}
@@ -235,20 +228,41 @@ func TestSeries(t *testing.T) {
 		t.Fatalf("an empty bucket must be present: %+v", s[1])
 	}
 	if s[2].Calls != 2 || s[2].Errors != 1 || s[2].Refused != 1 || s[2].P50 != 1000 {
-		t.Fatalf("bucket 2: %+v", s[2])
+		t.Fatalf("bucket 2: %+v (a count outside the range must be ignored)", s[2])
+	}
+	// The limits: at most 1,000 buckets, so exactly 1,000 is allowed (T-09).
+	if err := CheckSeries(from, from.Add(1000*time.Minute), time.Minute); err != nil {
+		t.Fatalf("1,000 buckets: %v", err)
 	}
 	for _, bad := range []struct {
 		from, to time.Time
 		bucket   time.Duration
 	}{
 		{to, from, time.Minute},                           // reversed
-		{from, from.Add(32 * 24 * time.Hour), time.Hour},  // too long
+		{from, from.Add(33 * 24 * time.Hour), time.Hour},  // too long
 		{from, to, time.Second},                           // bucket too small
-		{from, from.Add(1000 * time.Minute), time.Minute}, // too many buckets
+		{from, from.Add(1001 * time.Minute), time.Minute}, // too many buckets
 	} {
 		if err := CheckSeries(bad.from, bad.to, bad.bucket); !errors.Is(err, ErrSeries) {
 			t.Fatalf("CheckSeries(%v, %v, %v) = %v", bad.from, bad.to, bad.bucket, err)
 		}
+	}
+}
+
+// Review of 2026-11-15, T-01: a message an upstream wrote is cut, on a rune
+// boundary, wherever it comes from.
+func TestDiagnosticsAreClipped(t *testing.T) {
+	m := &memStore{}
+	r := New(m, Options{FlushInterval: time.Hour})
+	long := strings.Repeat("é", MaxMessage) // two bytes each
+	r.Diagnose("o", store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryUpstream, Server: strings.Repeat("s", 200), Message: "connection failed: " + long})
+	r.Close()
+	d := m.diags[0]
+	if len(d.Message) > MaxMessage || !strings.HasSuffix(d.Message, "…") || !utf8.ValidString(d.Message) || len(d.Server) > 64 {
+		t.Fatalf("clipped to %d bytes (valid %v), server %d", len(d.Message), utf8.ValidString(d.Message), len(d.Server))
+	}
+	if Clip("short", 10) != "short" {
+		t.Fatal("a short text was changed")
 	}
 }
 
@@ -258,6 +272,8 @@ func TestMetricsText(t *testing.T) {
 	m.ObserveCall(store.CallStat{Server: "git\"hub", Method: "tools/call", Outcome: store.OutcomeOK, TotalUS: 7_000})      // 0.007 s
 	m.ObserveCall(store.CallStat{Server: "git\"hub", Method: "tools/call", Outcome: store.OutcomeOK, TotalUS: 90_000_000}) // 90 s
 	m.ObserveCall(store.CallStat{Server: "git\"hub", Method: "tools/call", Outcome: store.OutcomeRefused})
+	// 20 s waiting for a person, 6 ms of work: in the 0.01 bucket (T-10).
+	m.ObserveCall(store.CallStat{Server: "linear", Method: "tools/call", Outcome: store.OutcomeOK, TotalUS: 20_006_000, WaitUS: 20_000_000})
 	m.AddAuditLost(3)
 	var b strings.Builder
 	m.Write(&b)
@@ -271,6 +287,7 @@ func TestMetricsText(t *testing.T) {
 		`privo_mcp_call_duration_seconds_bucket{server="git\"hub",method="tools/call",le="+Inf"} 2`,
 		`privo_mcp_call_duration_seconds_count{server="git\"hub",method="tools/call"} 2`,
 		"privo_upstream_up{server=\"git\\\"hub\"} 1\nprivo_upstream_up{server=\"linear\"} 0\n",
+		`privo_mcp_call_duration_seconds_bucket{server="linear",method="tools/call",le="0.01"} 1`,
 		"privo_audit_events_lost_total 3\n",
 		"privo_telemetry_dropped_total 0\n",
 		"# TYPE privo_mcp_call_duration_seconds histogram\n",

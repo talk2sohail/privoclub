@@ -201,6 +201,17 @@ refuses a key, the call says so with the link to enter a new one. In the
 admin app this is the question **Whose account does this server see?** on
 **Servers → Add another server**.
 
+
+A server that answers 401 or 403 to a key is treated as refusing it. When the
+key the tool list is read with is refused, another administrator's key takes
+over the tool list. The header cannot be one that names the caller to a server
+or a proxy (such as `X-Forwarded-User` or `Remote-User`), or `Cookie`.
+
+For OAuth settings entered by hand without an issuer, an answer that names an
+issuer is refused (a mix-up defence); if your authorization server sends `iss`,
+enter its issuer. Endpoints by hand are refused for a server that publishes its
+own sign-in metadata.
+
 ## Teams and the server catalog
 
 Each team sees only the servers given to it (ADR 0020). On the admin site:
@@ -285,7 +296,9 @@ with a count. **Tool calls** and **Admin changes** are the audit as before.
 
 These statistics are kept apart from the audit (ADR 0024): one row per call
 with its phases and sizes, never its arguments, result or error text. They are
-best effort (a full queue drops a row and counts it rather than slow a call),
+best effort (a full queue drops a row and counts it rather than slow a call;
+counts cover every call, and times come from the most recent 100,000 calls
+in a window; the time a person takes to approve is kept out of latency),
 kept `PRIVO_TELEMETRY_RETENTION_DAYS` days (30 by default; `0` turns them off),
 and nothing leaves the server. Owners, admins and auditors see them, like the
 audit. The same figures come from the admin API under `/api/v1/telemetry/`

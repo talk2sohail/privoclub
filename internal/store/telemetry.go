@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -31,7 +32,8 @@ type CallStat struct {
 	Item        string
 	Outcome     string
 	ErrorClass  string
-	DecideUS    int64
+	DecideUS    int64 // rules and approval, without WaitUS
+	WaitUS      int64 // held for a person's approval (counted in TotalUS, not in latency)
 	AuditUS     int64
 	ConnectUS   int64
 	UpstreamUS  int64
@@ -73,8 +75,8 @@ func (s *Store) InsertCallStats(ctx context.Context, org OrgID, rows ...CallStat
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		st, err := tx.PrepareContext(ctx, `
 			INSERT INTO call_stats (org_id, id, ts_ms, user_id, token_id, client, server, method, item, outcome, error_class,
-				decide_us, audit_us, connect_us, upstream_us, total_us, args_bytes, result_bytes)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				decide_us, wait_us, audit_us, connect_us, upstream_us, total_us, args_bytes, result_bytes)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT (org_id, id) DO NOTHING`)
 		if err != nil {
 			return err
@@ -82,7 +84,7 @@ func (s *Store) InsertCallStats(ctx context.Context, org OrgID, rows ...CallStat
 		defer func() { _ = st.Close() }()
 		for _, r := range rows {
 			if _, err := st.ExecContext(ctx, org, r.ID, r.Time.UnixMilli(), r.UserID, r.TokenID, r.Client, r.Server, r.Method, r.Item,
-				r.Outcome, r.ErrorClass, r.DecideUS, r.AuditUS, r.ConnectUS, r.UpstreamUS, r.TotalUS, r.ArgsBytes, r.ResultBytes); err != nil {
+				r.Outcome, r.ErrorClass, r.DecideUS, r.WaitUS, r.AuditUS, r.ConnectUS, r.UpstreamUS, r.TotalUS, r.ArgsBytes, r.ResultBytes); err != nil {
 				return err
 			}
 		}
@@ -133,19 +135,7 @@ func (s *Store) CallStats(ctx context.Context, org OrgID, q CallStatQuery) ([]Ca
 	if q.Limit <= 0 || q.Limit > MaxStatRows {
 		q.Limit = MaxStatRows
 	}
-	where, args := []string{"org_id = ?"}, []any{org}
-	if !q.From.IsZero() {
-		where, args = append(where, "ts_ms >= ?"), append(args, q.From.UnixMilli())
-	}
-	if !q.To.IsZero() {
-		where, args = append(where, "ts_ms < ?"), append(args, q.To.UnixMilli())
-	}
-	for _, f := range []struct{ col, v string }{{"server", q.Server}, {"item", q.Item}, {"user_id", q.UserID},
-		{"client", q.Client}, {"method", q.Method}, {"outcome", q.Outcome}} {
-		if f.v != "" {
-			where, args = append(where, f.col+" = ?"), append(args, f.v)
-		}
-	}
+	where, args := statWhere(org, q)
 	order := "ts_ms ASC, id ASC"
 	if q.Newest {
 		order = "ts_ms DESC, id DESC"
@@ -154,7 +144,7 @@ func (s *Store) CallStats(ctx context.Context, org OrgID, q CallStatQuery) ([]Ca
 	//nolint:gosec // the WHERE clause is built from fixed column names; values are bound
 	rows, err := s.r.QueryContext(ctx, fmt.Sprintf(`
 		SELECT id, ts_ms, user_id, token_id, client, server, method, item, outcome, error_class,
-			decide_us, audit_us, connect_us, upstream_us, total_us, args_bytes, result_bytes
+			decide_us, wait_us, audit_us, connect_us, upstream_us, total_us, args_bytes, result_bytes
 		FROM call_stats WHERE %s ORDER BY %s LIMIT ?`, strings.Join(where, " AND "), order), args...)
 	if err != nil {
 		return nil, false, err
@@ -165,7 +155,7 @@ func (s *Store) CallStats(ctx context.Context, org OrgID, q CallStatQuery) ([]Ca
 		var r CallStat
 		var ms int64
 		if err := rows.Scan(&r.ID, &ms, &r.UserID, &r.TokenID, &r.Client, &r.Server, &r.Method, &r.Item, &r.Outcome, &r.ErrorClass,
-			&r.DecideUS, &r.AuditUS, &r.ConnectUS, &r.UpstreamUS, &r.TotalUS, &r.ArgsBytes, &r.ResultBytes); err != nil {
+			&r.DecideUS, &r.WaitUS, &r.AuditUS, &r.ConnectUS, &r.UpstreamUS, &r.TotalUS, &r.ArgsBytes, &r.ResultBytes); err != nil {
 			return nil, false, err
 		}
 		r.Time = time.UnixMilli(ms).UTC()
@@ -289,4 +279,142 @@ func (s *Store) PruneTelemetry(ctx context.Context, org OrgID, before time.Time)
 		}
 	}
 	return total, nil
+}
+
+// statWhere is the WHERE clause of a CallStatQuery, from fixed column names.
+func statWhere(org OrgID, q CallStatQuery) ([]string, []any) {
+	where, args := []string{"org_id = ?"}, []any{org}
+	if !q.From.IsZero() {
+		where, args = append(where, "ts_ms >= ?"), append(args, q.From.UnixMilli())
+	}
+	if !q.To.IsZero() {
+		where, args = append(where, "ts_ms < ?"), append(args, q.To.UnixMilli())
+	}
+	for _, f := range []struct{ col, v string }{{"server", q.Server}, {"item", q.Item}, {"user_id", q.UserID},
+		{"client", q.Client}, {"method", q.Method}, {"outcome", q.Outcome}} {
+		if f.v != "" {
+			where, args = append(where, f.col+" = ?"), append(args, f.v)
+		}
+	}
+	return where, args
+}
+
+// statKeys are the expressions a count or a sample can be grouped by.
+var statKeys = map[string]string{
+	"":       "''",
+	"server": "server",
+	"tool":   "server || '/' || item",
+	"member": "user_id",
+	"client": "client",
+	"method": "method",
+}
+
+// StatCount counts the calls of one group, or of one bucket.
+type StatCount struct {
+	Key        string // the group's key; for buckets, the bucket's index
+	Calls      int
+	OK         int
+	ToolErrors int
+	Errors     int
+	Refused    int
+}
+
+// Buckets of a count: Bucket set groups by time instead of by a key.
+type Buckets struct {
+	From time.Time
+	Size time.Duration
+}
+
+// CountCallStats counts every matching call by group (by is a key of
+// statKeys) or, with b set, by time bucket. Counting in the database reads no
+// rows into memory, so no call is left out however many there are (review of
+// 2026-11-15, T-02).
+func (s *Store) CountCallStats(ctx context.Context, org OrgID, q CallStatQuery, by string, b *Buckets) ([]StatCount, error) {
+	key, ok := statKeys[by]
+	if !ok {
+		return nil, fmt.Errorf("store: no statistic key %q", by)
+	}
+	where, args := statWhere(org, q)
+	if b != nil {
+		if b.Size < time.Millisecond {
+			return nil, errors.New("store: a bucket of at least a millisecond")
+		}
+		key = "CAST((ts_ms - ?) / ? AS TEXT)"
+		args = append([]any{b.From.UnixMilli(), b.Size.Milliseconds()}, args...)
+	}
+	//nolint:gosec // the key and the WHERE clause come from fixed expressions; values are bound
+	rows, err := s.r.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s AS k, COUNT(*),
+			SUM(outcome = 'ok'), SUM(outcome = 'tool_error'), SUM(outcome = 'refused'),
+			SUM(outcome NOT IN ('ok', 'tool_error', 'refused'))
+		FROM call_stats WHERE %s GROUP BY k`, key, strings.Join(where, " AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []StatCount
+	for rows.Next() {
+		var c StatCount
+		if err := rows.Scan(&c.Key, &c.Calls, &c.OK, &c.ToolErrors, &c.Refused, &c.Errors); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// StatSample is what the time figures of a call that ran need, and nothing
+// more: a sample of many is held in memory.
+type StatSample struct {
+	Key         string
+	Time        time.Time
+	LatencyUS   int64 // TotalUS without the approval wait
+	DecideUS    int64
+	AuditUS     int64
+	ConnectUS   int64
+	UpstreamUS  int64
+	ArgsBytes   int64
+	ResultBytes int64
+}
+
+// SampleCallStats returns the most recent calls that ran (refusals are quick
+// and would hide slow servers), at most limit of them, newest first, and
+// whether there were more (review of 2026-11-15, T-02 and T-03).
+func (s *Store) SampleCallStats(ctx context.Context, org OrgID, q CallStatQuery, by string, limit int) ([]StatSample, bool, error) {
+	key, ok := statKeys[by]
+	if !ok {
+		return nil, false, fmt.Errorf("store: no statistic key %q", by)
+	}
+	if limit <= 0 || limit > MaxStatRows {
+		limit = MaxStatRows
+	}
+	where, args := statWhere(org, q)
+	where = append(where, "outcome IN ('ok', 'tool_error', 'error')")
+	args = append(args, limit+1)
+	//nolint:gosec // the key and the WHERE clause come from fixed expressions; values are bound
+	rows, err := s.r.QueryContext(ctx, fmt.Sprintf(`
+		SELECT %s, ts_ms, max(total_us - wait_us, 0), decide_us, audit_us, connect_us, upstream_us, args_bytes, result_bytes
+		FROM call_stats WHERE %s ORDER BY ts_ms DESC, id DESC LIMIT ?`, key, strings.Join(where, " AND ")), args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]StatSample, 0, 1024)
+	for rows.Next() {
+		var x StatSample
+		var ms int64
+		if err := rows.Scan(&x.Key, &ms, &x.LatencyUS, &x.DecideUS, &x.AuditUS, &x.ConnectUS, &x.UpstreamUS, &x.ArgsBytes, &x.ResultBytes); err != nil {
+			return nil, false, err
+		}
+		x.Time = time.UnixMilli(ms).UTC()
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	more := len(out) > limit
+	if more {
+		out = out[:limit]
+	}
+	return out, more, nil
 }

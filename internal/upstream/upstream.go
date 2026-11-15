@@ -26,6 +26,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"privo.club/privo/internal/buildinfo"
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/safe"
@@ -340,7 +341,9 @@ func (m *Manager) supervise(ctx context.Context, e *entry) {
 			if ctx.Err() != nil {
 				return
 			}
-			msg := redactError(err.Error(), e.srv.Config.URL)
+			// Every URL in the text loses its query and user info, not only the
+			// server's own address (review of 2026-11-15, T-05).
+			msg := RedactText(redactError(err.Error(), e.srv.Config.URL))
 			e.setDown(msg)
 			m.opts.Logger.Warn("upstream connect failed", "server", e.srv.Alias, "err", msg)
 			m.diagnose(e, store.LevelWarn, "connection failed: "+msg)
@@ -489,7 +492,7 @@ func (m *Manager) scheduleLoad(ctx context.Context, e *entry, s *mcp.ClientSessi
 				err := m.load(lctx, e, s)
 				cancel()
 				if err != nil {
-					msg := redactError(err.Error(), e.srv.Config.URL)
+					msg := RedactText(redactError(err.Error(), e.srv.Config.URL))
 					m.opts.Logger.Warn("upstream refresh failed", "server", e.srv.Alias, "err", msg)
 					m.diagnose(e, store.LevelWarn, "refreshing the list of tools failed: "+msg)
 				}
@@ -781,6 +784,7 @@ func (m *Manager) catalogTransport(ctx context.Context, e *entry) (mcp.Transport
 	org, srv := e.org, e.srv
 	auth := &bearer{
 		header: credentialHeader(srv),
+		key:    srv.Config.Auth == store.AuthKey,
 		token: func(c context.Context) (string, error) {
 			uid, tok, err := m.opts.Grants.CatalogAccessToken(c, org, srv)
 			if err == nil {
@@ -793,7 +797,20 @@ func (m *Manager) catalogTransport(ctx context.Context, e *entry) (mcp.Transport
 			if uid == "" {
 				return "", errors.New("no catalog grant")
 			}
-			return m.opts.Grants.RefreshAfterReject(c, org, srv, uid, old)
+			tok, err := m.opts.Grants.RefreshAfterReject(c, org, srv, uid, old)
+			// A refused key stays its owner's (ADR 0023 point 5), but the tool
+			// list moves to another administrator's key, so the server does not
+			// go down for everyone (review of 2026-11-15, U-03).
+			if p, ok := m.opts.Grants.(catalogPasser); ok && errors.Is(err, grants.ErrKeyRefused) {
+				if moved, perr := p.PassCatalog(c, org, srv, uid); perr == nil && moved {
+					nuid, ntok, nerr := m.opts.Grants.CatalogAccessToken(c, org, srv)
+					if nerr == nil {
+						owner.Store(nuid)
+						return ntok, nil
+					}
+				}
+			}
+			return tok, err
 		},
 	}
 	return m.httpTransport(e.srv, nil, auth)

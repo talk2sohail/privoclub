@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"privo.club/privo/internal/auth"
@@ -33,6 +34,9 @@ func parseWindow(v string, def time.Duration) (time.Duration, error) {
 	var d time.Duration
 	if days, ok := strings.CutSuffix(v, "d"); ok {
 		n, err := strconv.Atoi(days)
+		if err == nil && (n < 0 || n > 31) {
+			return 0, errorf(http.StatusBadRequest, "window %q: from 1 minute to 31 days", v)
+		}
 		if err != nil {
 			return 0, errorf(http.StatusBadRequest, "window %q: use minutes, hours or days, such as 15m, 24h or 7d", v)
 		}
@@ -93,6 +97,71 @@ func (a *API) memberNames(ctx context.Context, org store.OrgID, ids []string) (m
 	return names, nil
 }
 
+// statAggregations bounds how many summaries and series are computed at once
+// in the process, and statCacheTTL how long an answer is reused: an auditor
+// polling, or many of them, cannot multiply the work (review of 2026-11-15,
+// T-03).
+const (
+	statAggregations = 2
+	statCacheTTL     = 5 * time.Second
+	statCacheMax     = 128
+)
+
+// statCache holds recent telemetry answers and the aggregation slots.
+type statCache struct {
+	mu   sync.Mutex
+	sem  chan struct{}
+	seen map[string]statAnswer
+}
+
+type statAnswer struct {
+	until time.Time
+	body  map[string]any
+}
+
+// aggregate answers from the cache, or computes the answer in one of the
+// slots and keeps it for statCacheTTL.
+func (a *API) aggregate(r *http.Request, p auth.Principal, compute func() (map[string]any, error)) (map[string]any, error) {
+	key := string(p.OrgID) + "\x00" + r.URL.Path + "?" + r.URL.RawQuery
+	c := &a.stats
+	c.mu.Lock()
+	if c.sem == nil {
+		c.sem, c.seen = make(chan struct{}, statAggregations), map[string]statAnswer{}
+	}
+	if hit, ok := c.seen[key]; ok && time.Now().Before(hit.until) {
+		c.mu.Unlock()
+		return hit.body, nil
+	}
+	sem := c.sem
+	c.mu.Unlock()
+	select {
+	case sem <- struct{}{}:
+	case <-r.Context().Done():
+		return nil, r.Context().Err()
+	}
+	body, err := compute()
+	<-sem
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if len(c.seen) >= statCacheMax {
+		clear(c.seen)
+	}
+	c.seen[key] = statAnswer{until: time.Now().Add(statCacheTTL), body: body}
+	c.mu.Unlock()
+	return body, nil
+}
+
+// sampleNote says what the times cover when a window holds more calls than
+// the sample: counts always cover every call (review of 2026-11-15, T-02).
+func sampleNote(out map[string]any, sample []store.StatSample, more bool) {
+	out["sampled"] = more
+	if more && len(sample) > 0 {
+		out["sample_from"] = sample[len(sample)-1].Time
+	}
+}
+
 func (a *API) telemetrySummary(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	window, err := parseWindow(r.URL.Query().Get("window"), 24*time.Hour)
 	if err != nil {
@@ -102,35 +171,43 @@ func (a *API) telemetrySummary(w http.ResponseWriter, r *http.Request, p auth.Pr
 	if by == "" {
 		by = "server"
 	}
-	if _, ok := telemetry.GroupBy[by]; !ok {
+	if !telemetry.ValidBy(by) {
 		return errorf(http.StatusBadRequest, "by must be server, tool, member, client or method")
 	}
 	f, err := statFilter(r)
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	f.From, f.To = now.Add(-window), now.Add(time.Millisecond)
-	rows, truncated, err := a.Store.CallStats(r.Context(), p.OrgID, f)
+	out, err := a.aggregate(r, p, func() (map[string]any, error) {
+		now := time.Now()
+		f.From, f.To = now.Add(-window), now.Add(time.Millisecond)
+		counts, err := a.Store.CountCallStats(r.Context(), p.OrgID, f, by, nil)
+		if err != nil {
+			return nil, err
+		}
+		sample, more, err := a.Store.SampleCallStats(r.Context(), p.OrgID, f, by, store.MaxStatRows)
+		if err != nil {
+			return nil, err
+		}
+		total, groups := telemetry.Summarize(counts, sample)
+		out := map[string]any{"window": window.String(), "from": f.From.UTC(), "to": now.UTC(), "by": by, "total": total,
+			"groups": groups, "recording": a.TelemetryRetentionDays > 0}
+		sampleNote(out, sample, more)
+		if by == "member" {
+			ids := make([]string, 0, len(groups))
+			for _, g := range groups {
+				ids = append(ids, g.Key)
+			}
+			names, err := a.memberNames(r.Context(), p.OrgID, ids)
+			if err != nil {
+				return nil, err
+			}
+			out["labels"] = names
+		}
+		return out, nil
+	})
 	if err != nil {
 		return err
-	}
-	total, groups, err := telemetry.Summarize(rows, by)
-	if err != nil {
-		return errorf(http.StatusBadRequest, "%v", err)
-	}
-	out := map[string]any{"window": window.String(), "from": f.From.UTC(), "to": now.UTC(), "by": by, "total": total,
-		"groups": groups, "truncated": truncated, "recording": a.TelemetryRetentionDays > 0}
-	if by == "member" {
-		ids := make([]string, 0, len(groups))
-		for _, g := range groups {
-			ids = append(ids, g.Key)
-		}
-		names, err := a.memberNames(r.Context(), p.OrgID, ids)
-		if err != nil {
-			return err
-		}
-		out["labels"] = names
 	}
 	writeJSON(w, http.StatusOK, out)
 	return nil
@@ -148,23 +225,38 @@ func (a *API) telemetrySeries(w http.ResponseWriter, r *http.Request, p auth.Pri
 			return errorf(http.StatusBadRequest, "bucket %q: a duration such as 1m or 1h", v)
 		}
 	}
-	// Buckets end at the next boundary after now, so the last one holds now.
-	to := time.Now().Truncate(bucket).Add(bucket)
-	from := to.Add(-window).Truncate(bucket)
-	if err := telemetry.CheckSeries(from, to, bucket); err != nil {
-		return errorf(http.StatusBadRequest, "%s", strings.TrimPrefix(err.Error(), telemetry.ErrSeries.Error()+": "))
-	}
 	f, err := statFilter(r)
 	if err != nil {
 		return err
 	}
-	f.From, f.To = from, to
-	rows, truncated, err := a.Store.CallStats(r.Context(), p.OrgID, f)
+	now := time.Now()
+	// Buckets start on a boundary and end at the next one after now, so the
+	// last holds now; the calls counted are those of the window itself, as in
+	// the summary, so the chart and the totals agree (T-09).
+	start := now.Add(-window)
+	from, to := start.Truncate(bucket), now.Truncate(bucket).Add(bucket)
+	if err := telemetry.CheckSeries(from, to, bucket); err != nil {
+		return errorf(http.StatusBadRequest, "%s", strings.TrimPrefix(err.Error(), telemetry.ErrSeries.Error()+": "))
+	}
+	out, err := a.aggregate(r, p, func() (map[string]any, error) {
+		f.From, f.To = start, now.Add(time.Millisecond)
+		counts, err := a.Store.CountCallStats(r.Context(), p.OrgID, f, "", &store.Buckets{From: from, Size: bucket})
+		if err != nil {
+			return nil, err
+		}
+		sample, more, err := a.Store.SampleCallStats(r.Context(), p.OrgID, f, "", store.MaxStatRows)
+		if err != nil {
+			return nil, err
+		}
+		out := map[string]any{"from": from.UTC(), "to": to.UTC(), "bucket": bucket.String(),
+			"buckets": telemetry.Series(counts, sample, from, to, bucket), "recording": a.TelemetryRetentionDays > 0}
+		sampleNote(out, sample, more)
+		return out, nil
+	})
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"from": from.UTC(), "to": to.UTC(), "bucket": bucket.String(),
-		"buckets": telemetry.Series(rows, from, to, bucket), "truncated": truncated, "recording": a.TelemetryRetentionDays > 0})
+	writeJSON(w, http.StatusOK, out)
 	return nil
 }
 
@@ -177,8 +269,11 @@ func (a *API) telemetryCalls(w http.ResponseWriter, r *http.Request, p auth.Prin
 	}
 	f.Newest = true
 	f.Limit, _ = strconv.Atoi(r.URL.Query().Get("limit"))
-	if f.Limit <= 0 || f.Limit > 500 {
+	switch {
+	case f.Limit <= 0:
 		f.Limit = 100
+	case f.Limit > 500:
+		f.Limit = 500
 	}
 	if v := r.URL.Query().Get("before"); v != "" {
 		t, err := time.Parse(time.RFC3339Nano, v)
@@ -203,7 +298,7 @@ func (a *API) telemetryCalls(w http.ResponseWriter, r *http.Request, p auth.Prin
 	for _, c := range rows {
 		e := map[string]any{"id": c.ID, "time": c.Time, "server": c.Server, "method": c.Method, "item": c.Item,
 			"outcome": c.Outcome, "client": c.Client, "token_id": c.TokenID,
-			"decide_ms": ms(c.DecideUS), "audit_ms": ms(c.AuditUS), "connect_ms": ms(c.ConnectUS), "upstream_ms": ms(c.UpstreamUS),
+			"decide_ms": ms(c.DecideUS), "wait_ms": ms(c.WaitUS), "audit_ms": ms(c.AuditUS), "connect_ms": ms(c.ConnectUS), "upstream_ms": ms(c.UpstreamUS),
 			"total_ms": ms(c.TotalUS), "args_bytes": c.ArgsBytes, "result_bytes": c.ResultBytes}
 		if c.ErrorClass != "" {
 			e["error_class"] = c.ErrorClass
@@ -232,6 +327,7 @@ func (a *API) telemetryLogs(w http.ResponseWriter, r *http.Request, p auth.Princ
 		return errorf(http.StatusBadRequest, "level must be one of %s", strings.Join(diagLevels, ", "))
 	}
 	dq.Limit, _ = strconv.Atoi(q.Get("limit"))
+	dq.Limit = min(dq.Limit, 500) // over the bound reads the bound, as for calls (T-09)
 	for name, dst := range map[string]*time.Time{"since": &dq.Since, "before": &dq.Before} {
 		if v := q.Get(name); v != "" {
 			t, err := time.Parse(time.RFC3339Nano, v)

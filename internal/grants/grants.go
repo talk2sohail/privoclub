@@ -62,6 +62,7 @@ func ValidKey(key string) bool {
 type Store interface {
 	Grant(ctx context.Context, org store.OrgID, serverID, userID string) (store.Grant, error)
 	CatalogGrant(ctx context.Context, org store.OrgID, serverID string) (store.Grant, error)
+	PassCatalog(ctx context.Context, org store.OrgID, serverID, userID string) (bool, error)
 	SaveGrant(ctx context.Context, org store.OrgID, g store.Grant, catalogOK bool, ev store.AuditEvent) (store.Grant, error)
 	UpdateGrantToken(ctx context.Context, org store.OrgID, serverID, userID string, from uint64, c store.Credential, now time.Time) error
 	DeleteGrant(ctx context.Context, org store.OrgID, serverID, userID string, ev store.AuditEvent) error
@@ -244,6 +245,13 @@ func (s *Service) CatalogAccessToken(ctx context.Context, org store.OrgID, srv s
 }
 
 func (s *Service) usable(ctx context.Context, org store.OrgID, srv store.Server, g store.Grant) (string, error) {
+	// A key is used only for a server that takes keys, and an OAuth grant
+	// only for one that signs people in. Changing a server's sign-in method
+	// is planned; until the stored credentials follow, a mismatch reads as not
+	// connected (review of 2026-11-15, U-07).
+	if (srv.Config.Auth == store.AuthKey) != (g.Credential.Purpose == store.PurposeKeyGrant) {
+		return "", ErrNotConnected
+	}
 	tok, err := s.token(ctx, org, g)
 	if err != nil {
 		return "", err
@@ -256,6 +264,16 @@ func (s *Service) usable(ctx context.Context, org store.OrgID, srv store.Server,
 		return tok.AccessToken, nil
 	}
 	return s.refresh(ctx, org, srv, g.UserID, tok.AccessToken)
+}
+
+// PassCatalog hands a server's catalog to another manager's grant after the
+// upstream refused userID's key (store.PassCatalog).
+func (s *Service) PassCatalog(ctx context.Context, org store.OrgID, srv store.Server, userID string) (bool, error) {
+	moved, err := s.Store.PassCatalog(ctx, org, srv.ID, userID)
+	if moved {
+		s.logger().Warn("the server refused the key the tool list was read with; another administrator's key reads it now", "server", srv.Alias)
+	}
+	return moved, err
 }
 
 // RefreshAfterReject refreshes the person's grant after the server refused the

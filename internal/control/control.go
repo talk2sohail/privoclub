@@ -66,6 +66,7 @@ type API struct {
 	// with empty data while retention is 0 (recording off).
 	Telemetry              *telemetry.Recorder
 	TelemetryRetentionDays int
+	stats                  statCache
 	in                     internal // the mux of in-process calls (Serve)
 }
 

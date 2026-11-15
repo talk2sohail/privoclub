@@ -53,7 +53,8 @@ func (m *Metrics) ObserveCall(c store.CallStat) {
 	if m == nil {
 		return
 	}
-	secs := float64(c.TotalUS) / 1e6
+	// The time a person took to approve is not the server's (T-10).
+	secs := float64(max(c.TotalUS-c.WaitUS, 0)) / 1e6
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls[[3]string{c.Server, c.Method, c.Outcome}]++

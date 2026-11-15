@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"privo.club/privo/internal/store"
@@ -28,8 +30,11 @@ type Group struct {
 	Errors     int     `json:"errors"`
 	Refused    int     `json:"refused"`
 	ErrorRate  float64 `json:"error_rate"` // errors over calls that ran
-	// Durations cover calls that ran: refusals are quick and would hide slow
-	// servers (ADR 0024 point 4).
+	// Times cover calls that ran: refusals are quick and would hide slow
+	// servers (ADR 0024 point 4). Total is the latency: the time from arrival
+	// to answer without any wait for a person's approval (review of
+	// 2026-11-15, T-10). When a window holds more calls than the sample, the
+	// times come from the most recent ones; the counts always cover all.
 	Total    Stats `json:"total_ms"`
 	Decide   Stats `json:"decide_ms"`
 	Audit    Stats `json:"audit_ms"`
@@ -39,75 +44,56 @@ type Group struct {
 	Result   Stats `json:"result_bytes"`
 }
 
-// GroupBy holds the keys a summary can be broken down by.
-var GroupBy = map[string]func(store.CallStat) string{
-	"server": func(c store.CallStat) string { return c.Server },
-	"tool":   func(c store.CallStat) string { return c.Server + "/" + c.Item },
-	"member": func(c store.CallStat) string { return c.UserID },
-	"client": func(c store.CallStat) string { return c.Client },
-	"method": func(c store.CallStat) string { return c.Method },
-}
+// GroupBy lists the keys a summary can be broken down by.
+var GroupBy = []string{"server", "tool", "member", "client", "method"}
 
-// Summarize summarises rows as a whole and grouped by the key by names (one
-// of GroupBy), largest group first.
-func Summarize(rows []store.CallStat, by string) (Group, []Group, error) {
-	key, ok := GroupBy[by]
-	if !ok && by != "" {
-		return Group{}, nil, fmt.Errorf("by must be one of server, tool, member, client, method")
+// ValidBy reports whether by is one of GroupBy.
+func ValidBy(by string) bool { return slices.Contains(GroupBy, by) }
+
+// Summarize combines the counts of every call with the times of a sample,
+// as a whole and by group, largest group first.
+func Summarize(counts []store.StatCount, sample []store.StatSample) (Group, []Group) {
+	parts := map[string][]store.StatSample{}
+	for _, x := range sample {
+		parts[x.Key] = append(parts[x.Key], x)
 	}
-	total := summarize("", rows)
-	if !ok {
-		return total, nil, nil
+	total := Group{}
+	groups := make([]Group, 0, len(counts))
+	for _, c := range counts {
+		g := group(c, parts[c.Key])
+		groups = append(groups, g)
+		total.Calls += c.Calls
+		total.OK += c.OK
+		total.ToolErrors += c.ToolErrors
+		total.Errors += c.Errors
+		total.Refused += c.Refused
 	}
-	parts := map[string][]store.CallStat{}
-	for _, r := range rows {
-		k := key(r)
-		parts[k] = append(parts[k], r)
-	}
-	groups := make([]Group, 0, len(parts))
-	for k, rs := range parts {
-		groups = append(groups, summarize(k, rs))
-	}
+	total = group(store.StatCount{Calls: total.Calls, OK: total.OK, ToolErrors: total.ToolErrors, Errors: total.Errors, Refused: total.Refused}, sample)
 	slices.SortFunc(groups, func(a, b Group) int {
 		if a.Calls != b.Calls {
 			return b.Calls - a.Calls
 		}
-		if a.Key < b.Key {
-			return -1
-		}
-		if a.Key > b.Key {
-			return 1
-		}
-		return 0
+		return strings.Compare(a.Key, b.Key)
 	})
-	return total, groups, nil
+	return total, groups
 }
 
-func summarize(k string, rows []store.CallStat) Group {
-	g := Group{Key: k, Calls: len(rows)}
-	var total, decide, audit, connect, up, args, result []int64
-	for _, r := range rows {
-		switch r.Outcome {
-		case store.OutcomeOK:
-			g.OK++
-		case store.OutcomeToolError:
-			g.ToolErrors++
-		case store.OutcomeRefused:
-			g.Refused++
-			continue
-		default:
-			g.Errors++
-		}
-		total = append(total, r.TotalUS)
-		decide = append(decide, r.DecideUS)
-		audit = append(audit, r.AuditUS)
-		connect = append(connect, r.ConnectUS)
-		up = append(up, r.UpstreamUS)
-		args = append(args, r.ArgsBytes)
-		result = append(result, r.ResultBytes)
-	}
+func group(c store.StatCount, xs []store.StatSample) Group {
+	g := Group{Key: c.Key, Calls: c.Calls, OK: c.OK, ToolErrors: c.ToolErrors, Errors: c.Errors, Refused: c.Refused}
 	if ran := g.OK + g.ToolErrors + g.Errors; ran > 0 {
 		g.ErrorRate = float64(g.Errors) / float64(ran)
+	}
+	n := len(xs)
+	total, decide, audit, connect, up, args, result := make([]int64, 0, n), make([]int64, 0, n), make([]int64, 0, n), make([]int64, 0, n),
+		make([]int64, 0, n), make([]int64, 0, n), make([]int64, 0, n)
+	for _, x := range xs {
+		total = append(total, x.LatencyUS)
+		decide = append(decide, x.DecideUS)
+		audit = append(audit, x.AuditUS)
+		connect = append(connect, x.ConnectUS)
+		up = append(up, x.UpstreamUS)
+		args = append(args, x.ArgsBytes)
+		result = append(result, x.ResultBytes)
 	}
 	const ms = 1000.0
 	g.Total, g.Decide, g.Audit, g.Connect, g.Upstream = stats(total, ms), stats(decide, ms), stats(audit, ms), stats(connect, ms), stats(up, ms)
@@ -146,7 +132,7 @@ type Bucket struct {
 	Errors     int       `json:"errors"`
 	ToolErrors int       `json:"tool_errors"`
 	Refused    int       `json:"refused"`
-	P50        float64   `json:"p50_ms"`
+	P50        float64   `json:"p50_ms"` // 0 when the sample holds no call of the bucket
 	P95        float64   `json:"p95_ms"`
 }
 
@@ -160,52 +146,54 @@ const (
 // ErrSeries is wrapped by every reason a series cannot be made.
 var ErrSeries = errors.New("telemetry: series")
 
+// BucketCount is how many buckets of size bucket cover [from, to).
+func BucketCount(from, to time.Time, bucket time.Duration) int {
+	return int((to.Sub(from) + bucket - 1) / bucket)
+}
+
 // CheckSeries tells whether [from, to) in buckets of size bucket is allowed.
 func CheckSeries(from, to time.Time, bucket time.Duration) error {
 	switch {
 	case !from.Before(to):
 		return fmt.Errorf("%w: the start must be before the end", ErrSeries)
-	case to.Sub(from) > MaxWindow:
+	case to.Sub(from) > MaxWindow+bucket: // the last bucket may reach past the window
 		return fmt.Errorf("%w: the window is at most 31 days", ErrSeries)
 	case bucket < MinBucket:
 		return fmt.Errorf("%w: a bucket is at least one minute", ErrSeries)
-	case int64(to.Sub(from)/bucket) >= MaxBuckets:
+	case BucketCount(from, to, bucket) > MaxBuckets:
 		return fmt.Errorf("%w: at most %d buckets", ErrSeries, MaxBuckets)
 	}
 	return nil
 }
 
-// Series counts rows into buckets of size bucket from from (inclusive) to to
-// (exclusive). Every bucket is present, empty ones too, so a chart has no
-// gaps. Call CheckSeries first.
-func Series(rows []store.CallStat, from, to time.Time, bucket time.Duration) []Bucket {
-	n := int((to.Sub(from) + bucket - 1) / bucket)
+// Series lays counts by bucket index (store.CountCallStats with Buckets from
+// from) and a time sample into buckets of size bucket from from (inclusive)
+// to to (exclusive). Every bucket is present, empty ones too, so a chart has
+// no gaps. Call CheckSeries first.
+func Series(counts []store.StatCount, sample []store.StatSample, from, to time.Time, bucket time.Duration) []Bucket {
+	n := BucketCount(from, to, bucket)
 	out := make([]Bucket, n)
 	lat := make([][]int64, n)
 	for i := range out {
 		out[i].Start = from.Add(time.Duration(i) * bucket).UTC()
 	}
-	for _, r := range rows {
-		if r.Time.Before(from) || !r.Time.Before(to) {
+	for _, c := range counts {
+		i, err := strconv.Atoi(c.Key)
+		if err != nil || i < 0 || i >= n {
 			continue
 		}
-		i := int(r.Time.Sub(from) / bucket)
-		b := &out[i]
-		b.Calls++
-		switch r.Outcome {
-		case store.OutcomeRefused:
-			b.Refused++
+		out[i].Calls, out[i].Errors, out[i].ToolErrors, out[i].Refused = c.Calls, c.Errors, c.ToolErrors, c.Refused
+	}
+	for _, x := range sample {
+		if x.Time.Before(from) || !x.Time.Before(to) {
 			continue
-		case store.OutcomeToolError:
-			b.ToolErrors++
-		case store.OutcomeError:
-			b.Errors++
 		}
-		lat[i] = append(lat[i], r.TotalUS)
+		i := int(x.Time.Sub(from) / bucket)
+		lat[i] = append(lat[i], x.LatencyUS)
 	}
 	for i := range out {
-		s := stats(lat[i], 1000)
-		out[i].P50, out[i].P95 = s.P50, s.P95
+		st := stats(lat[i], 1000)
+		out[i].P50, out[i].P95 = st.P50, st.P95
 	}
 	return out
 }

@@ -505,10 +505,10 @@ describe("activity overview and log (ADR 0024)", () => {
     at("/admin/activity");
     await start(session("owner"), {
       "GET /admin/api/v1/telemetry/summary?window=24h&by=server": {
-        window: "24h0m0s", by: "server", total: group("", 12, 1), groups: [group(evil, 10, 0), group("linear", 2, 1)], truncated: false, recording: true,
+        window: "24h0m0s", by: "server", total: group("", 12, 1), groups: [group(evil, 10, 0), group("linear", 2, 1)], sampled: false, recording: true,
       },
       "GET /admin/api/v1/telemetry/timeseries?window=24h": {
-        bucket: "30m0s", truncated: false,
+        bucket: "30m0s", sampled: false,
         buckets: [{ start: "2026-11-14T10:00:00Z", calls: 12, errors: 1, tool_errors: 0, refused: 0, p50_ms: 12, p95_ms: 24 }],
       },
       "GET /admin/api/v1/telemetry/storage": { recording: true, retention_days: 30, calls: 12, oldest_call: "2026-11-01T00:00:00Z", logs: 1, oldest_log: null, dropped: 0 },
@@ -524,12 +524,14 @@ describe("activity overview and log (ADR 0024)", () => {
   it("says when statistics are off", async () => {
     at("/admin/activity?view=overview&window=7d&by=member");
     await start(session("owner"), {
-      "GET /admin/api/v1/telemetry/summary?window=7d&by=member": { window: "168h0m0s", by: "member", total: group("", 0, 0), groups: [], labels: {}, truncated: false, recording: false },
-      "GET /admin/api/v1/telemetry/timeseries?window=7d": { bucket: "6h0m0s", buckets: [], truncated: false },
+      "GET /admin/api/v1/telemetry/summary?window=7d&by=member": { window: "168h0m0s", by: "member", total: group("", 0, 0), groups: [], labels: {}, sampled: true, sample_from: "2026-11-10T00:00:00Z", recording: false },
+      "GET /admin/api/v1/telemetry/timeseries?window=7d": { bucket: "6h0m0s", buckets: [], sampled: false },
       "GET /admin/api/v1/telemetry/storage": { recording: false, retention_days: 0, calls: 0, oldest_call: null, logs: 0, oldest_log: null, dropped: 0 },
     });
     await screen.findByText(/Call statistics are off/);
     expect(screen.getByText("No calls in this window.")).toBeTruthy();
+    // When the times come from a sample, the page says so (review T-02).
+    expect(screen.getByText(/Counts cover every call/)).toBeTruthy();
   });
 
   it("shows the log with repeats, as text", async () => {

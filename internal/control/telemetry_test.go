@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -54,7 +55,7 @@ func TestTelemetryAPI(t *testing.T) {
 
 	sum := e.call(t, owner, http.MethodGet, "/api/v1/telemetry/summary?window=1h&by=server", nil, http.StatusOK)
 	total := sum["total"].(map[string]any)
-	if total["calls"].(float64) != 12 || total["errors"].(float64) != 1 || total["refused"].(float64) != 1 || sum["truncated"] != false {
+	if total["calls"].(float64) != 12 || total["errors"].(float64) != 1 || total["refused"].(float64) != 1 || sum["sampled"] != false {
 		t.Fatalf("total: %v", sum)
 	}
 	groups := sum["groups"].([]any)
@@ -93,8 +94,27 @@ func TestTelemetryAPI(t *testing.T) {
 		t.Fatalf("logs: %v", logs)
 	}
 
+	// An answer is reused for a few seconds, so polling does not multiply the
+	// work (review of 2026-11-15, T-03); another query is computed.
+	if err := e.st.InsertCallStats(context.Background(), e.org, store.CallStat{ID: "late", Time: time.Now(), Server: "github",
+		Method: "tools/call", Outcome: store.OutcomeOK, TotalUS: 1}); err != nil {
+		t.Fatal(err)
+	}
+	again := e.call(t, owner, http.MethodGet, "/api/v1/telemetry/summary?window=1h&by=server", nil, http.StatusOK)
+	if again["total"].(map[string]any)["calls"].(float64) != 12 {
+		t.Fatalf("the cached answer was not used: %v", again["total"])
+	}
+	fresh := e.call(t, owner, http.MethodGet, "/api/v1/telemetry/summary?window=2h&by=server", nil, http.StatusOK)
+	if fresh["total"].(map[string]any)["calls"].(float64) != 13 {
+		t.Fatalf("another window: %v", fresh["total"])
+	}
+	// Over the bound reads the bound, not the default (T-09).
+	if big := e.call(t, owner, http.MethodGet, "/api/v1/telemetry/calls?limit=100000", nil, http.StatusOK); len(big["calls"].([]any)) != 14 {
+		t.Fatalf("limit over the bound: %d", len(big["calls"].([]any)))
+	}
+
 	stor := e.call(t, owner, http.MethodGet, "/api/v1/telemetry/storage", nil, http.StatusOK)
-	if stor["recording"] != true || stor["retention_days"].(float64) != 30 || stor["calls"].(float64) != 13 || stor["logs"].(float64) != 2 || stor["oldest_call"] == nil {
+	if stor["recording"] != true || stor["retention_days"].(float64) != 30 || stor["calls"].(float64) != 14 || stor["logs"].(float64) != 2 || stor["oldest_call"] == nil {
 		t.Fatalf("storage: %v", stor)
 	}
 }
@@ -121,6 +141,7 @@ func TestTelemetryWindowLimits(t *testing.T) {
 	for _, path := range []string{
 		"summary?window=30s",
 		"summary?window=32d",
+		"summary?window=99999999999d", // no overflow (T-09)
 		"summary?window=a+week",
 		"summary?by=team",
 		"summary?outcome=maybe",
@@ -135,5 +156,37 @@ func TestTelemetryWindowLimits(t *testing.T) {
 	}
 	for _, path := range []string{"summary?window=7d&by=tool", "timeseries?window=30d", "timeseries?window=15m"} {
 		e.call(t, owner, http.MethodGet, "/api/v1/telemetry/"+path, nil, http.StatusOK)
+	}
+}
+
+// Review of 2026-11-15, T-09: the chart counts the same calls as the totals,
+// even when a call falls in the first bucket but before the window; a limit
+// over the bound reads the bound.
+func TestTelemetryChartAndTotalsAgree(t *testing.T) {
+	e := newSessionEnv(t)
+	e.api.TelemetryRetentionDays = 30
+	_, owner := e.user(t, "ada", store.RoleOwner)
+	now := time.Now()
+	var rows []store.CallStat
+	for i := range 150 {
+		rows = append(rows, store.CallStat{ID: fmt.Sprint("c", i), Time: now.Add(-time.Duration(i) * 20 * time.Second), Server: "github",
+			Method: "tools/call", Outcome: store.OutcomeOK, TotalUS: 1000})
+	}
+	// Just before the window, in the first bucket's time.
+	rows = append(rows, store.CallStat{ID: "before", Time: now.Add(-61 * time.Minute), Server: "github", Method: "tools/call", Outcome: store.OutcomeOK})
+	if err := e.st.InsertCallStats(context.Background(), e.org, rows...); err != nil {
+		t.Fatal(err)
+	}
+	sum := e.call(t, owner, http.MethodGet, "/api/v1/telemetry/summary?window=1h", nil, http.StatusOK)
+	series := e.call(t, owner, http.MethodGet, "/api/v1/telemetry/timeseries?window=1h&bucket=30m", nil, http.StatusOK)
+	var chart float64
+	for _, b := range series["buckets"].([]any) {
+		chart += b.(map[string]any)["calls"].(float64)
+	}
+	if total := sum["total"].(map[string]any)["calls"].(float64); chart != total || total != 150 {
+		t.Fatalf("the chart counts %v calls, the totals %v, want 150", chart, total)
+	}
+	if got := e.call(t, owner, http.MethodGet, "/api/v1/telemetry/calls?limit=100000", nil, http.StatusOK); len(got["calls"].([]any)) != 151 {
+		t.Fatalf("a limit over the bound: %d calls, want all 151 (bound 500)", len(got["calls"].([]any)))
 	}
 }

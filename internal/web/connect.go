@@ -367,8 +367,16 @@ func (s *Server) connectCallbackHandler(w http.ResponseWriter, r *http.Request) 
 	// Mix-up defence (RFC 9207): an iss that differs is always refused; a
 	// missing one only when the authorization server promised to send it.
 	// Settings entered by hand without an issuer (ADR 0023) have nothing to
-	// compare with; the state still binds the answer to this server.
+	// compare with, so an answer that names any issuer is refused there: it
+	// came from an authorization server that is not this server's, which is
+	// how a code for another server would arrive (review of 2026-11-15, U-01).
+	// An administrator whose server sends iss enters its issuer.
 	iss, hasIss := q["iss"]
+	if st.Issuer == "" && hasIss {
+		s.log.Warn("web: connect callback names an issuer, but none is set for this server", "server", srv.Alias)
+		s.connectFailed(w, http.StatusBadRequest, "The answer came from a sign-in server that names itself, but no issuer is set for this server. An administrator can add the server's issuer.")
+		return
+	}
 	if st.Issuer != "" && ((hasIss && (len(iss) != 1 || iss[0] != st.Issuer)) || (!hasIss && srv.Config.OAuth.IssParameter)) {
 		s.log.Warn("web: connect callback from an unexpected issuer", "server", srv.Alias)
 		s.connectFailed(w, http.StatusBadRequest, "The answer did not come from the server's own sign-in.")
