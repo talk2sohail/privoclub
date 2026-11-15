@@ -199,6 +199,17 @@ refuses a key, the call says so with the link to enter a new one. In the
 admin app this is the question **Whose account does this server see?** on
 **Servers → Add another server**.
 
+
+A server that answers 401 or 403 to a key is treated as refusing it. When the
+key the tool list is read with is refused, another administrator's key takes
+over the tool list. The header cannot be one that names the caller to a server
+or a proxy (such as `X-Forwarded-User` or `Remote-User`), or `Cookie`.
+
+For OAuth settings entered by hand without an issuer, an answer that names an
+issuer is refused (a mix-up defence); if your authorization server sends `iss`,
+enter its issuer. Endpoints by hand are refused for a server that publishes its
+own sign-in metadata.
+
 ## Teams and the server catalog
 
 Each team sees only the servers given to it (ADR 0020). On the admin site:

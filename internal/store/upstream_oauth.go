@@ -396,16 +396,52 @@ func deleteGrant(ctx context.Context, tx *sql.Tx, org OrgID, serverID, userID st
 // promoteCatalog makes the oldest grant of an active server manager the
 // server's catalog grant, if there is one.
 func promoteCatalog(ctx context.Context, tx *sql.Tx, org OrgID, serverID string) error {
-	_, err := tx.ExecContext(ctx, `
+	_, err := promoteCatalogExcept(ctx, tx, org, serverID, "")
+	return err
+}
+
+// promoteCatalogExcept is promoteCatalog leaving out one user's grant. It
+// reports whether a grant was promoted.
+func promoteCatalogExcept(ctx context.Context, tx *sql.Tx, org OrgID, serverID, except string) (bool, error) {
+	res, err := tx.ExecContext(ctx, `
 		UPDATE upstream_grants SET catalog = 1
 		WHERE org_id = ? AND server_id = ? AND user_id = (
 			SELECT g.user_id FROM upstream_grants g
 			JOIN users u ON u.org_id = g.org_id AND u.id = g.user_id
-			WHERE g.org_id = ? AND g.server_id = ? AND u.disabled_at IS NULL AND u.role IN (?, ?)
+			WHERE g.org_id = ? AND g.server_id = ? AND u.disabled_at IS NULL AND u.role IN (?, ?) AND g.user_id != ?
 			  AND NOT EXISTS (SELECT 1 FROM upstream_grants x WHERE x.org_id = g.org_id AND x.server_id = g.server_id AND x.catalog = 1)
 			ORDER BY g.connected_at, g.user_id LIMIT 1)`,
-		org, serverID, org, serverID, RoleOwner, RoleAdmin)
-	return err
+		org, serverID, org, serverID, RoleOwner, RoleAdmin, except)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// PassCatalog hands the catalog mark of a server from userID's grant to the
+// oldest grant of another active server manager, when there is one: the
+// upstream refused userID's own key, which stays theirs (ADR 0023 point 5),
+// and the tool list should not stop for everyone because of it (review of
+// 2026-11-15, U-03). It reports whether the mark moved; without another
+// grant it stays where it was.
+func (s *Store) PassCatalog(ctx context.Context, org OrgID, serverID, userID string) (bool, error) {
+	var moved bool
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE upstream_grants SET catalog = 0 WHERE org_id = ? AND server_id = ? AND user_id = ? AND catalog = 1`, org, serverID, userID)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return err // not the catalog grant (any more): nothing to pass
+		}
+		if moved, err = promoteCatalogExcept(ctx, tx, org, serverID, userID); err != nil || moved {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE upstream_grants SET catalog = 1 WHERE org_id = ? AND server_id = ? AND user_id = ?`, org, serverID, userID)
+		return err
+	})
+	return moved, err
 }
 
 // deleteUserGrants removes all of a user's grants (a disabled user).

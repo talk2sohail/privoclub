@@ -2,6 +2,7 @@ package control
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -140,6 +141,28 @@ func TestOAuthSettingsEnteredByHand(t *testing.T) {
 	} {
 		if code, raw := post("bad", oauth); code != http.StatusUnprocessableEntity {
 			t.Errorf("%s: %d %s", name, code, raw)
+		}
+	}
+}
+
+// Review of 2026-11-15, U-05: a person's key cannot go in a header a server
+// or a proxy may read as who the caller is.
+func TestKeyHeadersThatNameTheCallerAreRefused(t *testing.T) {
+	e := newSessionEnv(t)
+	withPersonalServers(e)
+	_, owner := e.user(t, "boss", store.RoleOwner)
+	for i, h := range []string{"Cookie", "Forwarded", "X-Forwarded-For", "X-Forwarded-User", "X-Forwarded-Email", "x-real-ip", "Remote-User",
+		"X-Auth-Request-User", "Cf-Access-Jwt-Assertion", "Accept-Encoding", "Content-Encoding", "Proxy-Authorization", "Host"} {
+		code, raw := e.api.Serve(context.Background(), owner, http.MethodPost, "/api/v1/servers",
+			map[string]any{"alias": fmt.Sprintf("k%d", i), "transport": "http", "url": "https://127.0.0.1:1/k/mcp", "personal_key": map[string]any{"header": h}})
+		if code != http.StatusUnprocessableEntity {
+			t.Errorf("header %s: %d %s", h, code, raw)
+		}
+	}
+	for i, h := range []string{"X-Api-Key", "Authorization", "Private-Token", "X-Acme-Token"} {
+		if code, raw := e.api.Serve(context.Background(), owner, http.MethodPost, "/api/v1/servers",
+			map[string]any{"alias": fmt.Sprintf("ok%d", i), "transport": "http", "url": "https://127.0.0.1:1/ok/mcp", "personal_key": map[string]any{"header": h}}); code != http.StatusCreated {
+			t.Errorf("header %s refused: %d %s", h, code, raw)
 		}
 	}
 }

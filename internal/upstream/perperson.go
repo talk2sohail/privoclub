@@ -37,6 +37,12 @@ type GrantSource interface {
 	RefreshAfterReject(ctx context.Context, org store.OrgID, srv store.Server, userID, rejected string) (string, error)
 }
 
+// catalogPasser is the optional part of a GrantSource that moves a server's
+// catalog to another administrator's key (grants.Service).
+type catalogPasser interface {
+	PassCatalog(ctx context.Context, org store.OrgID, srv store.Server, userID string) (bool, error)
+}
+
 // PerPerson reports whether calls to the server run with each person's grant.
 func (m *Manager) PerPerson(serverID string) bool {
 	m.mu.Lock()
@@ -134,6 +140,7 @@ func (m *Manager) connectPerson(e *entry, userID string) (*pooled, error) {
 	org := e.org
 	auth := bearer{
 		header: credentialHeader(srv),
+		key:    srv.Config.Auth == store.AuthKey,
 		token:  func(c context.Context) (string, error) { return m.opts.Grants.AccessToken(c, org, srv, userID) },
 		refresh: func(c context.Context, old string) (string, error) {
 			return m.opts.Grants.RefreshAfterReject(c, org, srv, userID, old)
@@ -312,6 +319,10 @@ type bearer struct {
 	header  header
 	token   func(context.Context) (string, error)
 	refresh func(ctx context.Context, rejected string) (string, error)
+	// key says the credential is a person's own key: a server may answer 403
+	// to a key it does not know, as API gateways do, so 403 is a refusal of
+	// the key too (review of 2026-11-15, U-04).
+	key bool
 }
 
 // header is where a credential goes: the header's name and what comes
@@ -338,6 +349,9 @@ func (b bearerRT) RoundTrip(r *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 	resp, err := b.next.RoundTrip(b.with(r, tok))
+	if err == nil && b.auth.key && resp.StatusCode == http.StatusForbidden {
+		resp.StatusCode = http.StatusUnauthorized // a key is refused the same way either answer
+	}
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}

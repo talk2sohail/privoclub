@@ -1012,6 +1012,17 @@ the token's user id; hand-entered endpoints pass the egress policy.
 - [ ] Editing an existing server's way of signing in (today: add it again)
 - [ ] Independent review (secrets and the request pipeline), on the owner's word
 
+#### Independent review of 2026-11-15 (`docs/reviews/2026-11-15-f07-f29-upstream-credentials-independent-review.md`)
+Approve with changes; 0 Critical, 0 High, 2 Medium, 2 Low, 4 Info. Fixed, each with a test that fails without it:
+- [x] U-01 (Medium): mix-up through settings entered by hand without an issuer. A callback that names any issuer is refused for a server with no issuer; an administrator whose authorization server sends `iss` enters its issuer. Tests: `internal/web` `TestHandEnteredSettingsRefuseAnAnswerNamingAnIssuer`, `TestConnectWithSettingsEnteredByHand` (the connect flow with hand-entered settings had no test). Left: per-server redirect addresses would close mix-up for authorization servers that send no `iss` at all (GitHub's), at the price of every pre-registered client's callback changing
+- [x] U-02 (Medium, #11): see F14 R-01
+- [x] U-03: when the upstream refuses the key the tool list is read with, the tool list moves to another administrator's key (`store.PassCatalog`); the refused key stays its owner's. Test: acceptance `TestRefusedCatalogKeyPassesToAnotherAdmin`
+- [x] U-04: a key server's 403 is a refused key too (API gateways answer 403 to an unknown key). Test: acceptance `TestForbiddenKeyIsARefusedKey`
+- [x] U-05: a person's key cannot go in a header that names the caller or the encoding (`Forwarded`, `X-Forwarded-*`, `X-Real-Ip`, `Remote-User`, `X-Auth-Request-*`, `Cf-*`, `Accept-Encoding`, `Content-Encoding` and others). Test: `TestKeyHeadersThatNameTheCallerAreRefused`
+- [x] U-06: tests for the issuer-only path and the R-02 revocation half (acceptance `TestOAuthSettingsByIssuerAndNotOverMetadata`, `internal/grants` `TestRefreshUsesTheClientStoredNow`). The PR text said member removal was tested end to end; it is covered by the store's grant deletion tests, not by the acceptance test
+- [x] U-07: a stored credential is used only for a server of its kind; a mismatch reads as not connected. Test: `TestCredentialKindMustMatchTheServer`
+- [x] U-08: endpoints by hand are refused for a server that publishes its resource metadata. Test: acceptance `TestOAuthSettingsByIssuerAndNotOverMetadata`
+
 ## F28. Activity and telemetry (the audit, reworked)
 Status: Not started (reference read 2026-11-11; spec comes after F06 and the per-server sign-in work)
 ADRs: 0006 (audit), to be written
