@@ -14,7 +14,7 @@ Status: Done
 - [x] Revise ADRs 0001 to 0003 (revision 2, target MCP 2026-07-28)
 - [x] Write ADRs 0004 to 0011 for the gaps
 - [x] Owner sign-off; ADRs accepted 2026-10-28
-- [x] Spike: OAuth server library, desk review; ory/fosite chosen, see ADR 0012 (accept after F06 prototype)
+- [x] Spike: OAuth server library, desk review; ory/fosite chosen, see ADR 0012 (superseded 2026-11-12 by the working test: ADR 0022 point 16)
 
 ## F01. Project foundation
 Status: Done
@@ -266,7 +266,7 @@ verifier are stored in the clear for the life of a session and ten minutes.
 - [ ] Approvals page: page through more than 50 pending approvals; show decided ones
 
 ## F06. Client authentication (OAuth server and personal tokens)
-Status: In progress (personal tokens done; OAuth sign-in for AI clients: ADR 0022 accepted 2026-11-12; library spike done, the owner's choice of library is open; nothing built)
+Status: In progress (personal tokens done; OAuth sign-in for AI clients: ADR 0022 accepted 2026-11-12; library decided 2026-11-12: `authelia.com/provider/oauth2` v0.3.3; no refresh grace; nothing built, task 2 is next)
 ADRs: 0003 (section 2), 0014, 0021, 0022
 
 ### Done: personal tokens
@@ -309,9 +309,11 @@ client can be revoked by itself. Personal tokens keep working.
 5. **Code.** Lives 60 seconds, works once, only with the same client, redirect
    URI, verifier and resource. A second use fails and revokes the grant.
 6. **Tokens.** The access token is opaque, lives one hour and works only on
-   `/mcp`, never on the admin API. A refresh token is always issued, rotates
-   on use, returns the same successor for 30 seconds, and after that a reuse
-   revokes the grant. Idle 30 days, absolute 90 days. Errors are RFC 6749
+   `/mcp`, never on the admin API. A refresh token is always issued and
+   rotates on use. A refresh token that was already rotated is refused at
+   once, and that use revokes the grant: the tokens issued after it stop
+   working and the person signs in again (no grace window; owner,
+   2026-11-12). Idle 30 days, absolute 90 days. Errors are RFC 6749
    codes (`invalid_grant` for a dead refresh token). The token endpoint takes
    form-encoded bodies and answers well inside 10 seconds.
 7. **Who the caller is.** A call with an access token runs as the member who
@@ -341,7 +343,8 @@ client can be revoked by itself. Personal tokens keep working.
   loopback and link-local addresses, follows no redirect to them, and limits
   size and time.
 - **Token theft:** tokens are stored hashed; refresh rotation with reuse
-  detection; access tokens are bound to this gateway and never forwarded to an
+  detection and no grace, so a copied refresh token is dead once the real
+  client has refreshed, and using it ends the grant; access tokens are bound to this gateway and never forwarded to an
   upstream (ADR 0003).
 - **Confused deputy:** consent is shown every time and names the redirect
   host; `state` is returned untouched; `iss` is in the response (RFC 9207).
@@ -352,12 +355,12 @@ client can be revoked by itself. Personal tokens keep working.
 
 #### Tasks, in the order of the pull requests
 - [x] 1. Spike (2026-11-12, `docs/reviews/2026-11-12-oauth-library-spike.md`): neither named library passes as named (`ory/fosite`: no release since 2024-12; `zitadel/oidc`: accepts `plain`, stores the request before login, always issues an ID token). The maintained fosite fork `authelia.com/provider/oauth2` v0.3.3 passes all checks in a working test, with the redirect rule and "resource must be present" done by Privo in front
-- [ ] 1a. **Owner's decision (ADR 0022 point 16):** adopt `authelia.com/provider/oauth2` pinned at v0.3.3 (recommended), or one of the two alternatives in the report; and whether the refresh grace returns the same successor or new tokens. Tasks 3 to 9 wait for this; task 2 does not
+- [x] 1a. Owner's decisions (2026-11-12, recorded in ADR 0022 points 16 and 9): the library is `authelia.com/provider/oauth2`, pinned at v0.3.3; a refresh token that was already rotated is refused at once and its use revokes the grant, with no grace window (this replaces the 30-second grace of ADR 0003). The second decision removes work: the library does this by itself, so nothing is built in front of it for refresh
 - [ ] 2. F05 R-01, at the root: the state of a sign-in in flight (state, PKCE verifier, purpose, link) moves from a table row into the same kind of sealed cookie as ADR 0022 point 6, so `POST /auth/github/start` writes nothing and there is no cap to fill. `oauth_states` keeps only connect states, which need a session, with at most one per member and server (F07 R-03). This changes how ADR 0016 stores the state, so it gets a short amendment for the owner. Tests: `TestSignInStartWritesNothing`, `TestAnonymousStartsCannotBlockSetupInvitesOrSignIn`, `TestSignInCookieIsBoundExpiresAndWorksOnce`, `TestConnectStatesAreCappedPerMember`
-- [ ] 3. Store and migration `00008`: clients, grants, codes, tokens (each with `org_id`); settings `PRIVO_OAUTH_CLIENTS`, `PRIVO_OAUTH_DYNAMIC_REGISTRATION` in the registry, README and example file. Tests: `TestGrantBelongsToAMember`, `TestCodeWorksOnce`, `TestRefreshRotationGraceAndReuse`, `TestRemovingAMemberRevokesTheirGrants`
+- [ ] 3. Store and migration `00008`: clients, grants, codes, tokens (each with `org_id`); settings `PRIVO_OAUTH_CLIENTS`, `PRIVO_OAUTH_DYNAMIC_REGISTRATION` in the registry, README and example file. Tests: `TestGrantBelongsToAMember`, `TestCodeWorksOnce`, `TestRefreshRotates`, `TestRotatedRefreshTokenIsRefusedAndRevokesTheGrant`, `TestRemovingAMemberRevokesTheirGrants`
 - [ ] 4. Client acceptance: metadata documents through the egress client, the known list, loopback matching. Tests: `TestClientDocumentMustMatchItsURL`, `TestLoopbackRedirectIgnoresThePort`, `TestOtherRedirectsMatchExactly`, `TestUnknownClientIsRefusedUntilApproved`, `TestClientDocumentFetchRefusesPrivateAddresses`
 - [ ] 5. Metadata, authorize, the sealed request cookie, consent page. Tests: `TestAuthorizeWritesNothingBeforeConsent`, `TestRequestCookieIsBoundAndExpires`, `TestConsentNeedsCSRFAndOrigin`, `TestApproverCannotAllowAClient`, `TestAuthorizeErrorsRedirectOnlyToAnAcceptedURI`
-- [ ] 6. Token and revoke endpoints; verification by prefix in `internal/auth`. Tests: `TestPKCERequired`, `TestTokenRequestNeedsTheSameResource`, `TestAccessTokenWorksOnlyOnTheGateway`, `TestVerifyReadsTheMembersRoleLive`
+- [ ] 6. Token and revoke endpoints; verification by prefix in `internal/auth`. Tests: `TestPKCERequired`, `TestTokenRequestNeedsTheSameResource`, `TestAccessTokenWorksOnlyOnTheGateway`, `TestVerifyReadsTheMembersRoleLive`, `TestReusedRefreshTokenStopsTheAccessTokenOnTheGateway` (the access token issued after the reused one is refused on `/mcp` within 2 seconds, and the audit names the client and the member)
 - [ ] 7. Admin app: "Connected clients" for each person and for admins; Clients page with approval. Tests in `web/src/pages.test.tsx`
 - [ ] 8. Dynamic registration behind the setting. Tests: `TestRegistrationIsOffByDefault`, `TestRegistrationLimitsAndExpiry`
 - [ ] 9. Acceptance with the real binary and the Go SDK's OAuth client: `TestClientSignsInWithOAuthAndCallsAsTheMember` (metadata document client on a loopback redirect, sign-in on the way, consent, a call that uses the member's own upstream account, refresh, revoke)
