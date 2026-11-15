@@ -403,7 +403,20 @@ func (s *Store) SaveOAuthClient(ctx context.Context, org OrgID, c OAuthClient, l
 				return err
 			}
 			if n >= limit {
-				return ErrTooManyClients
+				// Make room by removing the oldest registration nobody ever
+				// allowed, so that registrations nobody signs in for cannot
+				// keep the next real client out (review of 2026-11-15,
+				// S-01). Clients a member allowed are never removed here.
+				res, err := tx.ExecContext(ctx, `DELETE FROM oauth_clients WHERE org_id = ? AND client_id = (
+					SELECT client_id FROM oauth_clients WHERE org_id = ? AND kind = ? AND authorized_at IS NULL
+					AND client_id NOT IN (SELECT client_id FROM oauth_grants WHERE org_id = ?)
+					ORDER BY created_at, client_id LIMIT 1)`, org, org, ClientRegistered, org)
+				if err != nil {
+					return err
+				}
+				if gone, err := res.RowsAffected(); err != nil || gone == 0 {
+					return ErrTooManyClients
+				}
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO oauth_clients (org_id, client_id, kind, name, redirect_uris, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`,

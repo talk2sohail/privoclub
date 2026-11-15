@@ -146,10 +146,15 @@ func (s *Server) authorizePage(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Client.LoopbackOnly() {
 		warn = append(warn, "It runs on your computer. Any program on this computer can claim to be it, so allow it only if you just started it yourself.")
+	} else if h := req.RedirectHost(); h != "" {
+		// A hosted client serves many accounts: anyone with an account there
+		// can start this same request and send you the link, and the page
+		// looks the same (review of 2026-11-15, S-07).
+		warn = append(warn, "Allow only if you started this just now from your own account at "+h+". Anyone with an account there can start the same request and send it to you.")
 	}
 	// The form posts to Privo, which redirects to the client: Chrome checks
 	// that redirect against form-action.
-	w.Header().Set("Content-Security-Policy", formActionRe.ReplaceAllString(s.csp, "form-action 'self' "+req.RedirectOrigin()+";"))
+	w.Header().Set("Content-Security-Policy", formActionRe.ReplaceAllLiteralString(s.csp, "form-action 'self' "+req.RedirectOrigin()+";"))
 	s.render(w, http.StatusOK, "consent", pageData{Title: "Allow " + req.Client.Name, User: view(u), CSRF: sess.CSRF, Lines: warn,
 		ClientName: req.Client.Name, ClientHost: req.Client.Host(), RedirectHost: req.RedirectHost(), Sealed: sealed})
 }

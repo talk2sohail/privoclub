@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -551,5 +552,60 @@ func TestRefusedSignInsCannotFloodTheAudit(t *testing.T) {
 	}
 	if !strings.Contains(e.logs.String(), fmt.Sprintf(`"count":%d`, 4+maxDenials+1)) {
 		t.Errorf("the log does not say how many refusals were left out:\n%s", e.logs.String())
+	}
+	// The count is in the audit too, not only in the log (S-06).
+	if !slices.Contains(e.adminActions(), fmt.Sprintf("signin.denied.skipped:%d", 4+maxDenials+1)) {
+		t.Errorf("the audit does not say how many refusals were left out: %v", e.adminActions())
+	}
+}
+
+// Review of 2026-11-15, S-06: strangers cannot keep a disabled member's
+// refusal out of the audit, and the left-out count reaches the audit when the
+// window ends even if no refusal comes after it.
+func TestRefusedMembersAreAlwaysAudited(t *testing.T) {
+	e := newEnv(t)
+	gone := ghUser{ID: 777, Login: "former"}
+	u := e.member(gone, "former", store.RoleMember)
+	if err := e.st.DisableUser(context.Background(), e.org, u.ID, e.clock.now(), e.event("disable")); err != nil {
+		t.Fatal(err)
+	}
+	count := func(action string) (n int) {
+		for _, a := range e.adminActions() {
+			if a == action {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < maxDenials+5; i++ {
+		e.signIn(e.browser(), ghUser{ID: int64(9000 + i), Login: fmt.Sprint("x", i)})
+	}
+	if res := e.signIn(e.browser(), gone); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a disabled member signed in: %d", res.StatusCode)
+	}
+	if n := count("signin.denied"); n != maxDenials+1 {
+		t.Fatalf("%d refusals audited, want the %d strangers the budget allows and the member", n, maxDenials)
+	}
+	// Once per window for the member too.
+	e.signIn(e.browser(), gone)
+	if n := count("signin.denied"); n != maxDenials+1 {
+		t.Fatalf("the member's second refusal in the window was audited again (%d)", n)
+	}
+	// No refusal after the window: the prune writes the count.
+	if err := e.srv.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(e.adminActions(), func(a string) bool { return strings.HasPrefix(a, "signin.denied.skipped") }) {
+		t.Fatal("the count was written before the window ended")
+	}
+	e.clock.advance(denialWindow)
+	if err := e.srv.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.srv.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := count("signin.denied.skipped:6"); n != 1 {
+		t.Fatalf("the left-out count (5 strangers and the member's repeat) was written %d times: %v", n, e.adminActions())
 	}
 }
