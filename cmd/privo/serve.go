@@ -166,7 +166,7 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 		api.PublicURL = cfg.PublicURL
 	}
 
-	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, logger, siteConnections{grants: grantSvc, oauth: oauthClient, upstream: mgr, api: api})
+	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, logger, siteConnections{grants: grantSvc, oauth: oauthClient, upstream: mgr, api: api, keys: kr})
 	siteCtx, stopSite := context.WithCancel(ctx)
 	siteDone := make(chan struct{})
 	go func() { site.Run(siteCtx, 10*time.Minute); close(siteDone) }()
@@ -269,7 +269,8 @@ type siteConnections struct {
 	grants   *grants.Service
 	oauth    *upstreamauth.Client
 	upstream *upstream.Manager
-	api      *control.API // the admin app calls it in process (ADR 0019 point 4)
+	api      *control.API     // the admin app calls it in process (ADR 0019 point 4)
+	keys     *keyring.Keyring // seals the cookie of a sign-in in flight (ADR 0016 amendment 1)
 }
 
 // adminSite builds the admin website (ADR 0016). With anything missing it is
@@ -282,6 +283,9 @@ func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *s
 	}
 	if conn.api != nil {
 		opts.API = conn.api
+	}
+	if conn.keys != nil {
+		opts.Keys = conn.keys
 	}
 	if len(opts.Missing) == 0 {
 		opts.GitHub = &githubauth.Client{ClientID: webCfg.ClientID, ClientSecret: webCfg.ClientSecret.Reveal(), BaseURL: webCfg.BaseURL, APIURL: webCfg.APIURL,

@@ -100,6 +100,14 @@ Nothing new to configure: once sign-in with GitHub works, add a remote server wi
 
 Invite people with `privo admin invite --person NAME` in the container's terminal, or with `POST /api/v1/invites`.
 
+## Sign-in no longer writes before GitHub answers (0.7.1)
+
+0.7.1 has no migration and no new setting. A sign-in, setup link or invite
+that someone started before the deploy and had not finished must be started
+again (the cookie it travels in changed); sessions are not affected. Going
+back to 0.7.0 needs nothing but the older image. What changed and why: ADR
+0016, amendment 1.
+
 ## Tokens belong to members (0.7.0)
 
 0.7.0 adds migration `00007_token_owner.sql` (two columns; it has a down step,

@@ -262,6 +262,7 @@ type env struct {
 	pub       string
 	logs      *syncBuffer
 	keys      *keyring.Keyring
+	opts      Options // what srv was built from
 	// set by newConnEnv (ADR 0017)
 	as   *fakeAS
 	ups  *fakeUpstreams
@@ -324,7 +325,7 @@ func newEnvWith(t *testing.T, conn bool, opts ...envOpt) *env {
 	svc := &approval.Service{Store: st, Keys: kr, Hold: 10 * time.Millisecond, Poll: 2 * time.Millisecond}
 	o := Options{
 		Store: st, Org: org.ID, Audit: aw, Logger: logger, Now: clk.now,
-		API: newFakeAPI(), App: testApp,
+		API: newFakeAPI(), App: testApp, Keys: kr,
 		GitHub:    &githubauth.Client{ClientID: ghClientID, ClientSecret: ghClientSecret, BaseURL: gu, APIURL: au, HTTP: gh.srv.Client()},
 		PublicURL: pu, IdleTimeout: 2 * time.Hour, MaxAge: 12 * time.Hour,
 	}
@@ -339,7 +340,7 @@ func newEnvWith(t *testing.T, conn bool, opts ...envOpt) *env {
 	srv := New(o)
 	mux := http.NewServeMux()
 	srv.Routes(mux)
-	e := &env{t: t, st: st, org: org.ID, dataDir: dir, approvals: svc, audit: aw, gh: gh, srv: srv, handler: mux, clock: clk, logs: logs, keys: kr}
+	e := &env{t: t, st: st, org: org.ID, dataDir: dir, approvals: svc, audit: aw, gh: gh, srv: srv, handler: mux, clock: clk, logs: logs, keys: kr, opts: o}
 	if cx != nil {
 		e.as, e.ups, e.svc, e.osrv = cx.as, cx.ups, cx.svc, cx.srv
 	}

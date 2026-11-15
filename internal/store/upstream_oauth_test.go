@@ -402,29 +402,6 @@ func TestServerOAuthConfigAndClientSecret(t *testing.T) {
 	}
 }
 
-func TestConnectStateCarriesUserSessionServerIssuer(t *testing.T) {
-	ctx := context.Background()
-	s, org := signinOrg(t)
-	st := OAuthState{Hash: "h", Purpose: PurposeConnect, Verifier: "v", UserID: "u1", SessionID: "sess", ServerID: "srv", Issuer: "https://as.example", ReturnTo: "/connect/x", ExpiresAt: t0.Add(10 * time.Minute)}
-	if err := s.CreateOAuthState(ctx, org, st, t0, 500); err != nil {
-		t.Fatal(err)
-	}
-	inv := OAuthState{Hash: "h2", Purpose: PurposeInvite, Verifier: "v", InviteID: "i1", ExpiresAt: t0.Add(10 * time.Minute)}
-	if err := s.CreateOAuthState(ctx, org, inv, t0, 500); err != nil {
-		t.Fatal(err)
-	}
-	got, err := s.UseOAuthState(ctx, org, "h", t0)
-	if err != nil || got.UserID != "u1" || got.SessionID != "sess" || got.ServerID != "srv" || got.Issuer != "https://as.example" || got.Purpose != PurposeConnect || got.ReturnTo != "/connect/x" {
-		t.Fatalf("connect state %+v %v", got, err)
-	}
-	if got, err := s.UseOAuthState(ctx, org, "h2", t0); err != nil || got.InviteID != "i1" {
-		t.Fatalf("invite state %+v %v", got, err)
-	}
-	if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "h3", Purpose: "steal", Verifier: "v", ExpiresAt: t0.Add(time.Minute)}, t0, 500); err == nil {
-		t.Error("unknown purpose accepted")
-	}
-}
-
 func TestPruneRemovesDeadInvites(t *testing.T) {
 	ctx := context.Background()
 	s, org := signinOrg(t)

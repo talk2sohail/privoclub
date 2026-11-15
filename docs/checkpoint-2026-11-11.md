@@ -6,6 +6,23 @@ Read this first in a new session. It replaces every earlier checkpoint
 history. Open work is in `docs/todo.md`; the audit that produced this file is
 `docs/reviews/2026-11-11-project-audit.md`.
 
+## Update, 2026-11-13
+
+The sections below are as written on 2026-11-11 and are behind in three
+places. Work now goes through pull requests that the owner reviews and merges;
+the running list is GitHub issue 3.
+
+- **Production is 0.7.0** (Go 1.27.4). 0.7.0 closed the High finding below:
+  a token belongs to a member by user id (F27, ADR 0021).
+- **OAuth sign-in to the gateway for AI clients (F06) is specified and
+  decided**: ADR 0022, the library `authelia.com/provider/oauth2` v0.3.3, no
+  grace for a rotated refresh token. The server itself is not built yet.
+- **0.7.1** (in review): a sign-in in flight lives in a sealed cookie, so the
+  state cap that anyone could fill is gone (F05 R-01, F05 R-03, F07 R-03, F07
+  R-07; ADR 0016 amendment 1).
+- Still open from the list below: F07 R-02, F14 R-01, F24 R-01 and R-02, F05
+  R-02, the owner's walkthrough, backups, the decisions in the audit report.
+
 ## Where things stand (checked 2026-11-11)
 
 - **Production:** https://app.privo.club runs **0.6.0** (`/version`), `/readyz`

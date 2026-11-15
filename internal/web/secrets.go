@@ -33,8 +33,8 @@ func randomSecret() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// HashSecret is the hex SHA-256 of a secret. Session cookies, setup tokens and
-// OAuth states are stored only as this hash: a copy of the database cannot be
+// HashSecret is the hex SHA-256 of a secret. Session cookies, setup tokens,
+// invite tokens and connect states are stored only as this hash: a copy of the database cannot be
 // used to sign in.
 func HashSecret(s string) string {
 	sum := sha256.Sum256([]byte(s))
@@ -70,9 +70,10 @@ func validInviteToken(s string) bool { return inviteTokenRe.MatchString(s) }
 // validSecret reports whether s has the shape of a session cookie or state.
 func validSecret(s string) bool { return len(s) == secretLen && secretRe.MatchString(s) }
 
-// stateHash keys a sign-in in flight to both the value sent to GitHub and the
-// nonce in the browser's cookie. A callback from a browser without the cookie
-// finds nothing, and does not use up the real state either.
+// stateHash keys a connection in flight to both the value sent to the
+// authorization server and the nonce in the browser's cookie. A callback from
+// a browser without the cookie finds nothing, and does not use up the real
+// state either.
 func stateHash(state, nonce string) string {
 	return HashSecret("privo-oauth-state\x00" + state + "\x00" + nonce)
 }
