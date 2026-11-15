@@ -186,3 +186,115 @@ func TestPersonalKeysEachPersonUsesTheirOwn(t *testing.T) {
 		}
 	}
 }
+
+// Review of 2026-11-15, U-03: the key the tool list is read with is refused
+// upstream. It stays its owner's, and another administrator's key reads the
+// tool list, so the server stays up for everyone.
+func TestRefusedCatalogKeyPassesToAnotherAdmin(t *testing.T) {
+	bossKey, cyKey := "acme-boss-"+randomHex(16), "acme-cy-"+randomHex(16)
+	up := newKeyUpstream(t, map[string]string{bossKey: "boss@acme", cyKey: "cy@acme"})
+	w := newOAuthWorld(t, true)
+	g := w.g
+	g.api(http.MethodPost, "/api/v1/servers", g.owner, map[string]any{"alias": "acme", "transport": "http", "url": up.srv.URL + "/mcp",
+		"personal_key": map[string]any{"header": "X-Api-Key"}}, http.StatusCreated)
+	saveKey(t, w.boss, g, "acme", bossKey)
+	g.eventually("acme up", 10*time.Second, func() bool { return g.serverStatus("acme") == "up" })
+	g.acceptPins("acme")
+	cyWeb, cyTok := join(t, g, w.gh, w.boss, "cy", 3)
+	if code, out := w.boss.app(http.MethodPatch, "/v1/members/cy", map[string]any{"role": "admin"}, nil); code != http.StatusOK {
+		t.Fatalf("make cy an admin: %d %v", code, out)
+	}
+	saveKey(t, cyWeb, g, "acme", cyKey)
+
+	// The boss's key is revoked upstream; the server reconnects.
+	up.mu.Lock()
+	delete(up.keys, bossKey)
+	up.mu.Unlock()
+	g.api(http.MethodPatch, "/api/v1/servers/acme", g.owner, map[string]any{"enabled": false}, http.StatusOK)
+	g.eventually("acme off", 10*time.Second, func() bool { return g.serverStatus("acme") != "up" })
+	up.mu.Lock()
+	before := len(up.seen)
+	up.mu.Unlock()
+	g.api(http.MethodPatch, "/api/v1/servers/acme", g.owner, map[string]any{"enabled": true}, http.StatusOK)
+	g.eventually("acme reconnects", 10*time.Second, func() bool { up.mu.Lock(); defer up.mu.Unlock(); return len(up.seen) > before })
+	// Let the reconnect settle: the status read right after enabling can still
+	// be the old one.
+	time.Sleep(3 * time.Second)
+	if st := g.serverStatus("acme"); st != "up" {
+		t.Fatalf("after the catalog key was refused the server is %q", st)
+	}
+	cy := g.connect(cyTok)
+	if tools := toolList(t, cy); !slices.Contains(tools, "acme__whoami") {
+		t.Fatalf("a new session does not see the tool: %v", tools)
+	}
+	if text, isErr := call(t, cy, "acme__whoami", nil); isErr || text != "you are cy@acme" {
+		t.Fatalf("cy after the move: %q %v", text, isErr)
+	}
+	if strings.Contains(g.logs.String(), bossKey) || strings.Contains(g.logs.String(), cyKey) {
+		t.Error("a key in the log")
+	}
+}
+
+// Review of 2026-11-15, U-04: a server that answers 403 to a key it does not
+// know (as API gateways do) gets the same message, with the link, as 401.
+func TestForbiddenKeyIsARefusedKey(t *testing.T) {
+	bossKey := "acme-boss-" + randomHex(16)
+	up := newKeyUpstream(t, map[string]string{bossKey: "boss@acme"})
+	inner := up.srv.Config.Handler
+	up.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up.mu.Lock()
+		_, ok := up.keys[r.Header.Get("X-Api-Key")]
+		up.mu.Unlock()
+		if !ok {
+			http.Error(w, `{"message":"Forbidden UPSTREAM-TEXT"}`, http.StatusForbidden)
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+	w := newOAuthWorld(t, true)
+	g := w.g
+	g.api(http.MethodPost, "/api/v1/servers", g.owner, map[string]any{"alias": "acme", "transport": "http", "url": up.srv.URL + "/mcp",
+		"personal_key": map[string]any{"header": "X-Api-Key"}}, http.StatusCreated)
+	saveKey(t, w.boss, g, "acme", bossKey)
+	g.eventually("acme up", 10*time.Second, func() bool { return g.serverStatus("acme") == "up" })
+	g.acceptPins("acme")
+	adaWeb, adaTok := join(t, g, w.gh, w.boss, "ada", 2)
+	saveKey(t, adaWeb, g, "acme", "acme-wrong-"+randomHex(8))
+	ada := g.connect(adaTok)
+	text, isErr := call(t, ada, "acme__whoami", nil)
+	if !isErr || !strings.Contains(text, "refused your API key") || !strings.Contains(text, g.base+"/connect/acme") || strings.Contains(text, "UPSTREAM-TEXT") {
+		t.Fatalf("ada with a key the server answers 403 to: %v %q", isErr, text)
+	}
+}
+
+// Review of 2026-11-15, U-06 and U-08, on the real binary: a server that
+// publishes no resource metadata is added by naming its authorization
+// server's issuer, and people connect through it; endpoints entered by hand
+// are refused for a server that does say where its people sign in.
+func TestOAuthSettingsByIssuerAndNotOverMetadata(t *testing.T) {
+	w := newOAuthWorld(t, false)
+	g, up := w.g, w.up
+	// linear (added by the world) publishes its metadata: endpoints by hand
+	// for it are refused, and nothing is stored.
+	res := g.api(http.MethodPost, "/api/v1/servers", g.owner, map[string]any{"alias": "linear2", "transport": "http", "url": up.srv.URL + "/mcp",
+		"oauth": map[string]any{"authorization_endpoint": "https://elsewhere.example/authorize", "token_endpoint": "https://elsewhere.example/token", "client_id": "c"}},
+		http.StatusUnprocessableEntity)
+	if msg, _ := res["error"].(string); !strings.Contains(msg, "says where its people sign in") {
+		t.Fatalf("hand-entered endpoints over metadata: %v", res)
+	}
+
+	// Now the upstream hides its metadata: the issuer names its sign-in.
+	up.mu.Lock()
+	up.hidePRM = true
+	up.mu.Unlock()
+	srv := g.api(http.MethodPost, "/api/v1/servers", g.owner, map[string]any{"alias": "hidden", "transport": "http", "url": up.srv.URL + "/mcp",
+		"oauth": map[string]any{"issuer": up.srv.URL, "client_id": up.clientID, "client_secret": up.secret, "resource": up.srv.URL + "/mcp"}},
+		http.StatusCreated)["server"].(map[string]any)
+	if srv["auth"] != "oauth" {
+		t.Fatalf("server: %v", srv)
+	}
+	up.signInAs("boss@linear")
+	if back := connectAccount(t, w.boss, g, "hidden"); back.Header.Get("Location") != "/admin/connections?result=connected" {
+		t.Fatalf("connect through the issuer: %q", back.Header.Get("Location"))
+	}
+}

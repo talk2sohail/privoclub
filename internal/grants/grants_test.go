@@ -542,3 +542,23 @@ func TestGrantLostIsLogged(t *testing.T) {
 		t.Errorf("the refused grant reads %q", ds[1].Message)
 	}
 }
+
+// Review of 2026-11-15, U-07: a stored credential is used only for a server
+// of its own kind; a mismatch reads as not connected.
+func TestCredentialKindMustMatchTheServer(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "AT-oauth", RefreshToken: "RT", Expiry: t0.Add(time.Hour)})
+	if tok, err := e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID); err != nil || tok != "AT-oauth" {
+		t.Fatalf("the OAuth grant for its OAuth server: %q %v", tok, err)
+	}
+	asKey := e.srv
+	asKey.Config.Auth = store.AuthKey
+	asKey.Config.Key = &store.ServerKey{Header: "X-Api-Key"}
+	if tok, err := e.svc.AccessToken(ctx, e.org, asKey, e.ada.ID); !errors.Is(err, ErrNotConnected) || tok != "" {
+		t.Fatalf("an OAuth grant used as a key: %q %v", tok, err)
+	}
+	if _, tok, err := e.svc.CatalogAccessToken(ctx, e.org, asKey); !errors.Is(err, ErrNotConnected) || tok != "" {
+		t.Fatalf("an OAuth grant read the catalog of a key server: %q %v", tok, err)
+	}
+}

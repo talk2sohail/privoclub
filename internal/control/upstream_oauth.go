@@ -55,7 +55,7 @@ const (
 func (k *personalKeyReq) check(static map[string]string) (store.ServerKey, error) {
 	out := store.ServerKey{Header: "Authorization", Prefix: "Bearer "}
 	if k.Header != "" {
-		if !validHeaderName(k.Header) || http.CanonicalHeaderKey(k.Header) == "Cookie" {
+		if !validHeaderName(k.Header) || keyReservedHeader(http.CanonicalHeaderKey(k.Header)) {
 			return out, errorf(http.StatusUnprocessableEntity, "personal_key.header %q is invalid or reserved", k.Header)
 		}
 		out.Header = http.CanonicalHeaderKey(k.Header)
@@ -90,6 +90,21 @@ func (k *personalKeyReq) check(static map[string]string) (store.ServerKey, error
 	return out, nil
 }
 
+// keyReservedHeader names the headers a person's own key may not go in:
+// cookies, and headers a server or a proxy in front of it may read as a
+// statement of who the caller is or how the body is encoded, so the value a
+// member types would become a claim about their identity (review of
+// 2026-11-15, U-05).
+func keyReservedHeader(canon string) bool {
+	switch canon {
+	case "Cookie", "Forwarded", "X-Real-Ip", "Remote-User", "X-Remote-User", "X-User", "X-Auth-User", "X-Authenticated-User",
+		"X-Forwarded-User", "X-Forwarded-Email", "X-Forwarded-Preferred-Username", "X-Webauth-User",
+		"Accept-Encoding", "Content-Encoding", "Origin", "Referer", "User-Agent":
+		return true
+	}
+	return strings.HasPrefix(canon, "X-Forwarded-") || strings.HasPrefix(canon, "X-Auth-Request-") || strings.HasPrefix(canon, "Cf-")
+}
+
 func printableASCII(s string, limit int) bool {
 	if len(s) > limit {
 		return false
@@ -116,10 +131,19 @@ func (a *API) configureOAuth(ctx context.Context, srv store.Server, req *oauthRe
 	if len(scopes) != len(req.Scopes) {
 		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "oauth.scopes holds an invalid or repeated scope")
 	}
-	if req.AuthorizationEndpoint != "" || req.TokenEndpoint != "" {
+	manual := req.AuthorizationEndpoint != "" || req.TokenEndpoint != ""
+	d, err := a.OAuth.Discover(ctx, srv.Config.URL, srv.Transport, req.Issuer)
+	if manual {
+		// Endpoints by hand only for a server that does not say where its
+		// people sign in: one that does is checked against what it names,
+		// and hand-entered settings would skip that check (review of
+		// 2026-11-15, U-08).
+		if err == nil {
+			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity,
+				"the server says where its people sign in; leave oauth.authorization_endpoint and oauth.token_endpoint out")
+		}
 		return a.manualOAuth(ctx, req, scopes)
 	}
-	d, err := a.OAuth.Discover(ctx, srv.Config.URL, srv.Transport, req.Issuer)
 	switch {
 	case errors.Is(err, upstreamauth.ErrNoAuthNeeded):
 		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "the server answered without asking for authorization; add it without oauth")
