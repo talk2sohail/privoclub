@@ -70,7 +70,7 @@ func newKeyUpstream(t *testing.T, keys map[string]string) *keyUpstream {
 var keyField = regexp.MustCompile(`<input type="password" name="key"`)
 
 // saveKey plays the browser: the connect page, then the form.
-func saveKey(t *testing.T, p *person, g *gateway, alias, key string) *http.Response {
+func saveKey(t *testing.T, p *person, g *gateway, alias, key string) *http.Response { //nolint:unparam // one key server in the suite today; the alias says which
 	t.Helper()
 	page, body := p.do(http.MethodGet, g.base+"/connect/"+alias, nil, nil)
 	m := csrfField.FindStringSubmatch(body)
