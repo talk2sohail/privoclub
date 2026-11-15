@@ -45,6 +45,7 @@ type Store interface {
 	TouchGrant(ctx context.Context, org store.OrgID, serverID, userID string, now time.Time) error
 	ServerCredentials(ctx context.Context, org store.OrgID, serverID string) ([]store.Credential, error)
 	UpdateServerOAuth(ctx context.Context, org store.OrgID, serverID string, o store.ServerOAuth, secret *store.Credential) error
+	ServerByID(ctx context.Context, org store.OrgID, id string) (store.Server, error)
 }
 
 // Service is safe for concurrent use.
@@ -248,7 +249,23 @@ func (s *Service) refresh(ctx context.Context, org store.OrgID, srv store.Server
 	return f.tok, f.err
 }
 
+// current reads the server as it is stored now. A caller may hold it as it
+// was at startup (the upstream manager does), and a re-registration changes
+// the client id under it: a token request with the old id is answered
+// invalid_grant and the grant would be deleted (F07 R-02).
+func (s *Service) current(ctx context.Context, org store.OrgID, srv store.Server) (store.Server, error) {
+	cur, err := s.Store.ServerByID(ctx, org, srv.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.Server{}, ErrNotConnected
+	}
+	return cur, err
+}
+
 func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Server, userID, stale string) (string, error) {
+	srv, err := s.current(ctx, org, srv)
+	if err != nil {
+		return "", err
+	}
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrNotConnected
@@ -320,6 +337,9 @@ func (s *Service) Disconnect(ctx context.Context, org store.OrgID, srv store.Ser
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if err != nil {
 		return err
+	}
+	if cur, err := s.current(ctx, org, srv); err == nil {
+		srv = cur
 	}
 	if tok, err := s.token(ctx, org, g); err == nil {
 		if e, err := s.Endpoint(ctx, org, srv); err == nil {

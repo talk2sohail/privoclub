@@ -29,6 +29,7 @@ type fakeAS struct {
 	mu        sync.Mutex
 	refreshes atomic.Int32
 	revoked   []string
+	revokedBy []string // the client_id of each revocation
 	next      int
 	answer    func(form url.Values) (int, string)
 	delay     time.Duration
@@ -59,6 +60,7 @@ func newAS(t *testing.T) *fakeAS {
 		case "/revoke":
 			f.mu.Lock()
 			f.revoked = append(f.revoked, r.PostForm.Get("token"))
+			f.revokedBy = append(f.revokedBy, r.PostForm.Get("client_id"))
 			f.mu.Unlock()
 		}
 	}))
@@ -391,5 +393,56 @@ func TestTokensNeverInLogsAuditOrErrors(t *testing.T) {
 	b, _ := json.Marshal(evs)
 	if strings.Contains(string(b), "secret") {
 		t.Errorf("audit holds a token")
+	}
+}
+
+// F07 R-02: a process that holds the server as it was before a re-registration
+// (the upstream manager does) refreshes with the client id that is stored now,
+// not the one it read at startup. With the old one the authorization server
+// answers invalid_grant and the grant would be deleted.
+func TestRefreshUsesTheClientStoredNow(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	stale := e.srv // what a running process holds
+	o := *e.srv.Config.OAuth
+	o.ClientID = "client-after-reregistration"
+	if err := e.st.UpdateServerOAuth(ctx, e.org, e.srv.ID, o, nil); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	e.as.answer = func(form url.Values) (int, string) {
+		e.as.mu.Lock()
+		seen = append(seen, form.Get("client_id"))
+		e.as.mu.Unlock()
+		if form.Get("client_id") != "client-after-reregistration" {
+			return http.StatusBadRequest, `{"error":"invalid_grant"}`
+		}
+		return http.StatusOK, `{"access_token":"at-new","token_type":"Bearer","refresh_token":"rt-new","expires_in":3600}`
+	}
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old", RefreshToken: "rt-0", Expiry: t0})
+	at, err := e.svc.AccessToken(ctx, e.org, stale, e.ada.ID)
+	if err != nil || at != "at-new" {
+		t.Fatalf("refresh with the server as it was at startup: %q, %v; the authorization server saw client ids %v", at, err, seen)
+	}
+	if _, err := e.st.Grant(ctx, e.org, e.srv.ID, e.ada.ID); err != nil {
+		t.Errorf("the grant is gone: %v", err)
+	}
+	// Disconnecting revokes with the current client too (U-06, review of
+	// 2026-11-15: this was not checked).
+	if err := e.svc.Disconnect(ctx, e.org, stale, e.ada.ID, store.AuditEvent{ID: "d1", CallID: "d1", Time: t0, Actor: "ada", ActorID: "u", Action: "disconnect", Decision: "allow", Outcome: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	e.as.mu.Lock()
+	by := append([]string(nil), e.as.revokedBy...)
+	e.as.mu.Unlock()
+	if len(by) != 1 || by[0] != "client-after-reregistration" {
+		t.Fatalf("revoked with client ids %v, want the one stored now", by)
+	}
+	// A server that was removed meanwhile is not refreshed at all.
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old2", RefreshToken: "rt-2", Expiry: t0})
+	gone := stale
+	gone.ID = "no-such-server"
+	if _, err := e.svc.RefreshAfterReject(ctx, e.org, gone, e.ada.ID, "old2"); err == nil {
+		t.Error("a server that does not exist was refreshed")
 	}
 }
