@@ -161,3 +161,59 @@ func (f *finished) first(state string, now time.Time, ttl time.Duration) bool {
 	f.order = append(f.order, state)
 	return true
 }
+
+// denialWindow and maxDenials bound the audit rows refused sign-ins write.
+const (
+	denialWindow = 10 * time.Minute
+	maxDenials   = 60
+)
+
+// denials decides which refused sign-ins are written to the audit. It is in
+// memory, per process: a restart or a second replica starts a new window,
+// which only means a few more rows.
+type denials struct {
+	mu        sync.Mutex
+	start     time.Time
+	seen      map[string]bool // accounts recorded in this window
+	strangers int             // of them, accounts that are not members
+	skipped   int
+}
+
+// record reports whether a refusal of subject is to be audited now. When a
+// new window begins it also returns how many the last one left out.
+//
+// A disabled member is never held back by the shared budget: those are the
+// refusals an administrator most wants to see, and there are only as many as
+// there are members (review of 2026-11-15, S-06). Each account is still
+// recorded once per window.
+func (d *denials) record(subject string, member bool, now time.Time) (ok bool, skippedBefore int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen == nil || !now.Before(d.start.Add(denialWindow)) {
+		skippedBefore = d.skipped
+		d.start, d.seen, d.strangers, d.skipped = now, map[string]bool{}, 0, 0
+	}
+	if d.seen[subject] || (!member && d.strangers >= maxDenials) {
+		d.skipped++
+		return false, skippedBefore
+	}
+	d.seen[subject] = true
+	if !member {
+		d.strangers++
+	}
+	return true, skippedBefore
+}
+
+// closed returns how many refusals a window that has ended left out, once,
+// and starts afresh. It lets the periodic prune write that count even when no
+// refusal comes after the window.
+func (d *denials) closed(now time.Time) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen == nil || now.Before(d.start.Add(denialWindow)) || d.skipped == 0 {
+		return 0
+	}
+	n := d.skipped
+	d.seen, d.strangers, d.skipped = nil, 0, 0
+	return n
+}

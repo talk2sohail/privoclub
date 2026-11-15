@@ -135,6 +135,7 @@ type Server struct {
 	// sealed sign-in in flight, and the nonce of a connection in flight.
 	sessionCookie, signInCookie, connectCookie string
 	finished                                   finished
+	denials                                    denials
 }
 
 // New builds a Server. It never fails: a missing setting disables the site and
@@ -237,6 +238,7 @@ func (s *Server) Prune(ctx context.Context) error {
 	if !s.enabled {
 		return nil
 	}
+	s.deniedSummary(ctx, s.denials.closed(s.now()))
 	return s.o.Store.PruneSignIn(ctx, s.o.Org, s.now(), s.o.IdleTimeout)
 }
 

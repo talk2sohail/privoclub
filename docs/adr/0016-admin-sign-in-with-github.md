@@ -224,9 +224,11 @@ URI, no `next` parameter (a return path has one fixed shape and is checked
 when written and when used), the generic failure page, and that a setup link
 or invite is claimed in one transaction only after GitHub answered.
 
-**What this does not fix.** A person with any GitHub account can still finish
-a sign-in and be refused, and each refusal writes one audit row (F05 R-02,
-Low, open). That is the one write left for someone who is not a member.
+**The one write left for someone who is not a member.** A person with any
+GitHub account can finish a sign-in and be refused, and a refusal is audited.
+Since 0.7.2 that is bounded: one row per account in ten minutes, at most 60
+rows in ten minutes over all accounts, the rest counted in the log (F05
+R-02).
 
 **Left in the database.** The columns `setup_link_id`, `invite_id` and
 `return_to` of `oauth_states` are no longer written. They go with the next

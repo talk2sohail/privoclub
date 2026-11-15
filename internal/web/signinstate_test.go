@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -505,5 +506,106 @@ func TestFinishedRemembersBoundsAndForgets(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("%d of 64 callbacks at once were first, want 1", n)
+	}
+}
+
+// F05 R-02: a refused sign-in is the one write a person who is not a member
+// can cause. One row per account in ten minutes, a bound over all accounts,
+// and the rest is counted in the log.
+func TestRefusedSignInsCannotFloodTheAudit(t *testing.T) {
+	e := newEnv(t)
+	e.member(octo, "octocat", store.RoleOwner)
+	denied := func() (n int) {
+		for _, a := range e.adminActions() {
+			if a == "signin.denied" {
+				n++
+			}
+		}
+		return n
+	}
+	stranger := ghUser{ID: 4242, Login: "stranger"}
+	for i := 0; i < 5; i++ {
+		if res := e.signIn(e.browser(), stranger); res.StatusCode != http.StatusForbidden {
+			t.Fatalf("attempt %d: %d", i, res.StatusCode)
+		}
+	}
+	if n := denied(); n != 1 {
+		t.Fatalf("%d audit rows for five refusals of one account, want 1", n)
+	}
+	for i := 0; i < 2*maxDenials; i++ {
+		if res := e.signIn(e.browser(), ghUser{ID: int64(5000 + i), Login: fmt.Sprint("s", i)}); res.StatusCode != http.StatusForbidden {
+			t.Fatalf("stranger %d: %d", i, res.StatusCode)
+		}
+	}
+	if n := denied(); n != maxDenials {
+		t.Fatalf("%d audit rows after %d accounts were refused, want the bound %d", n, 2*maxDenials+1, maxDenials)
+	}
+	// A member is never in the way of this, and the next window records again
+	// and says what the last one left out.
+	if res := e.signIn(e.browser(), octo); res.StatusCode != http.StatusSeeOther {
+		t.Errorf("a member's sign-in during the flood: %d", res.StatusCode)
+	}
+	e.clock.advance(denialWindow)
+	e.signIn(e.browser(), stranger)
+	if n := denied(); n != maxDenials+1 {
+		t.Errorf("%d audit rows in the next window, want %d", n, maxDenials+1)
+	}
+	if !strings.Contains(e.logs.String(), fmt.Sprintf(`"count":%d`, 4+maxDenials+1)) {
+		t.Errorf("the log does not say how many refusals were left out:\n%s", e.logs.String())
+	}
+	// The count is in the audit too, not only in the log (S-06).
+	if !slices.Contains(e.adminActions(), fmt.Sprintf("signin.denied.skipped:%d", 4+maxDenials+1)) {
+		t.Errorf("the audit does not say how many refusals were left out: %v", e.adminActions())
+	}
+}
+
+// Review of 2026-11-15, S-06: strangers cannot keep a disabled member's
+// refusal out of the audit, and the left-out count reaches the audit when the
+// window ends even if no refusal comes after it.
+func TestRefusedMembersAreAlwaysAudited(t *testing.T) {
+	e := newEnv(t)
+	gone := ghUser{ID: 777, Login: "former"}
+	u := e.member(gone, "former", store.RoleMember)
+	if err := e.st.DisableUser(context.Background(), e.org, u.ID, e.clock.now(), e.event("disable")); err != nil {
+		t.Fatal(err)
+	}
+	count := func(action string) (n int) {
+		for _, a := range e.adminActions() {
+			if a == action {
+				n++
+			}
+		}
+		return n
+	}
+	for i := 0; i < maxDenials+5; i++ {
+		e.signIn(e.browser(), ghUser{ID: int64(9000 + i), Login: fmt.Sprint("x", i)})
+	}
+	if res := e.signIn(e.browser(), gone); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a disabled member signed in: %d", res.StatusCode)
+	}
+	if n := count("signin.denied"); n != maxDenials+1 {
+		t.Fatalf("%d refusals audited, want the %d strangers the budget allows and the member", n, maxDenials)
+	}
+	// Once per window for the member too.
+	e.signIn(e.browser(), gone)
+	if n := count("signin.denied"); n != maxDenials+1 {
+		t.Fatalf("the member's second refusal in the window was audited again (%d)", n)
+	}
+	// No refusal after the window: the prune writes the count.
+	if err := e.srv.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(e.adminActions(), func(a string) bool { return strings.HasPrefix(a, "signin.denied.skipped") }) {
+		t.Fatal("the count was written before the window ended")
+	}
+	e.clock.advance(denialWindow)
+	if err := e.srv.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.srv.Prune(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := count("signin.denied.skipped:6"); n != 1 {
+		t.Fatalf("the left-out count (5 strangers and the member's repeat) was written %d times: %v", n, e.adminActions())
 	}
 }
