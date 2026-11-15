@@ -13,6 +13,24 @@ export function pretty(def: unknown): string {
   }
 }
 
+// Characters a browser draws as nothing, or that reorder what is drawn, but
+// that a model reads: control and format characters (zero-width, bidi
+// overrides, Unicode tag characters used to smuggle text), private use,
+// unassigned code points, line and paragraph separators, and variation
+// selectors. The accepted hash covers them, so the review must show them.
+// Line feed and tab are kept: they are visible as layout.
+const hidden = /(?![\n\t])[\p{Cc}\p{Cf}\p{Co}\p{Cn}\p{Zl}\p{Zp}\u{FE00}-\u{FE0F}\u{E0100}-\u{E01EF}]/gu;
+
+/** reveal shows every hidden character as a visible ⟦U+XXXX⟧ escape. */
+export function reveal(s: string): string {
+  return s.replace(hidden, (c) => `⟦U+${c.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}⟧`);
+}
+
+/** hiddenCount is how many hidden characters s holds. */
+export function hiddenCount(s: string): number {
+  return s.match(hidden)?.length ?? 0;
+}
+
 export type DiffLine = { op: " " | "+" | "-"; text: string };
 
 // Above this many lines in both versions the diff is not computed (it is
@@ -52,11 +70,22 @@ export function lineDiff(before: string, after: string): DiffLine[] | null {
 
 /** Definition shows a tool's whole description and, on request, its whole definition. */
 export function Definition({ pin, previous }: { pin: Pin; previous?: Pin }) {
-  const desc = pin.definition?.description ?? "";
-  const now = pretty(pin.definition);
-  const diff = previous ? lineDiff(pretty(previous.definition), now) : null;
+  // Everything shown goes through reveal: what is accepted includes characters
+  // a browser would not draw (U-02, review of 2026-11-15).
+  const desc = reveal(pin.definition?.description ?? "");
+  const raw = pretty(pin.definition);
+  const now = reveal(raw);
+  const was = previous ? reveal(pretty(previous.definition)) : "";
+  const diff = previous ? lineDiff(was, now) : null;
+  const n = hiddenCount(raw);
   return (
     <div class="definition">
+      {n > 0 && (
+        <p class="hidden-warning" role="alert">
+          This definition holds {n} hidden {n === 1 ? "character" : "characters"} that a browser does not draw, shown as ⟦U+…⟧. A model reads
+          them. Accept only if you know why they are there.
+        </p>
+      )}
       {previous && <p class="changed">Changed since it was accepted. What changed is shown below.</p>}
       {desc ? <p class="description">{desc}</p> : <p class="meta">No description.</p>}
       {previous && diff && (
@@ -72,7 +101,7 @@ export function Definition({ pin, previous }: { pin: Pin; previous?: Pin }) {
       {previous && !diff && (
         <>
           <p class="meta">Too large to compare line by line. The accepted version:</p>
-          <pre>{pretty(previous.definition)}</pre>
+          <pre>{was}</pre>
         </>
       )}
       <details>
