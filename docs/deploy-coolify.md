@@ -100,6 +100,15 @@ Nothing new to configure: once sign-in with GitHub works, add a remote server wi
 
 Invite people with `privo admin invite --person NAME` in the container's terminal, or with `POST /api/v1/invites`.
 
+## Review fixes (0.10.1)
+
+The fixes from the independent reviews of 2026-11-15 for #12 and #13. No
+migration beyond 00009 (which gains `wait_us`; 0.10.0 was not deployed
+before this). If 0.10.0 did reach a database, the gateway refuses to start
+with "duplicate or missing column" only if 00009 ran without `wait_us`: in
+that case restore the backup taken before the upgrade, or run
+`ALTER TABLE call_stats ADD COLUMN wait_us INTEGER NOT NULL DEFAULT 0` once.
+
 ## Activity statistics and metrics (0.10.0)
 
 Migration 00009 adds two tables (call statistics and the diagnostic log); it
