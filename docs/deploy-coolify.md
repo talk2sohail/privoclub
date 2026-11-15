@@ -102,12 +102,10 @@ Invite people with `privo admin invite --person NAME` in the container's termina
 
 ## Review fixes (0.10.1)
 
-The fixes from the independent reviews of 2026-11-15 for #12 and #13. No
-migration beyond 00009 (which gains `wait_us`; 0.10.0 was not deployed
-before this). If 0.10.0 did reach a database, the gateway refuses to start
-with "duplicate or missing column" only if 00009 ran without `wait_us`: in
-that case restore the backup taken before the upgrade, or run
-`ALTER TABLE call_stats ADD COLUMN wait_us INTEGER NOT NULL DEFAULT 0` once.
+The fixes from the independent reviews of 2026-11-15 for pull requests #12
+and #13. Migration 00010 adds one column to the call statistics (the time a
+call waited for an approval); it runs on start. Nothing to set. Going back to
+0.10.0 is the older image; it ignores the column.
 
 ## Activity statistics and metrics (0.10.0)
 
