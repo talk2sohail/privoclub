@@ -134,7 +134,12 @@ export function Overview({ loc }: { loc: string }) {
         <>
           <Totals t={s.total} />
           {series.data && series.data.buckets.length > 0 && <Chart buckets={series.data.buckets} />}
-          {s.truncated && <p class="meta">More calls fell in this window than one view reads; the figures cover the first 100,000.</p>}
+          {s.sampled && (
+            <p class="meta">
+              Counts cover every call. Times and sizes are from the most recent 100,000 calls that ran
+              {s.sample_from ? ` (since ${when(s.sample_from)})` : ""}.
+            </p>
+          )}
           <h2>
             By{" "}
             {Object.entries(BREAKDOWNS).map(([k, v], i) => (

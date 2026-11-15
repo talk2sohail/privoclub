@@ -296,7 +296,9 @@ with a count. **Tool calls** and **Admin changes** are the audit as before.
 
 These statistics are kept apart from the audit (ADR 0024): one row per call
 with its phases and sizes, never its arguments, result or error text. They are
-best effort (a full queue drops a row and counts it rather than slow a call),
+best effort (a full queue drops a row and counts it rather than slow a call;
+counts cover every call, and times come from the most recent 100,000 calls
+in a window; the time a person takes to approve is kept out of latency),
 kept `PRIVO_TELEMETRY_RETENTION_DAYS` days (30 by default; `0` turns them off),
 and nothing leaves the server. Owners, admins and auditors see them, like the
 audit. The same figures come from the admin API under `/api/v1/telemetry/`

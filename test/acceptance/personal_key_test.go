@@ -265,6 +265,16 @@ func TestForbiddenKeyIsARefusedKey(t *testing.T) {
 	if !isErr || !strings.Contains(text, "refused your API key") || !strings.Contains(text, g.base+"/connect/acme") || strings.Contains(text, "UPSTREAM-TEXT") {
 		t.Fatalf("ada with a key the server answers 403 to: %v %q", isErr, text)
 	}
+	// The refusal is in the diagnostic log, with the member (review of
+	// 2026-11-15, T-07: this had no test).
+	g.eventually("the refused key in the log", 10*time.Second, func() bool {
+		for _, l := range list(g.api(http.MethodGet, "/api/v1/telemetry/logs?category=grant", g.owner, nil, http.StatusOK), "logs") {
+			if strings.Contains(l["message"].(string), "refused a member's own API key") && l["member"] == "ada" && l["server"] == "acme" {
+				return true
+			}
+		}
+		return false
+	})
 }
 
 // Review of 2026-11-15, U-06 and U-08, on the real binary: a server that

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/store"
@@ -95,8 +96,9 @@ func (r *Recorder) Call(org store.OrgID, c store.CallStat) {
 	r.send(item{org: org, call: &c})
 }
 
-// Diagnose records an operational event. It never blocks. The message must
-// carry no credentials: callers pass fixed texts or redacted errors.
+// Diagnose records an operational event. It never blocks. Callers pass fixed
+// texts, or a fixed text and an upstream's answer with its URLs redacted
+// (upstream.RedactText); every message is cut at MaxMessage bytes here.
 func (r *Recorder) Diagnose(org store.OrgID, d store.Diagnostic) {
 	if r == nil || r.store == nil {
 		return
@@ -104,6 +106,10 @@ func (r *Recorder) Diagnose(org store.OrgID, d store.Diagnostic) {
 	if d.Time.IsZero() {
 		d.Time = r.o.Now()
 	}
+	// Messages can hold text an upstream server wrote. Every source is cut
+	// here, so a server cannot fill the disk or a page through the log
+	// (review of 2026-11-15, T-01).
+	d.Message, d.Server, d.UserID = Clip(d.Message, MaxMessage), Clip(d.Server, 64), Clip(d.UserID, 64)
 	r.send(item{org: org, diag: &d})
 }
 
@@ -124,6 +130,23 @@ func (r *Recorder) send(it item) {
 func (r *Recorder) drop() {
 	r.dropped.Add(1)
 	r.o.Metrics.AddDropped()
+}
+
+// MaxMessage bounds a diagnostic message in bytes.
+const MaxMessage = 512
+
+// Clip cuts s to at most n bytes on a rune boundary, ending in "…" when it
+// was cut.
+func Clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	const more = "…"
+	cut := n - len(more)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + more
 }
 
 // Dropped is how many rows were not recorded since the start.

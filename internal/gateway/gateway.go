@@ -11,6 +11,7 @@ package gateway
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -296,6 +297,7 @@ type decision struct {
 	label      string // written to the audit log: allow or approved:<id>
 	approvalID string // set when an approval was consumed
 	approvedBy string
+	waited     time.Duration // held for a person's decision (ADR 0024, review T-10)
 }
 
 func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (decision, error) {
@@ -336,6 +338,7 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "approvals_unavailable")
 		return decision{}, &refusal{msg: "This call needs approval, but approvals are not configured.", class: "approvals_unavailable"}
 	}
+	gated := time.Now()
 	out, err := g.Approval.Gate(ctx, approval.Request{Org: c.p.OrgID, RequesterID: c.p.TokenID, RequesterName: c.p.Name,
 		RequesterPerson: c.p.Person, ServerID: c.item.ServerID, ServerAlias: c.item.Alias, Tool: c.item.Name, ArgsDigest: digest,
 		Args: c.args, Reason: dec.Reason})
@@ -348,7 +351,7 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	}
 	switch out.Result {
 	case approval.Approved:
-		return decision{label: "approved:" + out.ID, approvalID: out.ID, approvedBy: out.DecidedBy}, nil
+		return decision{label: "approved:" + out.ID, approvalID: out.ID, approvedBy: out.DecidedBy, waited: time.Since(gated)}, nil
 	case approval.Denied:
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "denied_by_approver")
 		return decision{}, &refusal{msg: "A person denied this exact call. Do not retry it unchanged.", class: "denied_by_approver"}
@@ -392,7 +395,8 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	digest := hex.EncodeToString(sum[:])
 
 	dec, err := g.decide(ctx, c, digest, callID)
-	st.DecideUS = time.Since(arrived).Microseconds()
+	st.WaitUS = dec.waited.Microseconds()
+	st.DecideUS = time.Since(arrived).Microseconds() - st.WaitUS
 	if err != nil {
 		var r *refusal
 		if errors.As(err, &r) {
@@ -451,17 +455,12 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: c.item.Alias,
 			UserID: c.p.UserID, Message: "the server refused a member's own API key"})
 	}
-	if g.Telemetry != nil && err == nil && result != nil {
-		st.TotalUS = time.Since(arrived).Microseconds() // before the size is measured
-		st.ResultBytes = encodedSize(result)
-		st.Outcome, st.ErrorClass = statOutcome(outcome), ""
-		g.Telemetry.Call(c.p.OrgID, st)
+	if err == nil {
+		st.ResultBytes = resultSize(result)
 	} else {
-		if err != nil {
-			outcome = store.OutcomeError
-		}
-		record(statOutcome(outcome), class)
+		outcome = store.OutcomeError
 	}
+	record(statOutcome(outcome), class)
 	return g.clientFacing(c, err)
 }
 
@@ -501,19 +500,54 @@ func errorClass(err error) string {
 	return "transport"
 }
 
-// byteCounter counts what is written to it and keeps nothing.
-type byteCounter int64
-
-func (b *byteCounter) Write(p []byte) (int, error) { *b += byteCounter(len(p)); return len(p), nil }
-
-// encodedSize is the size of v in JSON, as relayed to the client: what the
-// result costs in the model's context (F17).
-func encodedSize(v any) int64 {
-	var n byteCounter
-	if err := json.NewEncoder(&n).Encode(v); err != nil {
-		return 0
+// resultSize estimates what a result costs in the model's context (F17):
+// the bytes of its text and of its binary data as base64, the way it is
+// relayed. It reads lengths only: encoding a large result a second time on
+// the request path doubled its cost (review of 2026-11-15, T-06). Structured
+// content is counted only when it is already raw JSON; servers send the same
+// data as text too.
+func resultSize(v any) int64 {
+	var n int64
+	b64 := func(b []byte) int64 { return int64(base64.StdEncoding.EncodedLen(len(b))) }
+	resource := func(r *mcp.ResourceContents) {
+		if r != nil {
+			n += int64(len(r.Text)) + b64(r.Blob)
+		}
 	}
-	return int64(n) - 1 // Encode adds a line feed
+	content := func(c mcp.Content) {
+		switch c := c.(type) {
+		case *mcp.TextContent:
+			n += int64(len(c.Text))
+		case *mcp.ImageContent:
+			n += b64(c.Data)
+		case *mcp.AudioContent:
+			n += b64(c.Data)
+		case *mcp.EmbeddedResource:
+			resource(c.Resource)
+		case *mcp.ResourceLink:
+			n += int64(len(c.URI) + len(c.Name) + len(c.Title) + len(c.Description))
+		}
+	}
+	switch r := v.(type) {
+	case *mcp.CallToolResult:
+		for _, c := range r.Content {
+			content(c)
+		}
+		if raw, ok := r.StructuredContent.(json.RawMessage); ok {
+			n += int64(len(raw))
+		}
+	case *mcp.GetPromptResult:
+		for _, m := range r.Messages {
+			if m != nil {
+				content(m.Content)
+			}
+		}
+	case *mcp.ReadResourceResult:
+		for _, c := range r.Contents {
+			resource(c)
+		}
+	}
+	return n
 }
 
 // session picks the upstream session for a call: the server's shared one, or,

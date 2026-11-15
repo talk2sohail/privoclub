@@ -205,13 +205,15 @@ export type StatSummary = {
   total: StatGroup;
   groups: StatGroup[];
   labels?: Record<string, string>;
-  truncated: boolean;
+  /** More calls ran in the window than the time sample holds; counts still cover all. */
+  sampled: boolean;
+  sample_from?: string;
   recording: boolean;
 };
 
 export type StatBucket = { start: string; calls: number; errors: number; tool_errors: number; refused: number; p50_ms: number; p95_ms: number };
 
-export type StatSeries = { bucket: string; buckets: StatBucket[]; truncated: boolean };
+export type StatSeries = { bucket: string; buckets: StatBucket[]; sampled: boolean; sample_from?: string };
 
 export type TelemetryStorage = {
   recording: boolean;

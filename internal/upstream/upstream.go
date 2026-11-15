@@ -341,7 +341,9 @@ func (m *Manager) supervise(ctx context.Context, e *entry) {
 			if ctx.Err() != nil {
 				return
 			}
-			msg := redactError(err.Error(), e.srv.Config.URL)
+			// Every URL in the text loses its query and user info, not only the
+			// server's own address (review of 2026-11-15, T-05).
+			msg := RedactText(redactError(err.Error(), e.srv.Config.URL))
 			e.setDown(msg)
 			m.opts.Logger.Warn("upstream connect failed", "server", e.srv.Alias, "err", msg)
 			m.diagnose(e, store.LevelWarn, "connection failed: "+msg)
@@ -490,7 +492,7 @@ func (m *Manager) scheduleLoad(ctx context.Context, e *entry, s *mcp.ClientSessi
 				err := m.load(lctx, e, s)
 				cancel()
 				if err != nil {
-					msg := redactError(err.Error(), e.srv.Config.URL)
+					msg := RedactText(redactError(err.Error(), e.srv.Config.URL))
 					m.opts.Logger.Warn("upstream refresh failed", "server", e.srv.Alias, "err", msg)
 					m.diagnose(e, store.LevelWarn, "refreshing the list of tools failed: "+msg)
 				}

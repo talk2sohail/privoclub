@@ -113,6 +113,10 @@ func TestPruneTelemetry(t *testing.T) {
 	if err := s.InsertCallStats(ctx, b, stat("b-old", t0, "github", OutcomeOK, 100)); err != nil {
 		t.Fatal(err)
 	}
+	// Review of 2026-11-15, T-07: the diagnostics of another org stay too.
+	if err := s.InsertDiagnostics(ctx, b, Diagnostic{ID: "b-d-old", Time: t0, Level: LevelInfo, Category: CategoryLifecycle, Message: "b"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.InsertDiagnostics(ctx, a, Diagnostic{ID: "d-old", Time: t0, Level: LevelInfo, Category: CategoryLifecycle, Message: "x"},
 		Diagnostic{ID: "d-new", Time: cut, Level: LevelInfo, Category: CategoryLifecycle, Message: "y"}); err != nil {
 		t.Fatal(err)
@@ -125,11 +129,81 @@ func TestPruneTelemetry(t *testing.T) {
 	if err != nil || info.Calls != 1 || !info.OldestCall.Equal(cut) || info.Diagnostics != 1 || !info.OldestDiag.Equal(cut) {
 		t.Fatalf("after prune: %+v, %v", info, err)
 	}
-	if bi, _ := s.TelemetryStorage(ctx, b); bi.Calls != 1 {
+	if bi, _ := s.TelemetryStorage(ctx, b); bi.Calls != 1 || bi.Diagnostics != 1 {
 		t.Fatalf("pruning org a touched org b: %+v", bi)
 	}
 	empty, _ := s.TelemetryStorage(ctx, OrgID("none"))
 	if empty.Calls != 0 || !empty.OldestCall.IsZero() {
 		t.Fatalf("empty org: %+v", empty)
+	}
+}
+
+// Review of 2026-11-15, T-02: counts cover every call however many there are;
+// the time sample is the most recent calls that ran.
+func TestCountAndSampleCallStats(t *testing.T) {
+	s, _ := open(t)
+	ctx := context.Background()
+	a, b := twoOrgs(t, s)
+	t0 := time.Date(2026, 11, 14, 10, 0, 0, 0, time.UTC)
+	var rows []CallStat
+	for i := range 10 {
+		r := stat("gh-"+strconv.Itoa(i), t0.Add(time.Duration(i)*time.Minute), "github", OutcomeOK, int64(1000*(i+1)))
+		if i == 9 {
+			r.WaitUS = 5000 // held for an approval: not latency
+		}
+		rows = append(rows, r)
+	}
+	rows = append(rows,
+		stat("li-err", t0.Add(2*time.Minute), "linear", OutcomeError, 50),
+		stat("li-tool", t0.Add(3*time.Minute), "linear", OutcomeToolError, 60),
+		stat("li-ref", t0.Add(4*time.Minute), "linear", OutcomeRefused, 70))
+	if err := s.InsertCallStats(ctx, a, rows...); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertCallStats(ctx, b, stat("x", t0, "github", OutcomeOK, 1)); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := s.CountCallStats(ctx, a, CallStatQuery{}, "server", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	by := map[string]StatCount{}
+	for _, c := range counts {
+		by[c.Key] = c
+	}
+	if gh := by["github"]; gh.Calls != 10 || gh.OK != 10 {
+		t.Fatalf("github: %+v (another org's call counted?)", gh)
+	}
+	if li := by["linear"]; li.Calls != 3 || li.Errors != 1 || li.ToolErrors != 1 || li.Refused != 1 || li.OK != 0 {
+		t.Fatalf("linear: %+v", li)
+	}
+	if tool, _ := s.CountCallStats(ctx, a, CallStatQuery{}, "tool", nil); len(tool) != 2 || (tool[0].Key != "github/search" && tool[1].Key != "github/search") {
+		t.Fatalf("by tool: %+v", tool)
+	}
+	buckets, err := s.CountCallStats(ctx, a, CallStatQuery{From: t0}, "", &Buckets{From: t0, Size: 5 * time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, c := range buckets {
+		got[c.Key] = c.Calls
+	}
+	if got["0"] != 8 || got["1"] != 5 {
+		t.Fatalf("buckets of five minutes: %v", got)
+	}
+	if _, err := s.CountCallStats(ctx, a, CallStatQuery{}, "team", nil); err == nil {
+		t.Fatal("an unknown key was accepted")
+	}
+
+	sample, more, err := s.SampleCallStats(ctx, a, CallStatQuery{}, "server", 5)
+	if err != nil || !more || len(sample) != 5 {
+		t.Fatalf("a sample of five of eleven calls that ran: %d, more %v, %v", len(sample), more, err)
+	}
+	if sample[0].Key != "github" || !sample[0].Time.Equal(t0.Add(9*time.Minute)) || sample[0].LatencyUS != 10000-5000 {
+		t.Fatalf("newest first, the approval wait taken out: %+v", sample[0])
+	}
+	all, more, _ := s.SampleCallStats(ctx, a, CallStatQuery{}, "", 0)
+	if more || len(all) != 12 {
+		t.Fatalf("every call that ran, no refusal: %d", len(all))
 	}
 }

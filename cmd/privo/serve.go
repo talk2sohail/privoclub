@@ -130,6 +130,20 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 	rec := telemetry.New(statStore, telemetry.Options{Metrics: metrics, Logger: logger}) //nolint:contextcheck // the recorder must outlive request contexts to flush on shutdown
 	defer rec.Close()                                                                    // after everything that records, before the store closes
 	rec.Diagnose(org.ID, store.Diagnostic{Level: store.LevelInfo, Category: store.CategoryLifecycle, Message: "Privo " + buildinfo.Version + " started"})
+	if cfg.TelemetryRetentionDays == 0 {
+		// Off means nothing kept: what an earlier run recorded goes too, so the
+		// API does not keep serving it (review of 2026-11-15, T-04).
+		pruneDone := make(chan struct{})
+		go func() {
+			defer close(pruneDone)
+			if n, err := st.PruneTelemetry(ctx, org.ID, time.Now().Add(time.Hour)); err != nil {
+				logger.Warn("deleting call statistics after they were switched off", "err", err)
+			} else if n > 0 {
+				logger.Info("call statistics are off; deleted what was kept", "rows", n)
+			}
+		}()
+		defer func() { <-pruneDone }() // before the store is closed
+	}
 	if cfg.TelemetryRetentionDays > 0 {
 		days := cfg.TelemetryRetentionDays
 		pruneCtx, stopPrune := context.WithCancel(ctx)

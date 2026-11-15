@@ -15,7 +15,8 @@ CREATE TABLE call_stats (
     item         TEXT    NOT NULL DEFAULT '', -- tool, prompt or resource name upstream
     outcome      TEXT    NOT NULL,           -- ok | tool_error | error | refused
     error_class  TEXT    NOT NULL DEFAULT '',
-    decide_us    INTEGER NOT NULL DEFAULT 0,
+    decide_us    INTEGER NOT NULL DEFAULT 0, -- rules and approval, without the wait
+    wait_us      INTEGER NOT NULL DEFAULT 0, -- held for a person's approval
     audit_us     INTEGER NOT NULL DEFAULT 0,
     connect_us   INTEGER NOT NULL DEFAULT 0,
     upstream_us  INTEGER NOT NULL DEFAULT 0,

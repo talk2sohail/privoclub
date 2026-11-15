@@ -51,8 +51,18 @@ func TestActivityTelemetry(t *testing.T) {
 	if total := sum["total"].(map[string]any); total["calls"].(float64) != 2 || total["errors"].(float64) != 0 {
 		t.Fatalf("summary: %v", sum)
 	}
-	if series := g.api(http.MethodGet, "/api/v1/telemetry/timeseries?window=1h", g.owner, nil, http.StatusOK); len(list(series, "buckets")) != 60 {
-		t.Fatalf("a one-hour series in minutes: %v", series["bucket"])
+	// Minutes from the one holding now-1h to the one holding now: 60, or 61
+	// when now is not on a minute (T-09: the counts are the window's own).
+	if series := g.api(http.MethodGet, "/api/v1/telemetry/timeseries?window=1h", g.owner, nil, http.StatusOK); len(list(series, "buckets")) < 60 || len(list(series, "buckets")) > 61 {
+		t.Fatalf("a one-hour series in minutes: %d buckets", len(list(series, "buckets")))
+	} else {
+		var n float64
+		for _, b := range list(series, "buckets") {
+			n += b["calls"].(float64)
+		}
+		if n != 2 {
+			t.Fatalf("the chart counts %v calls, the summary 2", n)
+		}
 	}
 	logs := list(g.api(http.MethodGet, "/api/v1/telemetry/logs?category=lifecycle", g.owner, nil, http.StatusOK), "logs")
 	if len(logs) == 0 || !strings.Contains(logs[0]["message"].(string), "started") {
@@ -103,5 +113,30 @@ func TestTelemetryOff(t *testing.T) {
 	}
 	if strings.Contains(g.logs.String(), "metrics on") {
 		t.Fatal("a metrics listener opened without PRIVO_METRICS_ADDR")
+	}
+}
+
+// Review of 2026-11-15, T-04: switching statistics off deletes what was kept,
+// so the API does not keep serving it.
+func TestSwitchingStatisticsOffDeletesThem(t *testing.T) {
+	g := startGateway(t)
+	g.registerEcho("echo", nil, nil)
+	g.acceptPins("echo")
+	s := g.connect(g.agent)
+	g.eventually("echo listed", 5*time.Second, func() bool { return slices.Contains(toolNames(t, s), "echo__echo") })
+	callEcho(t, s, "x")
+	g.eventually("the statistic kept", 10*time.Second, func() bool {
+		return len(list(g.api(http.MethodGet, "/api/v1/telemetry/calls", g.owner, nil, http.StatusOK), "calls")) == 1
+	})
+	_ = s.Close()
+	g.stop()
+	g.env = append(g.env, "PRIVO_TELEMETRY_RETENTION_DAYS=0")
+	g.start()
+	g.eventually("the statistics gone", 10*time.Second, func() bool {
+		st := g.api(http.MethodGet, "/api/v1/telemetry/storage", g.owner, nil, http.StatusOK)
+		return st["recording"] == false && st["calls"].(float64) == 0 && st["logs"].(float64) == 0
+	})
+	if n := len(callEvents(g)); n != 1 {
+		t.Fatalf("the audit changed: %d call events", n)
 	}
 }
