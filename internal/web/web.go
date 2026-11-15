@@ -238,6 +238,7 @@ func (s *Server) Prune(ctx context.Context) error {
 	if !s.enabled {
 		return nil
 	}
+	s.deniedSummary(ctx, s.denials.closed(s.now()))
 	return s.o.Store.PruneSignIn(ctx, s.o.Org, s.now(), s.o.IdleTimeout)
 }
 

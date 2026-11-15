@@ -1,7 +1,9 @@
 package web
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -180,13 +182,13 @@ func displayName(p githubauth.Profile) string {
 // A refusal is the one thing a person who is not a member can make Privo
 // write, and anyone with a GitHub account can be refused as often as they
 // like. So the audit gets one row per account in ten minutes and at most
-// maxDenials rows in ten minutes over all accounts; what is left out is
-// counted and logged (F05 R-02).
-func (s *Server) denied(w http.ResponseWriter, r *http.Request, p githubauth.Profile) {
-	record, skipped := s.denials.record(p.Subject(), s.now())
-	if skipped > 0 {
-		s.log.Warn("web: refused sign-ins left out of the audit in the last ten minutes", "count", skipped)
-	}
+// maxDenials rows in ten minutes over all strangers; a disabled member is
+// always recorded. What is left out is counted, and the count is written to
+// the audit as one row when the window ends (F05 R-02; review of 2026-11-15,
+// S-06).
+func (s *Server) denied(w http.ResponseWriter, r *http.Request, p githubauth.Profile, member bool) {
+	record, skipped := s.denials.record(p.Subject(), member, s.now())
+	s.deniedSummary(r.Context(), skipped)
 	if record {
 		ev := s.event("signin.denied", p.Login, "github:"+p.Subject(), "deny", "denied")
 		if err := s.o.Audit.Admin(r.Context(), s.o.Org, ev); err != nil {
@@ -197,10 +199,23 @@ func (s *Server) denied(w http.ResponseWriter, r *http.Request, p githubauth.Pro
 		"It is not a member of this Privo. Ask an owner to add you.")
 }
 
+// deniedSummary writes how many refused sign-ins a window left out of the
+// audit, as one row, when there were any.
+func (s *Server) deniedSummary(ctx context.Context, n int) {
+	if n <= 0 {
+		return
+	}
+	s.log.Warn("web: refused sign-ins left out of the audit in the last ten minutes", "count", n)
+	ev := s.event(fmt.Sprintf("signin.denied.skipped:%d", n), "system", "system", "deny", "denied")
+	if err := s.o.Audit.Admin(context.WithoutCancel(ctx), s.o.Org, ev); err != nil {
+		s.log.Error("web: audit", "action", "signin.denied.skipped", "err", err)
+	}
+}
+
 func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, in signIn, p githubauth.Profile) {
 	u, err := s.o.Store.UserByIdentity(r.Context(), s.o.Org, store.ProviderGitHub, p.Subject())
 	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
-		s.denied(w, r, p)
+		s.denied(w, r, p, err == nil)
 		return
 	}
 	if err != nil {
