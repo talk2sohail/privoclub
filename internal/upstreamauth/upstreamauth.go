@@ -283,7 +283,30 @@ func (c *Client) resourceMetadata(ctx context.Context, su *url.URL, fromChalleng
 		}
 		return rm, nil
 	}
+	var nt *notThereError
+	if errors.As(lastErr, &nt) {
+		return ResourceMetadata{}, fmt.Errorf("%w: %w", ErrNoResourceMetadata, lastErr)
+	}
 	return ResourceMetadata{}, fmt.Errorf("protected resource metadata: %w", lastErr)
+}
+
+// ErrNoResourceMetadata means the server publishes no protected resource
+// metadata (RFC 9728), so it does not say where its people sign in. An
+// administrator can name the authorization server, or its endpoints, by hand
+// (ADR 0023).
+var ErrNoResourceMetadata = errors.New("the server publishes no protected resource metadata")
+
+// ServerMetadataFor fetches and checks an authorization server's metadata by
+// its issuer, for a server that does not name its authorization server.
+func (c *Client) ServerMetadataFor(ctx context.Context, issuer string) (ServerMetadata, error) {
+	return c.serverMetadata(ctx, issuer)
+}
+
+// CheckEndpoint checks an endpoint entered by hand: https (or http on a
+// loopback address, for tests), a host, no credentials or fragment.
+func CheckEndpoint(raw string) error {
+	_, err := parseHTTPS(raw)
+	return err
 }
 
 // serverMetadata fetches the authorization server's metadata in the order of
@@ -483,7 +506,9 @@ func AuthorizeURL(e Endpoint, redirectURI, state, challenge string, scopes []str
 	q.Set("state", state)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
-	q.Set("resource", e.Resource)
+	if e.Resource != "" {
+		q.Set("resource", e.Resource)
+	}
 	if len(scopes) > 0 {
 		q.Set("scope", strings.Join(scopes, " "))
 	}
@@ -520,7 +545,9 @@ func (c *Client) Exchange(ctx context.Context, e Endpoint, code, verifier, redir
 	form.Set("code", code)
 	form.Set("code_verifier", verifier)
 	form.Set("redirect_uri", redirectURI)
-	form.Set("resource", e.Resource)
+	if e.Resource != "" {
+		form.Set("resource", e.Resource)
+	}
 	return c.token(ctx, e, form, "", now)
 }
 
@@ -533,7 +560,9 @@ func (c *Client) Refresh(ctx context.Context, e Endpoint, refreshToken string, n
 	form := url.Values{}
 	form.Set("grant_type", "refresh_token")
 	form.Set("refresh_token", refreshToken)
-	form.Set("resource", e.Resource)
+	if e.Resource != "" {
+		form.Set("resource", e.Resource)
+	}
 	return c.token(ctx, e, form, refreshToken, now)
 }
 

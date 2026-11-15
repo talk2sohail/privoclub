@@ -25,7 +25,7 @@ export function Connections({ loc }: PageProps) {
     void run(async () => {
       await api("DELETE", PATH + "/" + seg(alias));
       invalidate(PATH);
-    }, "Disconnected. Privo no longer holds a token for this account.");
+    }, "Disconnected. Privo no longer holds a token or key of yours for it.");
 
   const list = res.data?.connections;
   return (
@@ -38,7 +38,7 @@ export function Connections({ loc }: PageProps) {
       {(list ?? []).map((c) => (
         <article class="approval" key={c.alias}>
           <h2>
-            <code>{c.alias}</code> <small>signs in at {c.issuer}</small>
+            <code>{c.alias}</code> <small>{c.kind === "key" ? `takes your own API key (${c.issuer})` : `signs in at ${c.issuer}`}</small>
           </h2>
           {c.connected ? (
             <>
@@ -59,7 +59,7 @@ export function Connections({ loc }: PageProps) {
             </>
           ) : res.data?.can_connect ? (
             <p>
-              <a href={"/connect/" + seg(c.alias)}>Connect your account</a>
+              <a href={"/connect/" + seg(c.alias)}>{c.kind === "key" ? "Enter your API key" : "Connect your account"}</a>
             </p>
           ) : (
             <p class="meta">Your role does not use tools.</p>

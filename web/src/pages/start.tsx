@@ -16,7 +16,8 @@ export function Start({ session }: PageProps) {
   const [created, setCreated] = useState<Token | null>(null);
   const [busy, run] = useAction();
   const data = tools.data;
-  const needConnect = (data?.servers ?? []).filter((s) => s.auth === "oauth" && !s.connected);
+  const perPerson = (s: { auth?: string }) => s.auth === "oauth" || s.auth === "key";
+  const needConnect = (data?.servers ?? []).filter((s) => perPerson(s) && !s.connected);
   const hasToken = (mine.data?.tokens.length ?? 0) > 0 || !!created;
 
   const create = (e: Event) => {
@@ -85,11 +86,11 @@ export function Start({ session }: PageProps) {
                       <Status value={s.status} />
                     </td>
                     <td>
-                      {s.auth !== "oauth" && <span class="meta">not needed</span>}
-                      {s.auth === "oauth" && s.connected && <span>connected</span>}
-                      {s.auth === "oauth" && !s.connected && s.connect_url && (
+                      {!perPerson(s) && <span class="meta">not needed</span>}
+                      {perPerson(s) && s.connected && <span>{s.auth === "key" ? "key saved" : "connected"}</span>}
+                      {perPerson(s) && !s.connected && s.connect_url && (
                         <a class="badge" href={s.connect_url}>
-                          Connect
+                          {s.auth === "key" ? "Enter your key" : "Connect"}
                         </a>
                       )}
                     </td>

@@ -8,7 +8,9 @@ import type { Catalog, CatalogEntry, ServerView, Team } from "../types";
 import { Empty, ErrorLine, Loading, Status, formValues, useAction } from "../ui";
 
 export function authLabel(auth: string | undefined): string {
-  return auth === "oauth" ? "each person's own account" : "shared";
+  if (auth === "oauth") return "each person's own account";
+  if (auth === "key") return "each person's own key";
+  return "shared";
 }
 
 export function teamNames(slugs: string[] | undefined, teams: Team[]): string {
@@ -167,11 +169,25 @@ function AddServer({ canOAuth, teams, ready }: { canOAuth: boolean; teams: Team[
     const body: Record<string, unknown> = { alias, transport: f.transport, url: (f.url ?? "").trim() };
     if (teams.length > 0) body.teams = chosen;
     if (!ready) return;
+    const given = (name: string) => (f[name] ?? "").trim();
     if (authMode === "header") {
-      body.headers = { [(f.header_name ?? "").trim() || "Authorization"]: f.header_value ?? "" };
+      body.headers = { [given("header_name") || "Authorization"]: f.header_value ?? "" };
     } else if (authMode === "oauth") {
-      const id = (f.client_id ?? "").trim();
-      body.oauth = id ? { client_id: id, client_secret: (f.client_secret ?? "").trim() } : {};
+      const oauth: Record<string, unknown> = {};
+      for (const k of ["client_id", "client_secret", "issuer", "authorization_endpoint", "token_endpoint"]) if (given(k)) oauth[k] = given(k);
+      if (given("scopes")) oauth.scopes = given("scopes").split(/\s+/);
+      body.oauth = oauth;
+    } else if (authMode === "key") {
+      const key: Record<string, unknown> = {};
+      for (const [field, k] of [
+        ["key_header", "header"],
+        ["key_help", "help"],
+        ["key_help_url", "help_url"],
+      ] as const)
+        if (given(field)) key[k] = given(field);
+      // Spaces matter in a prefix ("Bearer "): only the untouched default is left out.
+      if ((f.key_prefix ?? "") !== "") key.prefix = f.key_prefix;
+      body.personal_key = key;
     }
     void run(async () => {
       await api("POST", "/v1/servers", body);
@@ -200,20 +216,28 @@ function AddServer({ canOAuth, teams, ready }: { canOAuth: boolean; teams: Team[
           </select>
         </label>
         <fieldset>
-          <legend>How Privo signs in to it</legend>
+          <legend>Whose account does this server see?</legend>
           <label class="inline">
-            <input type="radio" name="auth" value="none" checked={authMode === "none"} onChange={() => setAuthMode("none")} /> No sign-in needed
+            <input type="radio" name="auth" value="none" checked={authMode === "none"} onChange={() => setAuthMode("none")} /> Nobody's: it needs no
+            sign-in
           </label>
           <label class="inline">
-            <input type="radio" name="auth" value="header" checked={authMode === "header"} onChange={() => setAuthMode("header")} /> A shared API key
-            (sent as a header)
+            <input type="radio" name="auth" value="header" checked={authMode === "header"} onChange={() => setAuthMode("header")} /> One shared account:
+            a key every call uses (sent as a header)
           </label>
           {canOAuth && (
-            <label class="inline">
-              <input type="radio" name="auth" value="oauth" checked={authMode === "oauth"} onChange={() => setAuthMode("oauth")} /> Each person's own
-              account (OAuth: GitHub, Linear, Notion…)
-            </label>
+            <>
+              <label class="inline">
+                <input type="radio" name="auth" value="oauth" checked={authMode === "oauth"} onChange={() => setAuthMode("oauth")} /> Each person's own
+                account, by signing in (OAuth: Linear, Notion, GitHub…)
+              </label>
+              <label class="inline">
+                <input type="radio" name="auth" value="key" checked={authMode === "key"} onChange={() => setAuthMode("key")} /> Each person's own
+                account, by their own API key
+              </label>
+            </>
           )}
+          {!canOAuth && <p class="meta">Each person's own account needs the admin site's sign-in and PRIVO_PUBLIC_URL to be set up.</p>}
         </fieldset>
         {authMode === "header" && (
           <>
@@ -227,15 +251,54 @@ function AddServer({ canOAuth, teams, ready }: { canOAuth: boolean; teams: Team[
           </>
         )}
         {authMode === "oauth" && (
-          <details>
-            <summary>OAuth app (only if the provider needs one, like GitHub)</summary>
+          <>
+            <details>
+              <summary>OAuth app (only if the provider needs one, like GitHub)</summary>
+              <label>
+                Client ID <input name="client_id" autocomplete="off" />
+              </label>
+              <label>
+                Client secret <input name="client_secret" type="password" autocomplete="off" />
+              </label>
+            </details>
+            <details>
+              <summary>The server does not say where people sign in</summary>
+              <p class="meta">
+                Give its sign-in server's address (issuer), or, if that publishes nothing either, its two endpoints and a client ID above.
+              </p>
+              <label>
+                Issuer <input name="issuer" type="url" autocomplete="off" placeholder="https://login.example.com" />
+              </label>
+              <label>
+                Authorization endpoint <input name="authorization_endpoint" type="url" autocomplete="off" />
+              </label>
+              <label>
+                Token endpoint <input name="token_endpoint" type="url" autocomplete="off" />
+              </label>
+              <label>
+                Scopes <small class="meta">separated by spaces</small> <input name="scopes" autocomplete="off" />
+              </label>
+            </details>
+          </>
+        )}
+        {authMode === "key" && (
+          <>
+            <p class="meta">Each person enters their own key once, on a page Privo shows them. Calls then use the caller's key, never anyone else's.</p>
             <label>
-              Client ID <input name="client_id" autocomplete="off" />
+              Header the key goes in <input name="key_header" autocomplete="off" placeholder="Authorization" />
             </label>
             <label>
-              Client secret <input name="client_secret" type="password" autocomplete="off" />
+              Before the key <small class="meta">"Bearer " for Authorization unless you write something else</small>
+              <input name="key_prefix" autocomplete="off" />
             </label>
-          </details>
+            <label>
+              Where people get their key <small class="meta">shown on their page</small>
+              <input name="key_help" maxLength={500} autocomplete="off" placeholder="Settings, then API keys." />
+            </label>
+            <label>
+              Link there <input name="key_help_url" type="url" autocomplete="off" placeholder="https://example.com/settings/api" />
+            </label>
+          </>
         )}
         {teams.length > 0 && <TeamPicker teams={teams} chosen={chosen} onChange={setChosen} />}
         {!ready && <p class="meta">Loading teams…</p>}

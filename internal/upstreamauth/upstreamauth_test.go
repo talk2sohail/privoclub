@@ -547,3 +547,55 @@ func TestParseBearer(t *testing.T) {
 	}
 	_ = io.Discard
 }
+
+// ADR 0023: a server that publishes no protected resource metadata is told
+// apart from other failures, so an administrator can name its authorization
+// server by hand; and no empty resource parameter is sent.
+func TestNoResourceMetadataIsNamed(t *testing.T) {
+	f := newFake(t)
+	f.challenge = `Bearer realm="x"`     // no resource_metadata
+	f.prmPath = "/not/a/well-known/path" // the well-known locations answer 404
+	_, err := testClient().Discover(context.Background(), f.url("/mcp"), "http", "")
+	if !errors.Is(err, ErrNoResourceMetadata) {
+		t.Fatalf("Discover = %v, want ErrNoResourceMetadata", err)
+	}
+	sm, err := testClient().ServerMetadataFor(context.Background(), f.srv.URL)
+	if err != nil || sm.TokenEndpoint != f.url("/token") {
+		t.Fatalf("ServerMetadataFor = %+v, %v", sm, err)
+	}
+	// A PRM that is there but broken is not "missing".
+	g := newFake(t)
+	g.challenge = `Bearer realm="x"`
+	g.prmResource = "https://other.example/mcp"
+	if _, err := testClient().Discover(context.Background(), g.url("/mcp"), "http", ""); err == nil || errors.Is(err, ErrNoResourceMetadata) {
+		t.Errorf("a PRM for another resource: %v", err)
+	}
+	for _, bad := range []string{"ftp://x.example/a", "https://u:p@x.example/a", "not a url", ""} {
+		if CheckEndpoint(bad) == nil {
+			t.Errorf("CheckEndpoint(%q) passed", bad)
+		}
+	}
+}
+
+func TestEmptyResourceIsNotSent(t *testing.T) {
+	f := newFake(t)
+	e := endpointOf(f, "none")
+	e.Resource = ""
+	raw, err := AuthorizeURL(e, "https://privo.example/connect/callback", "st", Challenge("v"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(raw)
+	if _, ok := u.Query()["resource"]; ok {
+		t.Errorf("the authorization URL carries an empty resource: %s", raw)
+	}
+	f.tokenAnswers = []tokenAnswer{{200, `{"access_token":"a","token_type":"Bearer","refresh_token":"r","expires_in":60}`}}
+	if _, err := testClient().Exchange(context.Background(), e, "code", "verifier", "https://privo.example/connect/callback", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, ok := f.tokenRequests[0]["resource"]; ok {
+		t.Errorf("the token request carries an empty resource: %v", f.tokenRequests[0])
+	}
+}

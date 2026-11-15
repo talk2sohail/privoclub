@@ -169,6 +169,36 @@ A person disconnects there; an admin lists and removes connections with
 `GET /api/v1/servers/<alias>/connections` and
 `DELETE /api/v1/servers/<alias>/connections/<person>`.
 
+**A server that does not say where its people sign in** (no protected
+resource metadata, common before the MCP authorization spec): give its
+authorization server, `"oauth": {"issuer": "https://login.example.com"}`. If
+that publishes no metadata either, give its endpoints and a client id:
+`"oauth": {"authorization_endpoint": "...", "token_endpoint": "...",
+"client_id": "...", "client_secret": "..."}` (ADR 0023). `"resource"` is sent
+only when the server names one or you give it.
+
+### Each person's own API key (0.9.0)
+
+For a server that takes an API key where each person has their own (ADR
+0023):
+
+```sh
+curl -X POST $PRIVO/api/v1/servers -H "Authorization: Bearer $OWNER" -d '{
+  "alias": "acme", "transport": "http", "url": "https://mcp.acme.example/mcp",
+  "personal_key": {"header": "X-Api-Key", "help": "Settings, then API keys.",
+                   "help_url": "https://acme.example/settings/api"}
+}'
+```
+
+`header` defaults to `Authorization`, with `Bearer ` before the key (change it
+with `"prefix"`). Each person enters their own key once at `/connect/<alias>`
+(Connections, or the link their AI client shows); Privo keeps it encrypted,
+never shows it again, and sends it only with that person's calls. The first
+owner or admin who enters a key provides the tool list. When the server
+refuses a key, the call says so with the link to enter a new one. In the
+admin app this is the question **Whose account does this server see?** on
+**Servers → Add another server**.
+
 ## Teams and the server catalog
 
 Each team sees only the servers given to it (ADR 0020). On the admin site:

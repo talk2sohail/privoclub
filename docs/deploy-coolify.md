@@ -100,6 +100,15 @@ Nothing new to configure: once sign-in with GitHub works, add a remote server wi
 
 Invite people with `privo admin invite --person NAME` in the container's terminal, or with `POST /api/v1/invites`.
 
+## Each person's own API key; OAuth settings by hand (0.9.0)
+
+No migration and no new setting. Servers that take each person's own API key,
+and OAuth servers that publish no sign-in metadata, can now be added (README,
+"Each person's own API key"; ADR 0023). Both need GitHub sign-in and
+`PRIVO_PUBLIC_URL`, like the other per-person servers. Going back to 0.8.x
+is the older image; servers added with a personal key do not work there (it
+does not know them) until they are deleted.
+
 ## AI clients sign in with OAuth (0.8.0)
 
 0.8.0 adds migration `00008` (four new tables; it also drops three columns of

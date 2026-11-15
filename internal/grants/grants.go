@@ -35,6 +35,28 @@ const refreshTimeout = 20 * time.Second
 // connected, disconnected, or the authorization server refused the grant.
 var ErrNotConnected = errors.New("grants: no connected account")
 
+// ErrKeyRefused means the server refused the person's own API key (ADR
+// 0023). The key is kept: a 401 can be the server's mistake, and the person
+// replaces the key on the connect page.
+var ErrKeyRefused = errors.New("grants: the server refused the person's API key")
+
+// maxKeyLen bounds an API key.
+const maxKeyLen = 4096
+
+// ValidKey reports whether a pasted API key can be sent in a header: printable
+// ASCII without spaces, at most 4096 characters.
+func ValidKey(key string) bool {
+	if key == "" || len(key) > maxKeyLen {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < 0x21 || key[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 // Store is the store subset the service uses.
 type Store interface {
 	Grant(ctx context.Context, org store.OrgID, serverID, userID string) (store.Grant, error)
@@ -168,6 +190,28 @@ func (s *Service) Save(ctx context.Context, org store.OrgID, srv store.Server, u
 	return s.Store.SaveGrant(ctx, org, store.Grant{ServerID: srv.ID, UserID: user.ID, Scopes: tok.Scope, ConnectedAt: s.now(), Credential: c}, catalogOK, ev)
 }
 
+// SaveKey stores a person's own API key for a server (ADR 0023), sealed to
+// that person and server like an OAuth grant, replacing a key they saved
+// before. catalogOK says the user manages servers, so their key may list the
+// catalog.
+func (s *Service) SaveKey(ctx context.Context, org store.OrgID, srv store.Server, user store.User, key string, catalogOK bool, ev store.AuditEvent) (store.Grant, error) {
+	if srv.Config.Auth != store.AuthKey {
+		return store.Grant{}, errors.New("grants: the server does not take personal keys")
+	}
+	if !ValidKey(key) {
+		return store.Grant{}, errors.New("grants: an API key is printable characters without spaces, at most 4096")
+	}
+	b, err := json.Marshal(upstreamauth.Token{AccessToken: key}) //nolint:gosec // marshalled only to be sealed in the vault
+	if err != nil {
+		return store.Grant{}, err
+	}
+	c, err := s.seal(ctx, org, store.Credential{ID: ids.New(), ServerID: srv.ID, OwnerID: user.ID, Purpose: store.PurposeKeyGrant, RowVersion: 1}, b)
+	if err != nil {
+		return store.Grant{}, err
+	}
+	return s.Store.SaveGrant(ctx, org, store.Grant{ServerID: srv.ID, UserID: user.ID, ConnectedAt: s.now(), Credential: c}, catalogOK, ev)
+}
+
 // AccessToken returns a usable access token of the person's grant, refreshing
 // it when it is about to expire. ErrNotConnected when there is no grant.
 func (s *Service) AccessToken(ctx context.Context, org store.OrgID, srv store.Server, userID string) (string, error) {
@@ -280,6 +324,11 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 	now := s.now()
 	if tok.AccessToken != stale && !tok.Expired(now, Skew) {
 		return tok.AccessToken, nil // refreshed meanwhile
+	}
+	if srv.Config.Auth == store.AuthKey || g.Credential.Purpose == store.PurposeKeyGrant {
+		// A key cannot be refreshed. The person saved a new one meanwhile, or
+		// the server refused the one there is.
+		return "", ErrKeyRefused
 	}
 	e, err := s.Endpoint(ctx, org, srv)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -172,11 +173,12 @@ type Grant struct {
 // its tokens, and writes ev. The grant becomes the server's catalog grant when
 // it already was, or when catalogOK and the server has none; the caller sets
 // catalogOK for users who manage servers. The credential must belong to this
-// server and user. Unknown or disabled users and unknown servers are
+// server and user, and be an OAuth grant or a person's own key (ADR 0023).
+// Unknown or disabled users and unknown servers are
 // ErrNotFound.
 func (s *Store) SaveGrant(ctx context.Context, org OrgID, g Grant, catalogOK bool, ev AuditEvent) (Grant, error) {
 	c := g.Credential
-	if c.ServerID != g.ServerID || c.OwnerID != g.UserID || c.Purpose != PurposeOAuthGrant || c.ID == "" {
+	if c.ServerID != g.ServerID || c.OwnerID != g.UserID || (c.Purpose != PurposeOAuthGrant && c.Purpose != PurposeKeyGrant) || c.ID == "" {
 		return Grant{}, errors.New("store: the grant's credential does not belong to this server and user")
 	}
 	ev.Phase = "admin"
@@ -240,18 +242,23 @@ func notFound(err error) error {
 }
 
 const grantCols = `g.server_id, g.user_id, g.scopes, g.catalog, g.connected_at, g.last_used_at, g.refreshed_at,
-	c.id, c.key_version, c.row_version, c.ciphertext`
+	c.id, c.purpose, c.key_version, c.row_version, c.ciphertext`
 
 func scanGrant(row interface{ Scan(...any) error }) (Grant, error) {
 	var g Grant
 	var connected, used, refreshed string
 	c := &g.Credential
 	if err := row.Scan(&g.ServerID, &g.UserID, &g.Scopes, &g.Catalog, &connected, &used, &refreshed,
-		&c.ID, &c.KeyVersion, &c.RowVersion, &c.Ciphertext); err != nil {
+		&c.ID, &c.Purpose, &c.KeyVersion, &c.RowVersion, &c.Ciphertext); err != nil {
 		return Grant{}, notFound(err)
 	}
 	g.ConnectedAt, g.LastUsedAt, g.RefreshedAt = parseTS(connected), parseTS(used), parseTS(refreshed)
-	c.ServerID, c.OwnerID, c.Purpose = g.ServerID, g.UserID, PurposeOAuthGrant
+	// The purpose is part of what the credential is sealed under: an OAuth
+	// grant, or a person's own key (ADR 0023). Anything else is not a grant.
+	if c.Purpose != PurposeOAuthGrant && c.Purpose != PurposeKeyGrant {
+		return Grant{}, fmt.Errorf("store: a grant's credential has the purpose %q", c.Purpose)
+	}
+	c.ServerID, c.OwnerID = g.ServerID, g.UserID
 	return g, nil
 }
 

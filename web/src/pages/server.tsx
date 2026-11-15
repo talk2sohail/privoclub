@@ -68,6 +68,18 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
           first owner or admin who connects.
         </p>
       )}
+      {current.auth === "key" && current.connect_url && (
+        <p class="card">
+          People enter their own API key at <a href={current.connect_url}>{current.connect_url}</a>
+          {current.key_header && (
+            <>
+              {" "}
+              (sent as <code>{current.key_header}</code>)
+            </>
+          )}
+          . The tool list is read with the key of the first owner or admin who enters one.
+        </p>
+      )}
       <Review alias={alias} pending={pending} all={all} loading={pins.loading && !pins.data} />
       {accepted.length > 0 && (
         <section class="card">
@@ -97,7 +109,7 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
         </section>
       )}
       {session.can.teams && <Access srv={current} />}
-      {current.auth === "oauth" && <Connected alias={alias} />}
+      {(current.auth === "oauth" || current.auth === "key") && <Connected alias={alias} />}
       <Settings srv={current} />
     </>
   );

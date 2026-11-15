@@ -68,6 +68,7 @@ type Store interface {
 	ServerByAlias(ctx context.Context, org store.OrgID, alias string) (store.Server, error)
 	ServerByID(ctx context.Context, org store.OrgID, id string) (store.Server, error)
 	ListGrants(ctx context.Context, org store.OrgID, userID string) ([]store.Grant, error)
+	Grant(ctx context.Context, org store.OrgID, serverID, userID string) (store.Grant, error)
 	// A connection in flight, written only for a signed-in member. A sign-in
 	// in flight is not stored: see signinstate.go.
 	CreateConnectState(ctx context.Context, org store.OrgID, st store.ConnectState, now time.Time) error
@@ -158,7 +159,7 @@ func New(o Options) *Server {
 	if s.o.MaxAge <= 0 {
 		s.o.MaxAge = defaultMaxAge
 	}
-	for _, name := range []string{"signin", "setup", "message", "invite", "connect", "consent"} {
+	for _, name := range []string{"signin", "setup", "message", "invite", "connect", "connectkey", "consent"} {
 		s.tmpl[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+name+".html"))
 	}
 
@@ -246,6 +247,7 @@ func (s *Server) Routes(mux *http.ServeMux) {
 		mux.Handle("GET /connect/callback", s.wrap(s.connectCallbackHandler))
 		mux.Handle("GET /connect/{alias}", s.wrap(s.connectPage))
 		mux.Handle("POST /connect/{alias}/start", s.wrap(s.connectStart))
+		mux.Handle("POST /connect/{alias}/key", s.wrap(s.connectKey))
 		mux.Handle("GET /oauth/client-metadata.json", http.HandlerFunc(s.clientMetadata))
 	}
 }
@@ -317,6 +319,10 @@ type pageData struct {
 	// setup page
 	SetupToken string
 	Expires    string
+
+	// connect page of a server that takes each person's own key (ADR 0023)
+	KeyHelp, KeyHelpURL string
+	Connected           bool
 
 	// consent page (oauth.go)
 	ClientName, ClientHost, RedirectHost, Sealed string

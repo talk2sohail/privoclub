@@ -365,7 +365,7 @@ func (m *Manager) connect(ctx context.Context, e *entry) (*mcp.ClientSession, co
 		return nil, nil, err
 	}
 	var transport mcp.Transport
-	if e.srv.Config.Auth == store.AuthOAuth {
+	if e.srv.Config.PerPerson() {
 		transport, err = m.catalogTransport(ctx, e)
 	} else {
 		transport, err = m.transport(ctx, e.srv, env, headers)
@@ -738,6 +738,7 @@ func (m *Manager) catalogTransport(ctx context.Context, e *entry) (mcp.Transport
 	var owner atomic.Value
 	org, srv := e.org, e.srv
 	auth := &bearer{
+		header: credentialHeader(srv),
 		token: func(c context.Context) (string, error) {
 			uid, tok, err := m.opts.Grants.CatalogAccessToken(c, org, srv)
 			if err == nil {

@@ -961,6 +961,57 @@ The person a token names is a label and is never looked up.
 - [x] F07 R-01 and F14 R-02 ticked in their sections
 - [ ] Follow-up: record the member (user id) on approvals so the self-approval check compares members, not labels (with F05 R-04)
 
+## F29. Each server as it presents itself (ADR 0023)
+
+Status: Built in 0.9.0 (2026-11-14). Issue 3, section 2.
+
+#### Goal
+An admin adding a server answers one question, whose account it sees, and
+Privo reaches it the way it presents itself: nobody's, one shared key, each
+person's own account by signing in (ADR 0017), or each person's own API key.
+OAuth servers that do not say where people sign in can be added too.
+
+#### Acceptance
+1. `personal_key` on `POST /api/v1/servers`: header (default Authorization,
+   "Bearer " before the key), optional prefix, help text and https link.
+   Refused: reserved headers and Cookie, a prefix with line breaks, shared
+   headers or oauth alongside, stdio, and no admin site.
+2. Each person enters their own key on `/connect/<alias>` (signed in, CSRF,
+   origin, password field, shape check only). It is stored like a grant,
+   sealed to the person and the server, never shown again; a new one replaces
+   it; Connections removes it.
+3. Every call uses the caller's own key in the named header and nothing else;
+   a person without a key gets the link; a key the server refuses (401, at
+   the handshake or later) gives "<server> refused your API key" with the link
+   and is kept.
+4. A server without protected resource metadata is reported as such; with
+   `oauth.issuer` the authorization server's metadata is used with every
+   check of ADR 0017; with `authorization_endpoint`, `token_endpoint` and
+   `client_id` nothing is discovered or registered. Endpoints are https and
+   pass the egress policy. No empty `resource` parameter is sent.
+5. The admin app asks "Whose account does this server see?"; the server,
+   Start and Connections pages say "enter your key" for such a server.
+
+#### Threat note
+In ADR 0023: keys only sealed, never logged or shown, sent only to the
+server's origin; header grammar and no line breaks; the member is chosen by
+the token's user id; hand-entered endpoints pass the egress policy.
+
+#### Tasks
+- [x] `store.ServerConfig.Key`, `AuthKey`, `PurposeKeyGrant`, `PerPerson()`; a grant's credential is an OAuth grant or a key, read with its stored purpose. Test: `internal/store` `TestGrantCredentialMustBeAGrant`
+- [x] `grants.SaveKey`, `ValidKey`, `ErrKeyRefused` (a key is never refreshed or deleted on a 401). Test: `internal/grants` `TestPersonalKey`
+- [x] Upstream: the per-person header and prefix; a refused key is an error of its own. The gateway answers with the link. Covered by the acceptance test
+- [x] Admin API: `personal_key`, the server views (`auth: "key"`, `key_header` for admins), audit `server.personal_key:<alias>:<header>`. Test: `internal/control` `TestAddingAServerThatTakesEachPersonsKey`
+- [x] OAuth by hand: `upstreamauth.ErrNoResourceMetadata`, `ServerMetadataFor`, `CheckEndpoint`; registration `manual`; `resource` only when known; `iss` check only with a known issuer. Tests: `internal/upstreamauth` `TestNoResourceMetadataIsNamed`, `TestEmptyResourceIsNotSent`; `internal/control` `TestOAuthSettingsEnteredByHand`
+- [x] Website: the key page and `POST /connect/{alias}/key`; Connections lists key servers. Tests: `internal/web` `TestKeyPageSavesThePersonsOwnKey`, `TestKeyAndSignInPathsDoNotCross`
+- [x] Admin app: the question, the key and hand-entered OAuth fields, server, Start and Connections pages. Tests in `web/src/pages.test.tsx` "servers where each person brings their own key"
+- [x] Acceptance on the real binary: `TestPersonalKeysEachPersonUsesTheirOwn` (two people, their own key each in `X-Api-Key`, no Authorization header; no key, a wrong key, a key revoked upstream while connected; removal; keys not on disk or in the log)
+- [x] Docs: README, deploy guide, manual test step 11, ADR 0023; version 0.9.0
+- [x] Mutation check (2026-11-14): 14 deliberate breakages of the new code, one at a time; all 14 made a test fail (the first run found a test that passed for the wrong reason, a DNS failure, and a check without a test; both fixed)
+- [ ] An acceptance test for OAuth settings by hand against a fake authorization server without metadata (covered at unit level today)
+- [ ] Editing an existing server's way of signing in (today: add it again)
+- [ ] Independent review (secrets and the request pipeline), on the owner's word
+
 ## F28. Activity and telemetry (the audit, reworked)
 Status: Not started (reference read 2026-11-11; spec comes after F06 and the per-server sign-in work)
 ADRs: 0006 (audit), to be written

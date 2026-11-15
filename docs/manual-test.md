@@ -141,3 +141,24 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
    `PRIVO_OAUTH_DYNAMIC_REGISTRATION=on` and is shown as "registered itself,
    not verified".
 
+## 11. A server that takes each person's own key (needs 0.9.0+)
+
+Needs a server that takes an API key in a header; any MCP server behind a
+proxy that checks a header will do.
+
+1. **Servers → Add another server**: under **Whose account does this server
+   see?** choose **Each person's own account, by their own API key**. Header
+   `X-Api-Key` (or leave `Authorization`), a line on where to get a key, a
+   link. **Add server**. Expect: the server page says people enter their own
+   key at `/connect/<name>`, sent as that header.
+2. Open that link: a page with your server's name, the help text, the link
+   and a password field. Enter your key → **Save my key**. Expect: back on
+   Connections, the server marked connected; the server page comes up and
+   lists its tools for review.
+3. As the second account: the AI client's first call says to enter a key,
+   with the link. Enter a wrong one: the next call says the server refused
+   your API key, with the link. Enter the right one: the call works as that
+   account.
+4. **Activity → Admin changes**: `server.personal_key:<name>:<header>` and
+   `upstream.connect:<name>` for each person.
+
