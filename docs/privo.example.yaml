@@ -49,6 +49,10 @@
 # Internal networks that remote servers may use (self-hosted only).
 #egress_allow_cidrs: 10.0.0.0/8
 
+# Reverse proxies in front of Privo (CIDRs), so per-address limits count the
+# client named in X-Forwarded-For. Coolify's Traefik runs on Docker networks.
+#trusted_proxies: 10.0.0.0/8,172.16.0.0/12
+
 # Stdio servers. Empty refuses them; "local" runs them unisolated on this host,
 # for development only, and also needs insecure_local_runner.
 #runner: local
@@ -73,3 +77,12 @@
 # How long a browser session lasts: idle, and in total.
 #session_idle_timeout: 2h
 #session_max_age: 12h
+
+# AI clients sign in to the gateway with OAuth (ADR 0022). Off unless set to
+# on; needs the GitHub sign-in above and public_url.
+#oauth_server: off
+# Which clients may ask a member for access: known (the built-in list plus
+# what an administrator approves), approved, or any.
+#oauth_clients: known
+# Let clients register themselves (RFC 7591). Off unless set to on.
+#oauth_dynamic_registration: off

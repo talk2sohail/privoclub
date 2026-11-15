@@ -45,6 +45,7 @@ var Settings = []Setting{
 	{Name: "PRIVO_RUNNER"},
 	{Name: "PRIVO_INSECURE_LOCAL_RUNNER"},
 	{Name: "PRIVO_EGRESS_ALLOW_CIDRS"},
+	{Name: "PRIVO_TRUSTED_PROXIES"},
 	{Name: "PRIVO_UPSTREAM_CALL_TIMEOUT"},
 	{Name: "PRIVO_UPSTREAM_MAX_RESPONSE_BYTES"},
 	{Name: "PRIVO_UPSTREAM_REFRESH_GAP"},
@@ -60,6 +61,9 @@ var Settings = []Setting{
 	{Name: "PRIVO_GITHUB_API_URL"},
 	{Name: "PRIVO_SESSION_IDLE_TIMEOUT"},
 	{Name: "PRIVO_SESSION_MAX_AGE"},
+	{Name: "PRIVO_OAUTH_SERVER"},
+	{Name: "PRIVO_OAUTH_CLIENTS"},
+	{Name: "PRIVO_OAUTH_DYNAMIC_REGISTRATION"},
 }
 
 // Lookup returns the registered setting with the given variable name.

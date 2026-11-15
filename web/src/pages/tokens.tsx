@@ -3,6 +3,7 @@ import { api, seg } from "../api";
 import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
 import { ClientSetup } from "../setup";
+import { SignedInClients } from "./oauth";
 import type { Token } from "../types";
 import { Copy, Empty, ErrorLine, formValues, useAction, when } from "../ui";
 
@@ -114,6 +115,7 @@ export function Tokens({ session }: PageProps) {
           </form>
         </section>
       )}
+      {can.use_gateway && <SignedInClients mcpURL={session.mcp_url} />}
       {can.manage_tokens && (
         <section class="card">
           <h2>All tokens</h2>

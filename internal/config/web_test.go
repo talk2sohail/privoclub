@@ -201,3 +201,43 @@ func mustURL(t *testing.T, s string) *url.URL {
 	}
 	return u
 }
+
+// ADR 0022: the authorization server is off unless switched on; the client
+// policy defaults to known; a value that is not understood stops startup
+// rather than leaving a security switch in a state nobody chose.
+func TestOAuthServerSettings(t *testing.T) {
+	w, err := LoadWeb(env(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.OAuthServer || w.OAuthRegistration || w.OAuthClients != OAuthClientsKnown {
+		t.Errorf("defaults: server %v, registration %v, clients %q; want off, off, known", w.OAuthServer, w.OAuthRegistration, w.OAuthClients)
+	}
+	for _, on := range []string{"on", "ON", "true", "1", "yes", " on "} {
+		w, err := LoadWeb(env(map[string]string{"PRIVO_OAUTH_SERVER": on, "PRIVO_OAUTH_DYNAMIC_REGISTRATION": on}))
+		if err != nil || !w.OAuthServer || !w.OAuthRegistration {
+			t.Errorf("%q: server %v, registration %v, %v", on, w.OAuthServer, w.OAuthRegistration, err)
+		}
+	}
+	for _, off := range []string{"off", "false", "0", "no", ""} {
+		w, err := LoadWeb(env(map[string]string{"PRIVO_OAUTH_SERVER": off}))
+		if err != nil || w.OAuthServer {
+			t.Errorf("%q: server %v, %v", off, w.OAuthServer, err)
+		}
+	}
+	for _, policy := range []string{"known", "approved", "any", "ANY"} {
+		w, err := LoadWeb(env(map[string]string{"PRIVO_OAUTH_CLIENTS": policy}))
+		if err != nil || w.OAuthClients != strings.ToLower(policy) {
+			t.Errorf("PRIVO_OAUTH_CLIENTS=%q: %q, %v", policy, w.OAuthClients, err)
+		}
+	}
+	for name, bad := range map[string]map[string]string{
+		"server":       {"PRIVO_OAUTH_SERVER": "enabled"},
+		"registration": {"PRIVO_OAUTH_DYNAMIC_REGISTRATION": "maybe"},
+		"clients":      {"PRIVO_OAUTH_CLIENTS": "all"},
+	} {
+		if _, err := LoadWeb(env(bad)); err == nil {
+			t.Errorf("%s: an unknown value was accepted", name)
+		}
+	}
+}

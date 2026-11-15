@@ -45,6 +45,42 @@ type Web struct {
 	// IdleTimeout and MaxAge bound a browser session (PRIVO_SESSION_IDLE_TIMEOUT,
 	// PRIVO_SESSION_MAX_AGE).
 	IdleTimeout, MaxAge time.Duration
+
+	// OAuthServer turns on Privo's own authorization server, with which AI
+	// clients sign in to the gateway (PRIVO_OAUTH_SERVER, ADR 0022). It is
+	// off unless set: the endpoints are open to the internet without a
+	// session, so they are switched on on purpose. It needs web sign-in.
+	OAuthServer bool
+	// OAuthClients is which clients may ask a member for access
+	// (PRIVO_OAUTH_CLIENTS): OAuthClientsKnown, OAuthClientsApproved or
+	// OAuthClientsAny.
+	OAuthClients string
+	// OAuthRegistration lets a client register itself
+	// (PRIVO_OAUTH_DYNAMIC_REGISTRATION, RFC 7591). Off unless set.
+	OAuthRegistration bool
+}
+
+// Which clients the authorization server accepts (ADR 0022 point 12).
+const (
+	// OAuthClientsKnown accepts Privo's built-in list of client metadata
+	// documents and the ones an administrator approved. The default.
+	OAuthClientsKnown = "known"
+	// OAuthClientsApproved accepts only what an administrator approved.
+	OAuthClientsApproved = "approved"
+	// OAuthClientsAny accepts every client metadata document behind the
+	// consent page, as most public servers do.
+	OAuthClientsAny = "any"
+)
+
+// parseOnOff reads a switch. Empty is off.
+func parseOnOff(name, v string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "", "off", "false", "0", "no":
+		return false, nil
+	case "on", "true", "1", "yes":
+		return true, nil
+	}
+	return false, fmt.Errorf("%s %q: must be on or off", name, v)
 }
 
 // Missing lists the variables that must still be set before web sign-in can
@@ -122,6 +158,22 @@ func LoadWeb(getenv func(string) string) (Web, error) {
 		errs = append(errs, fmt.Errorf("PRIVO_SESSION_IDLE_TIMEOUT %s: must not be longer than PRIVO_SESSION_MAX_AGE (%s)", w.IdleTimeout, w.MaxAge))
 	case maxSet && !idleSet && w.IdleTimeout > w.MaxAge:
 		w.IdleTimeout = w.MaxAge // a short lifetime alone should not need a second setting
+	}
+
+	var err2 error
+	if w.OAuthServer, err2 = parseOnOff("PRIVO_OAUTH_SERVER", getenv("PRIVO_OAUTH_SERVER")); err2 != nil {
+		errs = append(errs, err2)
+	}
+	if w.OAuthRegistration, err2 = parseOnOff("PRIVO_OAUTH_DYNAMIC_REGISTRATION", getenv("PRIVO_OAUTH_DYNAMIC_REGISTRATION")); err2 != nil {
+		errs = append(errs, err2)
+	}
+	switch v := strings.ToLower(strings.TrimSpace(getenv("PRIVO_OAUTH_CLIENTS"))); v {
+	case "":
+		w.OAuthClients = OAuthClientsKnown
+	case OAuthClientsKnown, OAuthClientsApproved, OAuthClientsAny:
+		w.OAuthClients = v
+	default:
+		errs = append(errs, fmt.Errorf("PRIVO_OAUTH_CLIENTS %q: must be %s, %s or %s", v, OAuthClientsKnown, OAuthClientsApproved, OAuthClientsAny))
 	}
 
 	if len(errs) > 0 {

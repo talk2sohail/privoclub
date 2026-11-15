@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/health"
 	"privo.club/privo/internal/keyring"
+	"privo.club/privo/internal/oauthserver"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/server"
 	"privo.club/privo/internal/store"
@@ -166,10 +168,36 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 		api.PublicURL = cfg.PublicURL
 	}
 
-	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, logger, siteConnections{grants: grantSvc, oauth: oauthClient, upstream: mgr, api: api, keys: kr})
+	// Privo's own authorization server (ADR 0022): AI clients sign in to the
+	// gateway. On only when it is switched on and web sign-in is set up,
+	// because a person signs in to allow a client.
+	var authServer *oauthserver.Server
+	if webCfg.OAuthServer && cfg.PublicURL != nil && cfg.PublicURL.Path == "" && len(webCfg.Missing(cfg.PublicURL)) == 0 {
+		// Client documents are public by definition: they are fetched with no
+		// private range allowed, whatever PRIVO_EGRESS_ALLOW_CIDRS lets the
+		// upstream connections reach (review of 2026-11-15, S-05).
+		clients := &oauthserver.Clients{Org: org.ID, Store: st, Policy: webCfg.OAuthClients, HTTP: oauthserver.NewDocumentClient(egress.Policy{})}
+		authServer, err = oauthserver.New(ctx, oauthserver.Options{Org: org.ID, Store: st, Keys: kr, Audit: aw, Clients: clients,
+			Issuer: strings.TrimSuffix(cfg.PublicURL.String(), "/"), Registration: webCfg.OAuthRegistration,
+			TrustedProxies: cfg.TrustedProxies, Logger: logger})
+		if err != nil {
+			return err
+		}
+		authn.AcceptOAuth(authServer)
+		gw.Scopes = []string{auth.ScopeGateway}
+		api.AuthServer, api.Clients = authServer, clients
+		logger.Info("authorization server on", "issuer", authServer.Issuer(), "clients", webCfg.OAuthClients, "registration", webCfg.OAuthRegistration)
+	} else if webCfg.OAuthServer {
+		logger.Warn("PRIVO_OAUTH_SERVER is on but web sign-in is not set up; the authorization server stays off")
+	}
+
+	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, logger, siteConnections{grants: grantSvc, oauth: oauthClient, upstream: mgr, api: api, keys: kr, authServer: authServer})
 	siteCtx, stopSite := context.WithCancel(ctx)
 	siteDone := make(chan struct{})
 	go func() { site.Run(siteCtx, 10*time.Minute); close(siteDone) }()
+	if authServer != nil {
+		go pruneEvery(siteCtx, 10*time.Minute, logger, "authorization server", authServer.Prune)
+	}
 	defer func() { stopSite(); <-siteDone }() // before the store is closed
 
 	reg := health.NewRegistry(0)
@@ -180,13 +208,17 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 			mux.Handle("/mcp", gw.Handler())
 			api.Routes(mux)
 			site.Routes(mux)
+			// With the authorization server off the metadata names none and a
+			// client is told nothing about OAuth: personal tokens only.
+			prmDoc := map[string]any{"resource": base + "/mcp", "bearer_methods_supported": []string{"header"}, "authorization_servers": []string{}}
+			if authServer != nil {
+				authServer.Routes(mux)
+				prmDoc["authorization_servers"] = []string{authServer.Issuer()}
+				prmDoc["scopes_supported"] = []string{auth.ScopeGateway}
+			}
 			mux.HandleFunc("GET /.well-known/oauth-protected-resource/mcp", func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]any{
-					"resource":                 base + "/mcp",
-					"bearer_methods_supported": []string{"header"},
-					"authorization_servers":    []string{}, // OAuth server arrives with F06
-				})
+				_ = json.NewEncoder(w).Encode(prmDoc)
 			})
 		},
 	})
@@ -271,6 +303,25 @@ type siteConnections struct {
 	upstream *upstream.Manager
 	api      *control.API     // the admin app calls it in process (ADR 0019 point 4)
 	keys     *keyring.Keyring // seals the cookie of a sign-in in flight (ADR 0016 amendment 1)
+	// authServer is Privo's own authorization server; nil while it is off.
+	authServer *oauthserver.Server
+}
+
+// pruneEvery runs a clean-up now and then until ctx ends. Correctness never
+// depends on it.
+func pruneEvery(ctx context.Context, every time.Duration, logger *slog.Logger, what string, prune func(context.Context) error) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	for {
+		if err := prune(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("prune", "what", what, "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // adminSite builds the admin website (ADR 0016). With anything missing it is
@@ -286,6 +337,9 @@ func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *s
 	}
 	if conn.keys != nil {
 		opts.Keys = conn.keys
+	}
+	if conn.authServer != nil {
+		opts.AuthServer = conn.authServer
 	}
 	if len(opts.Missing) == 0 {
 		opts.GitHub = &githubauth.Client{ClientID: webCfg.ClientID, ClientSecret: webCfg.ClientSecret.Reveal(), BaseURL: webCfg.BaseURL, APIURL: webCfg.APIURL,

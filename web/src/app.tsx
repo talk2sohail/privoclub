@@ -12,6 +12,7 @@ import { Server } from "./pages/server";
 import { Servers } from "./pages/servers";
 import { Start } from "./pages/start";
 import { Teams } from "./pages/teams";
+import { OAuthClients } from "./pages/oauth";
 import { Tokens } from "./pages/tokens";
 import { Link, beforeNavigate, match, navigate, useLocation } from "./router";
 import { FlashBar, clearFlash } from "./ui";
@@ -26,6 +27,7 @@ export const navItems: NavItem[] = [
   { href: "/admin/rules", label: "Rules", show: (c) => c.rules },
   { href: "/admin/people", label: "People", show: (c) => c.people },
   { href: "/admin/tokens", label: "Tokens", show: (c) => c.use_gateway || c.manage_tokens },
+  { href: "/admin/clients", label: "Clients", show: (c) => c.manage_tokens },
   { href: "/admin/activity", label: "Activity", show: (c) => c.activity },
   { href: "/admin/connections", label: "Connections", show: (c) => c.connections },
 ];
@@ -42,6 +44,7 @@ const routes: Route[] = [
   { pattern: "/admin/rules", allowed: (c) => c.rules, render: (p) => <Rules {...p} /> },
   { pattern: "/admin/people", allowed: (c) => c.people, render: (p) => <People {...p} /> },
   { pattern: "/admin/tokens", allowed: (c) => c.use_gateway || c.manage_tokens, render: (p) => <Tokens {...p} /> },
+  { pattern: "/admin/clients", allowed: (c) => c.manage_tokens, render: (p) => <OAuthClients {...p} /> },
   { pattern: "/admin/activity", allowed: (c) => c.activity, render: (p) => <Activity {...p} /> },
   { pattern: "/admin/approvals", allowed: (c) => c.decide, render: (p) => <Approvals {...p} /> },
   { pattern: "/admin/connections", allowed: (c) => c.connections, render: (p) => <Connections {...p} /> },

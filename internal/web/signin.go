@@ -77,7 +77,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in.Purpose, in.Link = purposeInvite, inv.ID
-	} else if next := r.PostForm.Get("return_to"); returnToRe.MatchString(next) && s.connections() {
+	} else if next := r.PostForm.Get("return_to"); s.returnOK(next) {
 		in.ReturnTo = next
 	}
 
@@ -234,7 +234,7 @@ func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, in signIn,
 	}
 	s.setCookie(w, s.sessionCookie, secret, int(s.o.MaxAge.Seconds()))
 	to := s.landing(u)
-	if returnToRe.MatchString(in.ReturnTo) && s.connections() {
+	if s.returnOK(in.ReturnTo) {
 		to = in.ReturnTo
 	}
 	redirect(w, to)

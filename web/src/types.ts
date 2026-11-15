@@ -74,6 +74,8 @@ export type AuditEvent = {
   decision: string;
   outcome: string;
   approved_by: string;
+  user?: string; // the member the event is about or the call ran as (ADR 0021)
+  client?: string; // the AI client, when it signed in with OAuth (ADR 0022)
 };
 
 export type Approval = {
@@ -149,4 +151,28 @@ export type MyServer = {
 export type MyTools = {
   teams: { slug: string; name: string }[];
   servers: MyServer[];
+};
+
+// An AI client that signed in with OAuth and acts as a member (ADR 0022).
+export type ConnectedClient = {
+  id: string;
+  client: string;
+  client_id: string;
+  kind: string; // known | approved | document | registered
+  person?: string;
+  name?: string;
+  allowed_at: string;
+  last_used_at: string;
+  expires_at: string;
+};
+
+// A client that may ask a member for access.
+export type OAuthClient = {
+  client_id: string;
+  name: string;
+  kind: string; // known | approved | registered
+  redirect_uris?: string[];
+  created_at?: string;
+  authorized_at?: string;
+  grants: number;
 };

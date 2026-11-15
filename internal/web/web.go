@@ -99,6 +99,9 @@ type Options struct {
 	IdleTimeout, MaxAge time.Duration
 	// Keys seals the cookie of a sign-in in flight (ADR 0016 amendment 1).
 	Keys Keys
+	// AuthServer is Privo's own authorization server (ADR 0022). Nil while
+	// PRIVO_OAUTH_SERVER is off: /oauth/authorize then answers 503.
+	AuthServer AuthorizationServer
 	// Missing names what is not configured. A Server with anything missing
 	// answers every request with 503 and says what to set.
 	Missing []string
@@ -134,6 +137,7 @@ type Server struct {
 	// and a callback only ever reads its own (F07 R-07): the session, the
 	// sealed sign-in in flight, and the nonce of a connection in flight.
 	sessionCookie, signInCookie, connectCookie string
+	authzCookie                                string // an authorization request waiting for sign-in (oauth.go)
 	finished                                   finished
 	denials                                    denials
 }
@@ -154,7 +158,7 @@ func New(o Options) *Server {
 	if s.o.MaxAge <= 0 {
 		s.o.MaxAge = defaultMaxAge
 	}
-	for _, name := range []string{"signin", "setup", "message", "invite", "connect"} {
+	for _, name := range []string{"signin", "setup", "message", "invite", "connect", "consent"} {
 		s.tmpl[name] = template.Must(template.ParseFS(assets, "templates/base.html", "templates/"+name+".html"))
 	}
 
@@ -179,6 +183,7 @@ func New(o Options) *Server {
 		// subdomain or a plain-http page tries to plant.
 		s.sessionCookie, s.signInCookie, s.connectCookie = "__Host-"+s.sessionCookie, "__Host-"+s.signInCookie, "__Host-"+s.connectCookie
 	}
+	s.authzCookie = strings.Replace(s.sessionCookie, "privo_session", "privo_authz", 1)
 	if o.App != nil {
 		a, err := loadApp(o.App)
 		if err != nil {
@@ -213,7 +218,20 @@ func (s *Server) Routes(mux *http.ServeMux) {
 		mux.Handle("/admin/", off)
 		mux.Handle("/auth/", off)
 		mux.Handle("/connect/", off)
+		for _, path := range []string{authorizePath, "/oauth/token", "/oauth/revoke", "/oauth/register"} {
+			mux.Handle(path, off)
+		}
 		return
+	}
+	if s.o.AuthServer != nil {
+		mux.Handle("GET /oauth/authorize", s.wrap(s.authorizePage))
+		mux.Handle("POST /oauth/authorize", s.wrap(s.authorizeDecision))
+	} else {
+		// Off: the server's own addresses say so, and nothing else under
+		// /oauth changes (Privo's client document for upstreams lives there).
+		for _, path := range []string{authorizePath, "/oauth/token", "/oauth/revoke", "/oauth/register"} {
+			mux.Handle(path, s.wrap(s.oauthOff))
+		}
 	}
 	mux.Handle("GET /admin/assets/app.css", s.wrap(s.stylesheet))
 	mux.Handle("GET /admin/{$}", s.wrap(s.home))
@@ -300,6 +318,9 @@ type pageData struct {
 	SetupToken string
 	Expires    string
 
+	// consent page (oauth.go)
+	ClientName, ClientHost, RedirectHost, Sealed string
+
 	// sign-in, invite and connect pages
 	ReturnTo         string
 	InviteToken      string
@@ -368,7 +389,7 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) signInPage(w http.ResponseWriter, r *http.Request) {
 	next := r.URL.Query().Get("next")
-	if !returnToRe.MatchString(next) || !s.connections() {
+	if !s.returnOK(next) {
 		next = ""
 	}
 	if _, u, ok := s.session(r); ok {

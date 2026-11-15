@@ -28,6 +28,7 @@ import (
 	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
+	"privo.club/privo/internal/oauthserver"
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/store"
@@ -56,7 +57,11 @@ type API struct {
 	OAuth     *upstreamauth.Client
 	Grants    *grants.Service
 	PublicURL *url.URL
-	in        internal // the mux of in-process calls (Serve)
+	// Privo's own authorization server (ADR 0022) and its client rules; nil
+	// while PRIVO_OAUTH_SERVER is off.
+	AuthServer *oauthserver.Server
+	Clients    *oauthserver.Clients
+	in         internal // the mux of in-process calls (Serve)
 }
 
 // ConnectWait bounds how long registration waits for the first connection.
@@ -73,6 +78,7 @@ func (a *API) Routes(mux *http.ServeMux) { a.register(mux, a.with) }
 func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) http.Handler) {
 	a.registerMembers(mux, wrap)
 	a.registerTeams(mux, wrap)
+	a.registerOAuthClients(mux, wrap)
 	mux.Handle("GET /api/v1/servers", wrap(auth.PermReadServers, a.listServers))
 	mux.Handle("POST /api/v1/servers", wrap(auth.PermManageServers, a.createServer))
 	mux.Handle("PATCH /api/v1/servers/{alias}", wrap(auth.PermManageServers, a.patchServer))
@@ -732,6 +738,9 @@ func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal
 		if c.Intent.UserID != "" {
 			e["user_id"], e["user"] = c.Intent.UserID, persons[c.Intent.UserID]
 		}
+		if c.Intent.Client != "" {
+			e["client"] = c.Intent.Client // the AI client, when it signed in with OAuth (ADR 0022)
+		}
 		if c.Completion != nil {
 			e["outcome"], e["latency_ms"] = c.Completion.Outcome, c.Completion.LatencyMS
 		}
@@ -753,11 +762,29 @@ func (a *API) listAdminAudit(w http.ResponseWriter, r *http.Request, p auth.Prin
 	if err != nil {
 		return err
 	}
+	// Whom an event is about, when it names a member (an AI client allowed,
+	// revoked or ended by reuse, ADR 0022): their person, by user id.
+	persons := map[string]string{}
+	if slices.ContainsFunc(events, func(ev store.AuditEvent) bool { return ev.UserID != "" }) {
+		users, err := a.Store.ListUsers(r.Context(), p.OrgID)
+		if err != nil {
+			return err
+		}
+		for _, u := range users {
+			persons[u.ID] = u.Person
+		}
+	}
 	out := make([]map[string]any, 0, len(events))
 	for _, ev := range events {
 		e := map[string]any{"id": ev.ID, "time": ev.Time, "actor": ev.Actor, "actor_id": ev.ActorID, "action": ev.Action, "decision": ev.Decision, "outcome": ev.Outcome}
 		if ev.Server != "" {
 			e["server"] = ev.Server
+		}
+		if ev.Client != "" {
+			e["client"] = ev.Client
+		}
+		if ev.UserID != "" {
+			e["user_id"], e["user"] = ev.UserID, persons[ev.UserID]
 		}
 		out = append(out, e)
 	}

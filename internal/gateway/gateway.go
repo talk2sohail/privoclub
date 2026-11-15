@@ -73,6 +73,9 @@ type Gateway struct {
 	BaseURL string
 	// ResourceMetadataURL is advertised in 401 responses (RFC 9728).
 	ResourceMetadataURL string
+	// Scopes are named in 401 responses when set, so an OAuth client knows
+	// what to ask for (ADR 0022 point 5). Every accepted credential has them.
+	Scopes []string
 	// CallTimeout is how long one call to an upstream server may take; zero
 	// means no limit (R-04). It starts once the call is allowed and approved.
 	CallTimeout time.Duration
@@ -95,6 +98,7 @@ func (g *Gateway) Handler() http.Handler {
 		&mcp.StreamableHTTPOptions{Stateless: true, Logger: g.Logger})
 	return mcpauth.RequireBearerToken(g.Auth.MCPVerifier(), &mcpauth.RequireBearerTokenOptions{
 		ResourceMetadataURL: g.ResourceMetadataURL,
+		Scopes:              g.Scopes,
 	})(h)
 }
 
@@ -352,7 +356,7 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 // recordRefusal writes an intent and its completion for a call that did not run.
 func (g *Gateway) recordRefusal(ctx context.Context, c call, callID, decision, outcome string) {
 	now := time.Now()
-	ev := store.AuditEvent{ID: ids.New(), CallID: callID, Time: now, Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Server: c.item.Alias,
+	ev := store.AuditEvent{ID: ids.New(), CallID: callID, Time: now, Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Decision: decision}
 	if err := g.Audit.Intent(ctx, c.p.OrgID, ev); err != nil {
 		g.Logger.Error("audit refusal", "err", err)
@@ -391,7 +395,7 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 		return err
 	}
 	start := time.Now()
-	intent := store.AuditEvent{ID: ids.New(), CallID: callID, Time: start, Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Server: c.item.Alias,
+	intent := store.AuditEvent{ID: ids.New(), CallID: callID, Time: start, Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Decision: dec.label, ApprovedBy: dec.approvedBy, Payload: payload}
 	if err := g.Audit.Intent(ctx, c.p.OrgID, intent); err != nil {
 		restore()
@@ -404,7 +408,7 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	if err == nil {
 		outcome, err = g.callUpstream(ctx, c, session, do)
 	}
-	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Server: c.item.Alias,
+	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Outcome: outcome, LatencyMS: time.Since(start).Milliseconds()}
 	if aerr := g.Audit.Completion(ctx, c.p.OrgID, completion); aerr != nil {
 		g.Logger.Error("audit completion not queued", "err", aerr)

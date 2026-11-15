@@ -49,12 +49,16 @@ curl localhost:8080/livez
 | `PRIVO_UPSTREAM_RETRY_BASE` / `PRIVO_UPSTREAM_RETRY_MAX` | `2s` / `30s` | Backoff bounds when an upstream server drops and is reconnected |
 | `PRIVO_RUNNER` / `PRIVO_INSECURE_LOCAL_RUNNER` | unset | Stdio servers: empty refuses them; `local` runs them unisolated on this host and needs `PRIVO_INSECURE_LOCAL_RUNNER=i-understand` (development only, ADR 0007) |
 | `PRIVO_EGRESS_ALLOW_CIDRS` | unset | Internal networks remote servers may use (self-hosted only) |
+| `PRIVO_TRUSTED_PROXIES` | unset | Reverse proxies in front of Privo, as CIDRs (for example `10.0.0.0/8,172.16.0.0/12` for the Docker networks of Coolify's Traefik). Per-address limits then count the client named in `X-Forwarded-For` instead of the proxy. Never list an address a client can reach Privo from directly |
 | `PRIVO_BOOTSTRAP_TOKEN_FILE` / `PRIVO_BOOTSTRAP_TOKEN` | unset | First boot only: a token from `privo token generate`, installed once as the owner's control token (expires after 24h). Prefer the file form: the plain variable stays readable in `/proc/<pid>/environ` (a warning says so). Remove after first use |
 | `PRIVO_GITHUB_CLIENT_ID` | unset | Client ID of the GitHub OAuth App that signs people in to the admin site (ADR 0016). Web sign-in is on only when this, the client secret and `PRIVO_PUBLIC_URL` are all set; otherwise `/admin` and `/auth` answer 503 |
 | `PRIVO_GITHUB_CLIENT_SECRET_FILE` / `PRIVO_GITHUB_CLIENT_SECRET` | unset | The OAuth App's client secret. Prefer the file form (a Coolify file mount); the plain variable is never accepted in the config file |
 | `PRIVO_GITHUB_BASE_URL` / `PRIVO_GITHUB_API_URL` | `https://github.com` / `https://api.github.com` | Where people sign in and where the profile is read; set both for GitHub Enterprise Server (https unless loopback; a private address needs `PRIVO_EGRESS_ALLOW_CIDRS`) |
 | `PRIVO_SESSION_IDLE_TIMEOUT` | `2h` | A browser session ends after this long without a request (1m to 24h) |
 | `PRIVO_SESSION_MAX_AGE` | `12h` | A browser session ends this long after sign-in whatever happens (5m to 720h) |
+| `PRIVO_OAUTH_SERVER` | `off` | `on` lets AI clients sign in to the gateway with OAuth instead of a pasted token (ADR 0022): Privo becomes the authorization server for `/mcp`. Needs web sign-in. Off, `/oauth` answers 503 and personal tokens are the only way in |
+| `PRIVO_OAUTH_CLIENTS` | `known` | Which AI clients may ask a member for access: `known` (Privo's built-in list plus the ones an administrator approves on the Clients page), `approved` (only approved ones) or `any` (every client that publishes a metadata document) |
+| `PRIVO_OAUTH_DYNAMIC_REGISTRATION` | `off` | `on` lets a client register itself (RFC 7591), which some clients need because they publish no metadata document. Registrations are limited, labelled "not verified" on the consent page and deleted when unused |
 
 ### Configuration file
 
@@ -195,6 +199,44 @@ the API without `"teams"`, are for everyone. API: `GET/POST /api/v1/teams`,
 `DELETE /api/v1/teams/<slug>/servers/<alias>`, `"teams": [...]` on
 `POST` and `PATCH /api/v1/servers`, `GET /api/v1/catalog`, and
 `GET /api/v1/me/tools` for one's own servers.
+
+## AI clients sign in with OAuth (0.8.0, off unless switched on)
+
+With `PRIVO_OAUTH_SERVER=on` an AI client needs no token at all (ADR 0022).
+Give it the gateway's address, `https://<privo>/mcp`; it finds Privo's
+authorization server by itself, opens a browser, the person signs in to Privo
+(with GitHub, as for the admin site), sees a page that names the client and
+where it will send them back, and presses **Allow**. The client then calls as
+that member: their teams' servers and their own accounts.
+
+- **Which clients may ask** (`PRIVO_OAUTH_CLIENTS`): `known` (default)
+  accepts Privo's built-in list (Claude Code, Claude on the web and desktop,
+  VS Code, ChatGPT, Codex, GitHub Copilot CLI, Zed, Antigravity) plus any
+  client an administrator approves on **Clients** by the address of its
+  metadata document; `approved` accepts only approved ones; `any` accepts
+  every client that publishes a metadata document. A member still allows
+  each client on a page that names it, every time.
+- **Clients that register themselves** (Cursor, Gemini CLI, Mistral) need
+  `PRIVO_OAUTH_DYNAMIC_REGISTRATION=on`. They are shown as "registered
+  itself, not verified", limited per address and in total, and removed when
+  unused.
+- **Tokens:** access tokens live an hour and work only on `/mcp`, never on
+  the admin API. A refresh token rotates on every use; a refresh token that
+  was already used, presented again, ends that client's access at once (no
+  grace window). A client that is not used for 30 days, or 90 days after the
+  person allowed it, has to ask again.
+- **Taking access away:** each person on **Tokens → AI clients that signed
+  in**; an administrator for everyone on **Clients**. Removing a member, or
+  giving them a role that cannot use the gateway, ends their clients' access.
+  Every case counts within 2 seconds.
+- The protected resource metadata names the authorization server only while
+  it is on. Off, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` and
+  `/oauth/register` answer 503, and personal tokens are the only way in.
+- The hosted Claude apps and ChatGPT must reach Privo from their own servers,
+  and Privo must be allowed to fetch their metadata documents (public
+  addresses only, through the egress policy).
+
+Personal tokens keep working for clients without OAuth and for scripts.
 
 ## Tokens
 

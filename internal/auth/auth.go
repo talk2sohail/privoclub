@@ -25,6 +25,28 @@ type Principal struct {
 	// no token id), or the member a token belongs to. It alone decides whose
 	// teams and upstream accounts the caller gets; "" is a token of nobody.
 	UserID string
+	// Client names the AI client when the caller signed in with OAuth (ADR
+	// 0022): TokenID is then "oauth:" and the grant's id. "" otherwise.
+	Client string
+}
+
+// OAuthPrefix starts the TokenID of a caller that signed in with OAuth.
+const OAuthPrefix = "oauth:"
+
+// ScopeGateway is the one scope of the gateway: use it as the caller. Every
+// credential the gateway accepts carries it; it is named in the 401 so an
+// OAuth client knows what to ask for (ADR 0022 point 5).
+const ScopeGateway = "mcp"
+
+// AccessTokens verifies the access tokens of Privo's own authorization
+// server (internal/oauthserver).
+type AccessTokens interface {
+	// Recognizes reports whether a bearer value has the shape of an access
+	// token of the server.
+	Recognizes(bearer string) bool
+	// VerifyAccessToken returns the grant, the member it acts as, read now,
+	// and when the token runs out.
+	VerifyAccessToken(ctx context.Context, bearer string) (store.ClientGrant, store.User, time.Time, error)
 }
 
 // ActorID is how audit records name the principal: the token id, or
@@ -83,6 +105,7 @@ type TokenStore interface {
 type Authenticator struct {
 	store TokenStore
 	now   func() time.Time
+	oauth AccessTokens // nil: the authorization server is off
 
 	mu    sync.Mutex
 	cache map[string]cachedPrincipal // keyed by full token hash
@@ -99,7 +122,53 @@ func New(s TokenStore) *Authenticator {
 	return &Authenticator{store: s, now: time.Now, cache: map[string]cachedPrincipal{}}
 }
 
-// Verify checks a bearer token and returns its principal.
+// AcceptOAuth lets the gateway accept access tokens of Privo's own
+// authorization server. Call it before the authenticator is used.
+func (a *Authenticator) AcceptOAuth(t AccessTokens) { a.oauth = t }
+
+// VerifyGateway checks a bearer token for the gateway: a personal token, or
+// an OAuth access token when the authorization server is on. Only this
+// method accepts the second kind, so an access token is never a credential
+// for the admin API, whatever role its member has (ADR 0022 point 4).
+//
+// The member's role is read when the token is verified and kept for
+// CacheTTL, like everything else here: a role change, a removal or a
+// revocation counts within two seconds.
+func (a *Authenticator) VerifyGateway(ctx context.Context, bearer string) (Principal, time.Time, error) {
+	if a.oauth == nil || !a.oauth.Recognizes(bearer) {
+		return a.Verify(ctx, bearer)
+	}
+	key := token.HashSecret(bearer)
+	now := a.now()
+	a.mu.Lock()
+	c, ok := a.cache[key]
+	a.mu.Unlock()
+	if ok && now.Before(c.expires) && now.Before(c.tokenExp) {
+		return c.p, c.tokenExp, nil
+	}
+	g, u, exp, err := a.oauth.VerifyAccessToken(ctx, bearer)
+	if err != nil || !now.Before(exp) {
+		a.mu.Lock()
+		delete(a.cache, key)
+		a.mu.Unlock()
+		return Principal{}, time.Time{}, ErrUnauthenticated
+	}
+	name := g.ClientName
+	if name == "" {
+		name = g.ClientID
+	}
+	p := Principal{OrgID: u.OrgID, TokenID: OAuthPrefix + g.ID, Name: name, Role: u.Role, Kind: store.KindGateway, Person: u.Person, UserID: u.ID, Client: name}
+	a.mu.Lock()
+	if len(a.cache) > 10000 {
+		a.cache = map[string]cachedPrincipal{}
+	}
+	a.cache[key] = cachedPrincipal{p: p, expires: now.Add(CacheTTL), tokenExp: exp}
+	a.mu.Unlock()
+	return p, exp, nil
+}
+
+// Verify checks a personal bearer token and returns its principal. It never
+// accepts an OAuth access token: see VerifyGateway.
 func (a *Authenticator) Verify(ctx context.Context, bearer string) (Principal, time.Time, error) {
 	id, secret, err := token.Parse(bearer)
 	if err != nil {
@@ -141,7 +210,7 @@ const principalKey = "privo.principal"
 // MCPVerifier adapts Verify to the MCP SDK's bearer-token middleware.
 func (a *Authenticator) MCPVerifier() mcpauth.TokenVerifier {
 	return func(ctx context.Context, bearer string, _ httpRequest) (*mcpauth.TokenInfo, error) {
-		p, exp, err := a.Verify(ctx, bearer)
+		p, exp, err := a.VerifyGateway(ctx, bearer)
 		if err != nil {
 			return nil, mcpauth.ErrInvalidToken
 		}
@@ -149,7 +218,7 @@ func (a *Authenticator) MCPVerifier() mcpauth.TokenVerifier {
 		if p.Kind != store.KindGateway || !p.Can(PermUseGateway) {
 			return nil, mcpauth.ErrInvalidToken
 		}
-		return &mcpauth.TokenInfo{UserID: p.TokenID, Expiration: exp, Extra: map[string]any{principalKey: p}}, nil
+		return &mcpauth.TokenInfo{UserID: p.TokenID, Expiration: exp, Scopes: []string{ScopeGateway}, Extra: map[string]any{principalKey: p}}, nil
 	}
 }
 

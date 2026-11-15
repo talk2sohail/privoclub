@@ -19,7 +19,11 @@ the running list is GitHub issue 3.
   grace for a rotated refresh token. The server itself is not built yet.
 - **0.7.1** (in review): a sign-in in flight lives in a sealed cookie, so the
   state cap that anyone could fill is gone (F05 R-01, F05 R-03, F07 R-03, F07
-  R-07; ADR 0016 amendment 1).
+  R-07; ADR 0016 amendment 1). **0.7.2**: refused sign-ins cannot flood the
+  audit (F05 R-02).
+- **0.8.0** (in review): AI clients sign in to the gateway with OAuth (F06
+  tasks 3 to 9, ADR 0022 "As built"). Off unless `PRIVO_OAUTH_SERVER=on`; the
+  independent review comes before switching it on.
 - Still open from the list below: F07 R-02, F14 R-01, F24 R-01 and R-02, F05
   R-02, the owner's walkthrough, backups, the decisions in the audit report.
 

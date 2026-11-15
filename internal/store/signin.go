@@ -329,6 +329,13 @@ func (s *Store) SetUserRole(ctx context.Context, org OrgID, userID, role string,
 				return err
 			}
 		}
+		if !GatewayRole(role) {
+			// A role that may not use the gateway cannot be acted as by an AI
+			// client either (ADR 0022 point 3).
+			if err := endUserClientGrants(ctx, tx, org, userID); err != nil {
+				return err
+			}
+		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
 	})
 }
@@ -350,6 +357,9 @@ func (s *Store) DisableUser(ctx context.Context, org OrgID, userID string, now t
 			return err
 		}
 		if err := deleteUserGrants(ctx, tx, org, userID); err != nil {
+			return err
+		}
+		if err := endUserClientGrants(ctx, tx, org, userID); err != nil {
 			return err
 		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
@@ -376,8 +386,9 @@ type ConnectState struct {
 
 // CreateConnectState stores a connection in flight and deletes what it
 // replaces: expired rows, and the same member's earlier state for the same
-// server. The table therefore holds at most one row per member and server,
-// and no member can take room from another (F07 R-03). There is no cap to
+// server. The table therefore holds at most one row per member and server
+// (a unique index says so too), and no member can take room from another
+// (F07 R-03). There is no cap to
 // fill: a state needs a session, and an older one of the same member is
 // useless anyway, because each start overwrites the browser's one cookie.
 func (s *Store) CreateConnectState(ctx context.Context, org OrgID, st ConnectState, now time.Time) error {

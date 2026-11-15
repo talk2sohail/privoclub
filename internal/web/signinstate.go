@@ -54,26 +54,25 @@ type signIn struct {
 	Expires  int64  `json:"e"` // Unix seconds
 }
 
-// signInBinding ties a sealed sign-in to this organisation, to the key
-// version and to the state value sent to GitHub. The state is part of the key
-// derivation and of the associated data, so a cookie opens only together with
-// the state it was made for: the callback of one sign-in cannot be finished
-// with the cookie of another, and each cookie has a key of its own.
-func signInBinding(org store.OrgID, state string, keyVersion uint32) vault.Binding {
-	return vault.Binding{OrgID: string(org), CredentialID: "signin:" + state, Purpose: "web.signin", KeyVersion: keyVersion, RowVersion: 1}
-}
+// maxSealedRequest bounds a sealed authorization request (oauth.go).
+const maxSealedRequest = 3600
 
-// sealSignIn returns the cookie value for a sign-in started with state.
-func (s *Server) sealSignIn(ctx context.Context, state string, in signIn) (string, error) {
+// seal encrypts v for one purpose of the website, bound to bind: the value
+// opens only with the same purpose and the same bind. bind is part of the key
+// derivation and of the associated data, so values with different binds have
+// different keys. Sealed with the organisation's data key, a value also opens
+// after a restart and on another replica that shares the database; the key
+// version is in front, so a rotated key still opens what is in flight.
+func (s *Server) seal(ctx context.Context, purpose, bind string, v any) (string, error) {
 	version, dek, err := s.o.Keys.Current(ctx, s.o.Org)
 	if err != nil {
 		return "", err
 	}
-	plain, err := json.Marshal(in)
+	plain, err := json.Marshal(v)
 	if err != nil {
 		return "", err
 	}
-	sealed, err := vault.Seal(dek, plain, signInBinding(s.o.Org, state, version))
+	sealed, err := vault.Seal(dek, plain, sealBinding(s.o.Org, purpose, bind, version))
 	if err != nil {
 		return "", err
 	}
@@ -81,32 +80,50 @@ func (s *Server) sealSignIn(ctx context.Context, state string, in signIn) (strin
 	return base64.RawURLEncoding.EncodeToString(append(out, sealed...)), nil
 }
 
-// openSignIn reads a sign-in cookie for the state a callback brought. It is
-// false for anything that is not a cookie this Privo made for exactly that
-// state and that has not expired; it never says which.
-func (s *Server) openSignIn(ctx context.Context, state, cookie string) (signIn, bool) {
-	if !validSecret(state) || cookie == "" || len(cookie) > maxSealedCookie {
-		return signIn{}, false
+// open reads what seal made for the same purpose and bind into v. It is false
+// for anything else, and never says why.
+func (s *Server) open(ctx context.Context, purpose, bind, sealed string, maxLen int, v any) bool {
+	if bind == "" || sealed == "" || len(sealed) > maxLen {
+		return false
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(cookie)
+	raw, err := base64.RawURLEncoding.DecodeString(sealed)
 	if err != nil || len(raw) <= 4 {
-		return signIn{}, false
+		return false
 	}
 	version := binary.BigEndian.Uint32(raw)
 	dek, err := s.o.Keys.DEK(ctx, s.o.Org, version)
 	if err != nil {
-		// An unknown key version is a cookie Privo did not make.
+		// An unknown key version is a value Privo did not make.
 		if !errors.Is(err, store.ErrNotFound) {
-			s.log.Error("web: key for the sign-in cookie", "err", err)
+			s.log.Error("web: key for a sealed value", "purpose", purpose, "err", err)
 		}
-		return signIn{}, false
+		return false
 	}
-	plain, err := vault.Open(dek, raw[4:], signInBinding(s.o.Org, state, version))
+	plain, err := vault.Open(dek, raw[4:], sealBinding(s.o.Org, purpose, bind, version))
 	if err != nil {
-		return signIn{}, false
+		return false
 	}
+	return json.Unmarshal(plain, v) == nil
+}
+
+func sealBinding(org store.OrgID, purpose, bind string, keyVersion uint32) vault.Binding {
+	return vault.Binding{OrgID: string(org), CredentialID: purpose + ":" + bind, Purpose: "web." + purpose, KeyVersion: keyVersion, RowVersion: 1}
+}
+
+// sealSignIn returns the cookie value for a sign-in started with state. The
+// state sent to GitHub is the bind: a cookie opens only together with the
+// state it was made for, so the callback of one sign-in cannot be finished
+// with the cookie of another.
+func (s *Server) sealSignIn(ctx context.Context, state string, in signIn) (string, error) {
+	return s.seal(ctx, "signin", state, in)
+}
+
+// openSignIn reads a sign-in cookie for the state a callback brought. It is
+// false for anything that is not a cookie this Privo made for exactly that
+// state and that has not expired; it never says which.
+func (s *Server) openSignIn(ctx context.Context, state, cookie string) (signIn, bool) {
 	var in signIn
-	if err := json.Unmarshal(plain, &in); err != nil {
+	if !validSecret(state) || !s.open(ctx, "signin", state, cookie, maxSealedCookie, &in) {
 		return signIn{}, false
 	}
 	switch in.Purpose {

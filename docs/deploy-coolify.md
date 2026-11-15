@@ -100,6 +100,33 @@ Nothing new to configure: once sign-in with GitHub works, add a remote server wi
 
 Invite people with `privo admin invite --person NAME` in the container's terminal, or with `POST /api/v1/invites`.
 
+## AI clients sign in with OAuth (0.8.0)
+
+0.8.0 adds migration `00008` (four new tables; it also drops three columns of
+`oauth_states` that 0.7.1 stopped writing and clears that table, whose rows
+live ten minutes). It runs by itself at start. Back up first, as before every
+upgrade with a migration.
+
+**Nothing changes until you switch it on.** To let AI clients sign in instead
+of using pasted tokens:
+
+1. GitHub sign-in must work (section above) and `PRIVO_PUBLIC_URL` must be
+   the public address with no path.
+2. Add `PRIVO_OAUTH_SERVER=on` in Environment Variables and deploy. The log
+   says `authorization server on` with the issuer and the client policy.
+3. Check: `https://app.privo.club/.well-known/oauth-authorization-server`
+   answers JSON, and `https://app.privo.club/.well-known/oauth-protected-resource/mcp`
+   lists `https://app.privo.club` under `authorization_servers`.
+4. Optional: `PRIVO_OAUTH_CLIENTS=approved|any` (default `known`);
+   `PRIVO_OAUTH_DYNAMIC_REGISTRATION=on` for Cursor, Gemini CLI and Mistral.
+
+The independent security review of the authorization server (required by
+CLAUDE.md) should be done before step 2 on a production deployment. Going
+back: switch it off, or run the 0.7.1 or 0.7.2 image, which starts on the
+migrated database and leaves the new tables alone (checked). **Do not go back
+to 0.7.0 or older** once 0.8.0 has run: their sign-in writes the columns the
+migration drops, so signing in would fail; restore the backup instead.
+
 ## Sign-in no longer writes before GitHub answers (0.7.1)
 
 0.7.1 has no migration and no new setting. A sign-in, setup link or invite

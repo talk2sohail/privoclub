@@ -40,7 +40,7 @@ const (
 // loads a page; these are for a first visit, a reload or a link.
 var appPages = []string{
 	"/admin/start", "/admin/servers", "/admin/servers/{alias}", "/admin/rules", "/admin/people", "/admin/teams",
-	"/admin/tokens", "/admin/activity", "/admin/approvals", "/admin/connections",
+	"/admin/tokens", "/admin/clients", "/admin/activity", "/admin/approvals", "/admin/connections",
 }
 
 var assetNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)

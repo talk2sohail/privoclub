@@ -202,7 +202,7 @@ func (u *oauthUpstream) signInAs(subject string) {
 
 // connectAccount plays the browser: the connect page, the start, the
 // authorization server, back to Privo. It returns the final redirect.
-func connectAccount(t *testing.T, p *person, g *gateway, alias string) *http.Response {
+func connectAccount(t *testing.T, p *person, g *gateway, alias string) *http.Response { //nolint:unparam // the suite has one OAuth server today; the alias keeps the helper honest about which
 	t.Helper()
 	page, body := p.do(http.MethodGet, g.base+"/connect/"+alias, nil, nil)
 	m := csrfField.FindStringSubmatch(body)
@@ -237,10 +237,10 @@ type oauthWorld struct {
 	serverJS map[string]any
 }
 
-func newOAuthWorld(t *testing.T, dynamic bool) *oauthWorld {
+func newOAuthWorld(t *testing.T, dynamic bool, extraEnv ...string) *oauthWorld {
 	t.Helper()
 	w := &oauthWorld{gh: newAcceptanceGitHub(t), up: newOAuthUpstream(t, dynamic)}
-	w.g = webGateway(t, w.gh)
+	w.g = webGateway(t, w.gh, extraEnv...)
 	g := w.g
 	out, err := g.command("admin", "setup-link", "--person", "boss").Output()
 	if err != nil {
