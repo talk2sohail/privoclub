@@ -49,6 +49,10 @@
 # Internal networks that remote servers may use (self-hosted only).
 #egress_allow_cidrs: 10.0.0.0/8
 
+# Reverse proxies in front of Privo (CIDRs), so per-address limits count the
+# client named in X-Forwarded-For. Coolify's Traefik runs on Docker networks.
+#trusted_proxies: 10.0.0.0/8,172.16.0.0/12
+
 # Stdio servers. Empty refuses them; "local" runs them unisolated on this host,
 # for development only, and also needs insecure_local_runner.
 #runner: local

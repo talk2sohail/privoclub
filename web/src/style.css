@@ -34,3 +34,4 @@ table.list tr.current td { background: var(--code-bg); }
 .definition .diff .add { color: var(--ok); }
 .definition .diff .del { color: var(--danger); text-decoration: line-through; }
 
+.definition .hidden-warning { color: var(--danger); font-weight: 600; margin: 0 0 6px; }

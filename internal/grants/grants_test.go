@@ -29,6 +29,7 @@ type fakeAS struct {
 	mu        sync.Mutex
 	refreshes atomic.Int32
 	revoked   []string
+	revokedBy []string // the client_id of each revocation
 	next      int
 	answer    func(form url.Values) (int, string)
 	delay     time.Duration
@@ -59,6 +60,7 @@ func newAS(t *testing.T) *fakeAS {
 		case "/revoke":
 			f.mu.Lock()
 			f.revoked = append(f.revoked, r.PostForm.Get("token"))
+			f.revokedBy = append(f.revokedBy, r.PostForm.Get("client_id"))
 			f.mu.Unlock()
 		}
 	}))
@@ -425,9 +427,16 @@ func TestRefreshUsesTheClientStoredNow(t *testing.T) {
 	if _, err := e.st.Grant(ctx, e.org, e.srv.ID, e.ada.ID); err != nil {
 		t.Errorf("the grant is gone: %v", err)
 	}
-	// Disconnecting revokes with the current client too.
+	// Disconnecting revokes with the current client too (U-06, review of
+	// 2026-11-15: this was not checked).
 	if err := e.svc.Disconnect(ctx, e.org, stale, e.ada.ID, store.AuditEvent{ID: "d1", CallID: "d1", Time: t0, Actor: "ada", ActorID: "u", Action: "disconnect", Decision: "allow", Outcome: "ok"}); err != nil {
 		t.Fatal(err)
+	}
+	e.as.mu.Lock()
+	by := append([]string(nil), e.as.revokedBy...)
+	e.as.mu.Unlock()
+	if len(by) != 1 || by[0] != "client-after-reregistration" {
+		t.Fatalf("revoked with client ids %v, want the one stored now", by)
 	}
 	// A server that was removed meanwhile is not refreshed at all.
 	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old2", RefreshToken: "rt-2", Expiry: t0})

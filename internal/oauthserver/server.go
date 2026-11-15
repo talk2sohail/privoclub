@@ -8,8 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
@@ -20,6 +20,7 @@ import (
 	"authelia.com/provider/oauth2/compose"
 	hoauth2 "authelia.com/provider/oauth2/handler/oauth2"
 
+	"privo.club/privo/internal/clientip"
 	"privo.club/privo/internal/egress"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/store"
@@ -86,8 +87,12 @@ type Options struct {
 	Issuer string
 	// Registration turns /oauth/register on.
 	Registration bool
-	Logger       *slog.Logger
-	Now          func() time.Time
+	// TrustedProxies are the reverse proxies in front of Privo, so the limit
+	// on registrations per address counts the client, not the proxy (review
+	// of 2026-11-15, S-01).
+	TrustedProxies []netip.Prefix
+	Logger         *slog.Logger
+	Now            func() time.Time
 
 	CodeTTL, AccessTTL, RefreshTTL, GrantTTL time.Duration
 }
@@ -120,6 +125,9 @@ func New(ctx context.Context, o Options) (*Server, error) {
 	if o.Store == nil || o.Keys == nil || o.Audit == nil || o.Clients == nil || o.Org == "" {
 		return nil, errors.New("oauthserver: store, keys, audit, clients and org are required")
 	}
+	// Whether registered clients are accepted follows whether registration is
+	// on (S-04): one switch, not two.
+	o.Clients.Registration = o.Registration
 	u, err := url.Parse(o.Issuer)
 	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") || strings.HasSuffix(o.Issuer, "/") || u.RawQuery != "" || u.Fragment != "" {
 		return nil, fmt.Errorf("oauthserver: the issuer %q is not a base URL", o.Issuer)
@@ -325,6 +333,14 @@ func (s *Server) ParseAuthorize(ctx context.Context, q url.Values) (*AuthRequest
 			return nil, page(http.StatusBadRequest, "This request cannot be used", "The parameter "+k+" is given more than once.", "")
 		}
 	}
+	// The answer goes in the query of the redirect address, the default for
+	// the code flow; no response_mode is offered. The other modes (form_post,
+	// and the JWT modes, which are not configured and made the library answer
+	// 500) are refused as a page before the library sees them (review of
+	// 2026-11-15, S-08).
+	if _, given := q["response_mode"]; given {
+		return nil, page(http.StatusBadRequest, "This request cannot be used", "The response_mode parameter is not supported; leave it out.", "")
+	}
 	// 1. The client, by Privo's policy. Never redirected: there is no address
 	// yet that is known to be the client's.
 	client, err := s.o.Clients.Lookup(ctx, q.Get("client_id"))
@@ -431,6 +447,13 @@ func (s *Server) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	grantType := r.PostForm.Get("grant_type")
+	// The grant type is taken exactly as written. The library splits it on
+	// spaces, so "authorization_code " would be a code exchange to it but not
+	// to the checks below (review of 2026-11-15, S-02).
+	if g := r.PostForm["grant_type"]; len(g) != 1 || (grantType != "authorization_code" && grantType != "refresh_token") {
+		writeOAuthError(w, http.StatusBadRequest, "unsupported_grant_type", "The grant_type must be authorization_code or refresh_token.")
+		return
+	}
 	// Privo's own rule in front of the library: a code is exchanged for this
 	// gateway and for nothing else, and says so (ADR 0022 point 9). A refresh
 	// may leave the resource out; if it names one, it is this gateway.
@@ -617,11 +640,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusBadRequest, "invalid_redirect_uri", "The redirect addresses cannot be used: every one must be https, or http on the person's own computer, without a fragment.")
 		return
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	if !s.allowRegistration(host) {
+	if !s.allowRegistration(clientip.Key(clientip.From(r, s.o.TrustedProxies))) {
 		w.Header().Set("Retry-After", "3600")
 		fail(http.StatusTooManyRequests, "too_many_requests", "Too many clients were registered from this address. Try again later.")
 		return

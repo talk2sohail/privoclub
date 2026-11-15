@@ -408,8 +408,29 @@ func TestStoredClients(t *testing.T) {
 			t.Fatalf("registration %d: %v", i, err)
 		}
 	}
-	if err := s.SaveOAuthClient(ctx, org, OAuthClient{ClientID: "reg-3", Kind: ClientRegistered, CreatedAt: t0}, 3, nil); !errors.Is(err, ErrTooManyClients) {
-		t.Errorf("the fourth registration: %v, want ErrTooManyClients", err)
+	// At the bound, the oldest registration nobody allowed makes room (review
+	// of 2026-11-15, S-01): reg-0 has a grant, so reg-1 goes.
+	allowed := clientGrant("g-allowed", ada.ID)
+	allowed.ClientID, allowed.ClientKind = "reg-0", ClientRegistered
+	if err := s.CreateClientGrant(ctx, org, allowed); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveOAuthClient(ctx, org, OAuthClient{ClientID: "reg-3", Kind: ClientRegistered, CreatedAt: t0.Add(time.Hour)}, 3, nil); err != nil {
+		t.Fatalf("the fourth registration: %v", err)
+	}
+	if _, err := s.OAuthClient(ctx, org, "reg-1"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the oldest unallowed registration is still there: %v", err)
+	}
+	// When every registration has been allowed, there is no room.
+	for _, id := range []string{"reg-2", "reg-3"} {
+		g := clientGrant("g-"+id, ada.ID)
+		g.ClientID, g.ClientKind = id, ClientRegistered
+		if err := s.CreateClientGrant(ctx, org, g); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SaveOAuthClient(ctx, org, OAuthClient{ClientID: "reg-4", Kind: ClientRegistered, CreatedAt: t0}, 3, nil); !errors.Is(err, ErrTooManyClients) {
+		t.Errorf("a registration when all are allowed: %v, want ErrTooManyClients", err)
 	}
 	got, err := s.OAuthClient(ctx, org, "reg-0")
 	if err != nil || got.Kind != ClientRegistered || len(got.RedirectURIs) != 1 || got.RedirectURIs[0] != "http://127.0.0.1/cb" || got.AuthorizedAt != nil {
@@ -432,11 +453,11 @@ func TestStoredClients(t *testing.T) {
 		t.Fatalf("%d stored clients, want 4", len(list))
 	}
 	for _, c := range list {
-		if want := map[string]int{"reg-0": 1}[c.ClientID]; c.Grants != want {
+		if want := map[string]int{"reg-0": 2, "reg-2": 1, "reg-3": 1}[c.ClientID]; c.Grants != want {
 			t.Errorf("%s: %d grants, want %d", c.ClientID, c.Grants, want)
 		}
 	}
-	if n, err := s.DeleteOAuthClient(ctx, org, "reg-0", adminEv("oauth.client.delete")); err != nil || n != 1 {
+	if n, err := s.DeleteOAuthClient(ctx, org, "reg-0", adminEv("oauth.client.delete")); err != nil || n != 2 {
 		t.Fatalf("DeleteOAuthClient = %d, %v", n, err)
 	}
 	if _, _, err := s.OAuthTokenBySignature(ctx, org, OAuthRefresh, "rt-reg"); !errors.Is(err, ErrNotFound) {
