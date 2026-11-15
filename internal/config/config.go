@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -60,6 +61,10 @@ type Config struct {
 	RetryBase, RetryMax time.Duration
 	// EgressAllow lists non-public CIDRs operators allow (PRIVO_EGRESS_ALLOW_CIDRS).
 	EgressAllow string
+	// TrustedProxies are the reverse proxies in front of Privo
+	// (PRIVO_TRUSTED_PROXIES, CIDRs), so per-address limits count the client
+	// named in X-Forwarded-For and not the proxy.
+	TrustedProxies []netip.Prefix
 	// TokenTTL is the default personal token lifetime (PRIVO_TOKEN_TTL).
 	TokenTTL time.Duration
 	// ApprovalHold is how long a call waits for a person's decision before the
@@ -149,6 +154,17 @@ func Load(getenv func(string) string) (Config, error) {
 			"it is for development only. Set PRIVO_INSECURE_LOCAL_RUNNER=i-understand to use it"))
 	}
 	cfg.EgressAllow = getenv("PRIVO_EGRESS_ALLOW_CIDRS")
+	for _, part := range strings.Split(getenv("PRIVO_TRUSTED_PROXIES"), ",") {
+		if part = strings.TrimSpace(part); part == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(part)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("PRIVO_TRUSTED_PROXIES %q: each entry must be a CIDR such as 10.0.0.0/8", part))
+			continue
+		}
+		cfg.TrustedProxies = append(cfg.TrustedProxies, p.Masked())
+	}
 	for _, d := range []struct {
 		name string
 		dst  *time.Duration

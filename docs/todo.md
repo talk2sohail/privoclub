@@ -373,6 +373,19 @@ client can be revoked by itself. Personal tokens keep working.
 - [x] Docs (0.8.0): README "AI clients sign in with OAuth", `docs/deploy-coolify.md` (upgrade, switching on, going back), `docs/manual-test.md` step 10, ADR 0022 "As built"; version 0.8.0 (MINOR)
 - [x] Mutation check (2026-11-14): 33 deliberate breakages of the server, the web endpoint, the store and the authenticator, one at a time; 31 made a test fail. The other 2 are covered by a second check: "verification does not look at the token's time" (the library's own validation refuses it) and "an extra redirect address handed to the library" (Privo's rule runs before the library sees the request)
 
+#### Independent review of 2026-11-15 (`docs/reviews/2026-11-15-f05-f06-signin-oauth-server-independent-review.md`)
+Approve with changes; 0 Critical, 0 High, 1 Medium, 5 Low, 5 Info. Fixed on this branch, each with a test that fails without it:
+- [x] S-01 (Medium): self-registration limits counted the proxy, not the client. New setting `PRIVO_TRUSTED_PROXIES` (`internal/clientip`: X-Forwarded-For read from the right, a forged left part never used; IPv6 counted per /64), and at the total the oldest registration nobody allowed makes room instead of refusing. Tests: `TestRegistrationLimitsCountTheClientBehindProxies`, `TestRegistrationsNobodyAllowedMakeRoom`, `internal/clientip`, `internal/config` `TestTrustedProxies`, `internal/store` `TestStoredClients`. Left: a churn of 200 registrations from 200 /64s within the minutes between a real registration and its consent can still evict it; stateless registration (a signed client id, nothing written before consent) is the complete answer
+- [x] S-02: `grant_type` taken exactly as written (`TestPaddedGrantTypeIsRefused`)
+- [x] S-03: a used code past its expiry is unknown and no longer ends the grant (`TestAUsedCodeCannotEndTheGrantAfterItExpired`)
+- [x] S-04: a registered client is accepted only while registration is on and never under `approved` (`TestRegisteredClientNeedsRegistrationOn`)
+- [x] S-05: client documents are fetched with no private range allowed; every fetch failure reads the same; at most 30 uncached fetches a minute (`TestDocumentFetchFailuresReadTheSameAndAreBounded`)
+- [x] S-07: the consent page for a hosted client says to allow only a request one started oneself (`TestConsentNamesClientRedirectHostAndPerson`)
+- [x] S-08: `response_mode` is refused as a page (`TestResponseModesAreRefusedAsAPage`)
+- [x] S-09: redirect hosts must be DNS names or IP literals; the CSP replacement is literal (`TestRedirectHostsAreNamesOrAddresses`)
+- [x] S-10: tests for the four checks no test noticed (`TestVerifyChecksTheStoredSubjectAndResource`, `TestClientIDWithUserInfoIsRefused`, the consent POST role check in `TestApproverCannotAuthorizeAClient`)
+- [ ] S-11 (Info): the memory of finished sign-ins can be emptied by an anonymous script; weigh with point 5 of ADR 0016 amendment 1
+
 ## F07. Upstream OAuth broker
 Status: In progress (first slice deployed, app.privo.club runs 0.6.0; independent review done 2026-11-03 with one High finding, open below; connecting a real provider account on app.privo.club is still to do, see F26)
 ADRs: 0003, 0017

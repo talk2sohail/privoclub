@@ -868,14 +868,13 @@ func TestRegistrationLimitsAndExpiry(t *testing.T) {
 	if list, _ := e.st.ListClientGrants(ctx, e.org, u.ID, e.clk.now()); len(list) != 1 || list[0].ClientKind != store.ClientRegistered {
 		t.Errorf("the used registration's grant after the prune: %+v", list)
 	}
-	// In total: the bound on registered clients.
-	for i := 0; ; i++ {
+	// In total: the bound on registered clients. Past it, the oldest
+	// registration nobody allowed makes room (review of 2026-11-15, S-01), so
+	// the table stays bounded and a new client is not kept out.
+	for i := 0; i < maxRegistered+5; i++ {
 		status, _ := e.registerFrom(fmt.Sprintf("192.0.2.%d:1", i%250), `{"redirect_uris":["http://127.0.0.1/cb"]}`)
-		if status == http.StatusTooManyRequests {
-			break
-		}
-		if status != http.StatusCreated || i > maxRegistered+5 {
-			t.Fatalf("registration %d: %d; the total is not bounded", i, status)
+		if status != http.StatusCreated {
+			t.Fatalf("registration %d: %d", i, status)
 		}
 		if i%registerPerAddress == registerPerAddress-1 {
 			e.clk.advance(registerWindow + time.Minute) // the per-address limit is not what is tested here
