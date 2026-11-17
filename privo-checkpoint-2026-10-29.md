@@ -1,5 +1,7 @@
 # Privo checkpoint: 2026-10-30, 01:30 IST (2026-10-29, 20:00 UTC)
 
+> **Superseded.** Kept for history; do not start from this file. The current state is in `docs/checkpoint-2026-11-11.md`.
+
 Read this first in a new session. It is self-contained; details live in the repo (`docs/todo.md`, `docs/reviews/`, `docs/upstream/`, `CLAUDE.md`).
 
 ## Where things stand

@@ -39,25 +39,40 @@ mid-size companies, to enterprise scale and quality.
    secrets, tenancy or the request pipeline.
 6. Update docs and tick the feature's to-do items.
 
-## Layout (planned)
+## Layout
 
 ```
-cmd/privo/          entry point
-internal/gateway/   MCP data plane: transports, pipeline, routing
-internal/pipeline/  stages and hooks (ADR 0001)
-internal/control/   admin API
-internal/auth/      OIDC, OAuth server, tokens, upstream broker (ADR 0003)
-internal/vault/     envelope encryption, key providers (ADR 0003)
-internal/store/     Store interface, sqlite and postgres (ADR 0002)
-internal/policy/    rules and evaluation
-internal/approval/  approval requests and notifiers
-internal/audit/     events and hash chain
-internal/runner/    runner protocol, client and server (ADR 0007)
-internal/egress/    SSRF-safe outbound client (ADR 0008)
-internal/protocol/  version handling, notifications (ADR 0004)
-deploy/coolify/     Compose file and install guide
-web/                admin UI
-docs/adr/           architecture decisions
-docs/reviews/       independent review reports
-docs/todo.md        per-feature to-do tracker
+cmd/privo/            entry point and CLI (serve, token, backup, restore, config, admin)
+internal/gateway/     MCP data plane: routing, pipeline stages inline (ADR 0001), result checks
+internal/upstream/    connections to upstream MCP servers, per-person sessions (ADR 0017)
+internal/upstreamauth/ OAuth discovery, registration and token requests for upstreams
+internal/grants/      each person's upstream grants: seal, refresh, disconnect
+internal/control/     admin API, also run in process for the admin app (ADR 0019)
+internal/web/         admin website: GitHub sign-in, invite and connect pages, app bridge
+internal/githubauth/  GitHub OAuth client for sign-in (ADR 0016)
+internal/auth/        principals, roles and permissions, token verification
+internal/token/       personal token format
+internal/vault/       envelope encryption, key providers (ADR 0003)
+internal/keyring/     per-org keys
+internal/store/       SQLite store, migrations, backup and restore (ADR 0002)
+internal/policy/      rules and evaluation
+internal/approval/    approval requests
+internal/audit/       audit writer
+internal/catalog/     built-in server catalog and team profiles (ADR 0020)
+internal/config/      settings registry, environment and file (ADR 0015)
+internal/egress/      SSRF-safe outbound client (ADR 0008)
+internal/runner/      stdio runner (local, development only; ADR 0007)
+internal/server/      HTTP server, root page, health endpoints
+internal/health/ internal/safe/ internal/ids/ internal/buildinfo/   small helpers
+web/                  admin app source (Preact); web/dist is committed and embedded
+site/                 landing page for privo.club (separate Coolify app, Node)
+test/acceptance/      black-box suite against the built binary (build tag `acceptance`)
+docs/adr/             architecture decisions
+docs/reviews/         independent review reports
+docs/todo.md          per-feature to-do tracker
 ```
+
+Planned, not built yet: `internal/pipeline/` (pluggable stages and hooks, ADR
+0001), `internal/protocol/` (version handling, ADR 0004), a Postgres store
+(ADR 0002), `deploy/coolify/` (Compose file; the guide is
+`docs/deploy-coolify.md`).
