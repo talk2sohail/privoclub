@@ -59,6 +59,9 @@ export type Token = {
   role: string;
   kind: string;
   person: string;
+  // A member's own token, bound to them (F07 R-01); every other token acts
+  // as no member, whatever person it names.
+  personal?: boolean;
   created_at?: string;
   expires_at: string;
 };
@@ -72,6 +75,7 @@ export type AuditEvent = {
   decision: string;
   outcome: string;
   approved_by: string;
+  account?: string; // whose upstream account the call used: "<person> (user <id>)"
 };
 
 export type Approval = {

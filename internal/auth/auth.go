@@ -20,8 +20,11 @@ type Principal struct {
 	Name    string
 	Role    string
 	Kind    string // gateway | control
-	Person  string // the person the token belongs to
-	UserID  string // set for a signed-in person (kind "session"), ADR 0018
+	Person  string // the name it acts as; never used to find a member (F07 R-01)
+	// UserID is the member behind the principal: the signed-in person (kind
+	// "session", ADR 0018), or the person whose own token this is. It is ""
+	// for every other token, which then reaches no one's account or teams.
+	UserID string
 }
 
 // ActorID is how audit records name the principal: the token id, or
@@ -123,7 +126,7 @@ func (a *Authenticator) Verify(ctx context.Context, bearer string) (Principal, t
 	if person == "" {
 		person = t.Name
 	}
-	p := Principal{OrgID: t.OrgID, TokenID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: person}
+	p := Principal{OrgID: t.OrgID, TokenID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: person, UserID: t.UserID}
 	a.mu.Lock()
 	if len(a.cache) > 10000 {
 		a.cache = map[string]cachedPrincipal{}

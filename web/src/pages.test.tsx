@@ -137,6 +137,42 @@ describe("tokens", () => {
   });
 });
 
+describe("all tokens", () => {
+  // F07 R-01 / F14 R-02: an API token acts for a service, never for a member.
+  it("tells a member's own token from a service's and asks API tokens for a service", async () => {
+    at("/admin/tokens");
+    await start(session("owner"), {
+      "GET /admin/api/v1/me/tokens": { tokens: [] },
+      "GET /admin/api/me/connections": { connections: [], can_connect: true },
+      "GET /admin/api/v1/tokens": {
+        tokens: [
+          { id: "t1", name: "laptop", kind: "gateway", role: "member", person: "ada", personal: true, expires_at: "2027-01-01T00:00:00Z" },
+          { id: "t2", name: "ci", kind: "control", role: "auditor", person: "ci-bot", personal: false, expires_at: "2027-01-01T00:00:00Z" },
+        ],
+      },
+    });
+    await screen.findByText("laptop");
+    expect(screen.getByText("own token")).toBeTruthy();
+    expect(screen.getByText("service")).toBeTruthy();
+    expect(screen.queryByLabelText(/^Person/)).toBeNull();
+    expect(screen.getByLabelText(/^Service/)).toBeTruthy();
+  });
+});
+
+describe("activity", () => {
+  it("names whose account a call used, without its id", async () => {
+    at("/admin/activity");
+    await start(session("owner"), {
+      "GET /admin/api/v1/audit/events?limit=100": {
+        events: [{ time: "2026-11-18T10:00:00Z", actor: "laptop", server: "linear", item: "whoami", action: "tools/call", decision: "allow", outcome: "ok", approved_by: "", account: "ada (user u-1)" }],
+      },
+    });
+    await screen.findByText("whoami");
+    expect(screen.getByText("as ada")).toBeTruthy();
+    expect(screen.queryByText(/u-1/)).toBeNull();
+  });
+});
+
 describe("approvals", () => {
   it("shows the arguments as text and approves", async () => {
     at("/admin/approvals");

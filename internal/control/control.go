@@ -556,6 +556,7 @@ type tokenView struct {
 	Role      string    `json:"role"`
 	Kind      string    `json:"kind"`
 	Person    string    `json:"person"`
+	Personal  bool      `json:"personal"` // a member's own token (F07 R-01)
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 }
@@ -567,7 +568,7 @@ func (a *API) listTokens(w http.ResponseWriter, r *http.Request, p auth.Principa
 	}
 	out := make([]tokenView, 0, len(toks))
 	for _, t := range toks {
-		out = append(out, tokenView{ID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: t.Person, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt})
+		out = append(out, viewToken(t))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": out})
 	return nil
@@ -576,7 +577,15 @@ func (a *API) listTokens(w http.ResponseWriter, r *http.Request, p auth.Principa
 // TokenSpec describes a token to issue.
 type TokenSpec struct {
 	Name, Role, Kind, Person string
-	TTL                      time.Duration
+	// UserID binds the token to a member: only for a member's own token,
+	// made while they are signed in (POST /api/v1/me/tokens). Every other
+	// token is bound to no one and may not act as a member (F07 R-01).
+	UserID string
+	TTL    time.Duration
+}
+
+func viewToken(t store.APIToken) tokenView {
+	return tokenView{ID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: t.Person, Personal: t.UserID != "", CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt}
 }
 
 // IssueToken creates a token and returns its plain text once. Shared with the CLI.
@@ -604,12 +613,24 @@ func IssueToken(ctx context.Context, s *store.Store, org store.OrgID, spec Token
 	if strings.TrimSpace(name) == "" || len(name) > 64 {
 		return "", store.APIToken{}, errorf(http.StatusUnprocessableEntity, "name must be 1 to 64 characters")
 	}
+	// F07 R-01: a token that is not a member's own must not carry a member's
+	// name. Nothing finds a member by it any more; refusing keeps the audit
+	// and the token list honest about who a token is.
+	if spec.UserID == "" {
+		switch _, err := s.UserByPerson(ctx, org, person); {
+		case err == nil:
+			return "", store.APIToken{}, errorf(http.StatusUnprocessableEntity,
+				"%q is a member of this organisation; members make their own tokens on the Tokens page while signed in. Name a service or script that is not a member", person)
+		case !errors.Is(err, store.ErrNotFound):
+			return "", store.APIToken{}, err
+		}
+	}
 	tok, err := token.New()
 	if err != nil {
 		return "", store.APIToken{}, err
 	}
 	now := time.Now()
-	rec := store.APIToken{OrgID: org, ID: tok.ID, Name: name, Role: role, Kind: spec.Kind, Person: person, SecretHash: tok.SecretHash,
+	rec := store.APIToken{OrgID: org, ID: tok.ID, Name: name, Role: role, Kind: spec.Kind, Person: person, UserID: spec.UserID, SecretHash: tok.SecretHash,
 		CreatedAt: now, ExpiresAt: now.Add(ttl)}
 	if err := s.CreateToken(ctx, rec); err != nil {
 		if errors.Is(err, store.ErrConflict) {
@@ -645,7 +666,7 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	}
 	a.adminEvent(r.Context(), p, "token.create:"+rec.Kind+":"+rec.Role+":"+rec.Name, "")
 	writeJSON(w, http.StatusCreated, map[string]any{"id": rec.ID, "token": plain, "name": rec.Name, "role": rec.Role, "kind": rec.Kind,
-		"person": rec.Person, "expires_at": rec.ExpiresAt})
+		"person": rec.Person, "personal": false, "expires_at": rec.ExpiresAt})
 	return nil
 }
 
@@ -699,6 +720,9 @@ func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal
 		}
 		if c.Intent.ApprovedBy != "" {
 			e["approved_by"] = c.Intent.ApprovedBy
+		}
+		if c.Intent.Account != "" {
+			e["account"] = c.Intent.Account
 		}
 		if c.Completion != nil {
 			e["outcome"], e["latency_ms"] = c.Completion.Outcome, c.Completion.LatencyMS

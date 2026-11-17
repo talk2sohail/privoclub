@@ -43,7 +43,8 @@ type APIToken struct {
 	Name       string
 	Role       string
 	Kind       string
-	Person     string // the person the token belongs to
+	Person     string // the name it acts as; never used to find a member (F07 R-01)
+	UserID     string // the member whose own token this is; "" for every other token
 	SecretHash string
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
@@ -53,9 +54,9 @@ type APIToken struct {
 // CreateToken stores a token.
 func (s *Store) CreateToken(ctx context.Context, t APIToken) error {
 	_, err := s.w.ExecContext(ctx, `
-		INSERT INTO api_tokens (org_id, id, name, role, kind, person, secret_hash, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.OrgID, t.ID, t.Name, t.Role, t.Kind, t.Person, t.SecretHash, ts(t.CreatedAt), ts(t.ExpiresAt))
+		INSERT INTO api_tokens (org_id, id, name, role, kind, person, user_id, secret_hash, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.OrgID, t.ID, t.Name, t.Role, t.Kind, t.Person, t.UserID, t.SecretHash, ts(t.CreatedAt), ts(t.ExpiresAt))
 	return mapErr(err)
 }
 
@@ -65,9 +66,9 @@ func (s *Store) TokenByID(ctx context.Context, id string) (APIToken, error) {
 	var created, expires string
 	var revoked sql.NullString
 	err := s.r.QueryRowContext(ctx, `
-		SELECT org_id, id, name, role, kind, person, secret_hash, created_at, expires_at, revoked_at
+		SELECT org_id, id, name, role, kind, person, user_id, secret_hash, created_at, expires_at, revoked_at
 		FROM api_tokens WHERE id = ?`, id).
-		Scan(&t.OrgID, &t.ID, &t.Name, &t.Role, &t.Kind, &t.Person, &t.SecretHash, &created, &expires, &revoked)
+		Scan(&t.OrgID, &t.ID, &t.Name, &t.Role, &t.Kind, &t.Person, &t.UserID, &t.SecretHash, &created, &expires, &revoked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return t, ErrNotFound
 	}
@@ -85,7 +86,7 @@ func (s *Store) TokenByID(ctx context.Context, id string) (APIToken, error) {
 // ListTokens lists an org's active tokens, without secrets.
 func (s *Store) ListTokens(ctx context.Context, org OrgID) ([]APIToken, error) {
 	rows, err := s.r.QueryContext(ctx, `
-		SELECT id, name, role, kind, person, created_at, expires_at FROM api_tokens
+		SELECT id, name, role, kind, person, user_id, created_at, expires_at FROM api_tokens
 		WHERE org_id = ? AND revoked_at IS NULL ORDER BY created_at`, org)
 	if err != nil {
 		return nil, err
@@ -95,7 +96,7 @@ func (s *Store) ListTokens(ctx context.Context, org OrgID) ([]APIToken, error) {
 	for rows.Next() {
 		t := APIToken{OrgID: org}
 		var created, expires string
-		if err := rows.Scan(&t.ID, &t.Name, &t.Role, &t.Kind, &t.Person, &created, &expires); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Role, &t.Kind, &t.Person, &t.UserID, &created, &expires); err != nil {
 			return nil, err
 		}
 		t.CreatedAt, t.ExpiresAt = parseTS(created), parseTS(expires)

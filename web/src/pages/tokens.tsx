@@ -127,7 +127,9 @@ export function Tokens({ session }: PageProps) {
                 <tbody>
                   {allTokens.map((t) => (
                     <tr key={t.id}>
-                      <td>{t.person}</td>
+                      <td>
+                        {t.person} <small class="meta">{t.personal ? "own token" : "service"}</small>
+                      </td>
                       <td>{t.name}</td>
                       <td>{t.kind === "gateway" ? "AI client" : "API"}</td>
                       <td>{t.role}</td>
@@ -150,7 +152,8 @@ export function Tokens({ session }: PageProps) {
                 Name <input name="name" required maxLength={64} autocomplete="off" />
               </label>
               <label>
-                Person <small class="meta">who it acts for</small> <input name="person" maxLength={128} autocomplete="off" />
+                Service <small class="meta">the script or system that uses it, not a member: members make their own tokens</small>{" "}
+                <input name="person" maxLength={128} autocomplete="off" />
               </label>
               <label>
                 Role

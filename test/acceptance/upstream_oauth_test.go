@@ -260,8 +260,7 @@ func newOAuthWorld(t *testing.T, dynamic bool) *oauthWorld {
 	}
 	res := g.api(http.MethodPost, "/api/v1/servers", g.owner, map[string]any{"alias": "linear", "transport": "http", "url": w.up.srv.URL + "/mcp", "oauth": oauth}, http.StatusCreated)
 	w.serverJS, _ = res["server"].(map[string]any)
-	tok := g.api(http.MethodPost, "/api/v1/tokens", g.owner, map[string]any{"name": "boss-agent", "role": "owner", "kind": "gateway", "person": "boss"}, http.StatusCreated)
-	w.bossTok, _ = tok["token"].(string)
+	w.bossTok = w.boss.myToken("boss-agent")
 	return w
 }
 
@@ -306,7 +305,17 @@ func TestUpstreamOAuthTwoPeople(t *testing.T) {
 	if cb, _ := adaWeb.signInThroughGitHub(start); cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/admin/start" { // members land on Start
 		t.Fatalf("ada joins: %d %q", cb.StatusCode, cb.Header.Get("Location"))
 	}
-	adaAgent := g.connect(g.issue("ada")) // a gateway token whose person is "ada"
+	// F07 R-01: nobody else can make a token that acts as Ada, not even the
+	// owner, by naming her as the person or by naming the token after her.
+	for _, body := range []map[string]any{
+		{"name": "x", "role": "member", "kind": "gateway", "person": "ada"},
+		{"name": "ada", "role": "member", "kind": "gateway"},
+	} {
+		if code, raw := g.raw(http.MethodPost, "/api/v1/tokens", g.owner, body); code != http.StatusUnprocessableEntity {
+			t.Fatalf("the owner issued a token as ada (%v): %d %s", body, code, raw)
+		}
+	}
+	adaAgent := g.connect(adaWeb.myToken("ada-agent")) // Ada's own token, bound to her
 	g.eventually("ada sees the tool", 5*time.Second, func() bool { return slices.Contains(toolList(t, adaAgent), "linear__whoami") })
 	text, isErr := call(t, adaAgent, "linear__whoami", nil)
 	if !isErr || !strings.Contains(text, g.base+"/connect/linear") {
@@ -334,6 +343,12 @@ func TestUpstreamOAuthTwoPeople(t *testing.T) {
 	if text, isErr := call(t, bossAgent, "linear__whoami", nil); isErr || text != "you are boss@linear" {
 		t.Fatalf("boss: %q (error=%v)", text, isErr)
 	}
+	// The call's audit record says whose account it used.
+	g.eventually("calls record the account they used", 5*time.Second, func() bool {
+		code, raw := g.raw(http.MethodGet, "/api/v1/audit/events", g.owner, nil)
+		s := string(raw)
+		return code == http.StatusOK && strings.Contains(s, `"account":"ada (user `) && strings.Contains(s, `"account":"boss (user `)
+	})
 	// A token whose person has no account here gets told to ask for an invite.
 	stranger := g.connect(g.issue("stranger"))
 	if text, isErr := call(t, stranger, "linear__whoami", nil); !isErr || !strings.Contains(text, "invite") {

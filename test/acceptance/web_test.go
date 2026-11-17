@@ -191,6 +191,18 @@ func (p *person) csrf() string {
 	return s.CSRF
 }
 
+// myToken makes a gateway token of the person's own while signed in, as the
+// Tokens page does: the only way to get a token bound to a member (F07 R-01).
+func (p *person) myToken(name string) string {
+	p.t.Helper()
+	code, res := p.app(http.MethodPost, "/v1/me/tokens", map[string]any{"name": name}, nil)
+	tok, _ := res["token"].(string)
+	if code != http.StatusCreated || tok == "" || res["personal"] != true {
+		p.t.Fatalf("own token %q: %d %v", name, code, res)
+	}
+	return tok
+}
+
 // app calls /admin/api{path} as the admin app does: JSON, same origin, the
 // session's CSRF token in a header. hdr overrides headers ("" removes one).
 func (p *person) app(method, path string, body any, hdr map[string]string) (int, map[string]any) {

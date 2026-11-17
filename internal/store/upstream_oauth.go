@@ -132,8 +132,18 @@ func (s *Store) ListUsers(ctx context.Context, org OrgID) ([]User, error) {
 	return out, rows.Err()
 }
 
-// UserByPerson returns the user with this person name: how a gateway token's
-// person finds its owner's upstream grants.
+// UserByID returns the user with this id.
+func (s *Store) UserByID(ctx context.Context, org OrgID, id string) (User, error) {
+	u, err := scanUser(org, s.r.QueryRowContext(ctx, `SELECT `+userCols+` FROM users u WHERE u.org_id = ? AND u.id = ?`, org, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return User{}, ErrNotFound
+	}
+	return u, err
+}
+
+// UserByPerson returns the user with this person name: how an administrator
+// names a member in the admin API. Tokens never find their member this way;
+// they carry its id (F07 R-01).
 func (s *Store) UserByPerson(ctx context.Context, org OrgID, person string) (User, error) {
 	u, err := scanUser(org, s.r.QueryRowContext(ctx, `SELECT `+userCols+` FROM users u WHERE u.org_id = ? AND u.person = ?`, org, person))
 	if errors.Is(err, sql.ErrNoRows) {
