@@ -15,7 +15,7 @@ export type Can = {
 };
 
 export type Session = {
-  user: { name: string; person: string; role: string };
+  user: { name: string; person: string; roles: string[] };
   can: Can;
   csrf: string;
   mcp_url: string;

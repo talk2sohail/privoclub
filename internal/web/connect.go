@@ -50,10 +50,10 @@ func (s *Server) landing(u store.User) string {
 	switch {
 	case p.Can(auth.PermManageServers):
 		return "/admin/servers"
+	case p.Can(auth.PermUseGateway): // a member who also approves lands here too (ADR 0021)
+		return "/admin/start" // their teams, their servers, their AI client's setup (ADR 0020)
 	case p.Can(auth.PermDecide):
 		return "/admin/approvals"
-	case p.Can(auth.PermUseGateway):
-		return "/admin/start" // their teams, their servers, their AI client's setup (ADR 0020)
 	case p.Can(auth.PermReadAudit):
 		return "/admin/activity"
 	}
@@ -82,7 +82,7 @@ func (s *Server) invitePage(w http.ResponseWriter, r *http.Request) {
 		s.notFoundInvite(w)
 		return
 	}
-	s.render(w, http.StatusOK, "invite", pageData{Title: "Join Privo", InviteToken: token, Person: in.Person, Role: in.Role,
+	s.render(w, http.StatusOK, "invite", pageData{Title: "Join Privo", InviteToken: token, Person: in.Person, Role: strings.Join(in.Roles, ", "),
 		Expires: in.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC")})
 }
 

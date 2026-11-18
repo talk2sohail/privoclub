@@ -62,24 +62,28 @@ export function Approvals(_: PageProps) {
             <code>{a.tool}</code> <small>on {a.server}</small>
           </h2>
           <p class="meta">
-            Requested by <strong>{a.requester_person}</strong> using the token “{a.requester}”. Expires {when(a.expires_at)}.
+            Requested by <strong>{a.requester_person}</strong>
+            {a.own && " (you)"} using the token “{a.requester}”. Expires {when(a.expires_at)}.
           </p>
           {a.reason && <p>{a.reason}</p>}
+          {a.decide_blocked && <p class="warn-text">{a.decide_blocked}</p>}
           {a.arguments_error ? (
             <p class="warn-text">The arguments cannot be shown, so this call can only be denied.</p>
           ) : (
             <pre class="args">{pretty(a.arguments)}</pre>
           )}
-          <div class="actions">
-            {!a.arguments_error && (
-              <button type="button" class="approve" disabled={busy} onClick={() => decide(a, true)}>
-                Approve this call
+          {!a.decide_blocked && (
+            <div class="actions">
+              {!a.arguments_error && (
+                <button type="button" class="approve" disabled={busy} onClick={() => decide(a, true)}>
+                  Approve this call
+                </button>
+              )}
+              <button type="button" class="deny" disabled={busy} onClick={() => decide(a, false)}>
+                Deny
               </button>
-            )}
-            <button type="button" class="deny" disabled={busy} onClick={() => decide(a, false)}>
-              Deny
-            </button>
-          </div>
+            </div>
+          )}
         </article>
       ))}
     </>

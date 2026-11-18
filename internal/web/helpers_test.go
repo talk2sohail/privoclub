@@ -387,10 +387,11 @@ func (e *env) member(u ghUser, person, role string) store.User {
 		e.t.Fatal(err)
 	}
 	if role != store.RoleOwner {
-		if err := e.st.SetUserRole(context.Background(), e.org, user.ID, role, e.event("role.seed")); err != nil {
+		roles, err := e.st.SetUserRoles(context.Background(), e.org, user.ID, strings.Split(role, ","), e.event("role.seed"))
+		if err != nil {
 			e.t.Fatal(err)
 		}
-		user.Role = role
+		user.Roles = roles
 	}
 	return user
 }

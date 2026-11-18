@@ -78,7 +78,7 @@ func TestSetupLinkSingleUseAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.Role != RoleOwner || u.Person != "alice" || u.OrgID != org {
+	if !u.Has(RoleOwner) || len(u.Roles) != 1 || u.Person != "alice" || u.OrgID != org {
 		t.Errorf("claimed user %+v", u)
 	}
 	if _, err := s.SetupLink(ctx, org, "hash-1", t0.Add(2*time.Minute)); !errors.Is(err, ErrNotFound) {
@@ -308,14 +308,14 @@ func TestSessionReadsLiveUser(t *testing.T) {
 	u := startSession(t, s, org, "sess-1", t0)
 	now := t0.Add(time.Minute)
 
-	if err := s.SetUserRole(ctx, org, u.ID, RoleMember, adminEv("role")); err != nil {
+	if _, err := s.SetUserRoles(ctx, org, u.ID, []string{RoleMember}, adminEv("role")); err != nil {
 		t.Fatal(err)
 	}
 	_, got, err := s.SessionByHash(ctx, org, "sess-1", now, time.Hour)
-	if err != nil || got.Role != RoleMember {
+	if err != nil || len(got.Roles) != 1 || !got.Has(RoleMember) {
 		t.Fatalf("after a role change: %+v, %v", got, err)
 	}
-	if err := s.SetUserRole(ctx, org, u.ID, "emperor", adminEv("bad")); err == nil {
+	if _, err := s.SetUserRoles(ctx, org, u.ID, []string{"emperor"}, adminEv("bad")); err == nil {
 		t.Error("an unknown role was accepted")
 	}
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -40,7 +42,7 @@ type User struct {
 	ID          string
 	Person      string // what self-approval compares with a token's person
 	DisplayName string
-	Role        string
+	Roles       []string // sorted; a valid set (NormalizeRoles, ADR 0021)
 	CreatedAt   time.Time
 	DisabledAt  *time.Time
 	Login       string // the GitHub login snapshot; filled by ListUsers only
@@ -158,7 +160,7 @@ func (s *Store) ClaimSetup(ctx context.Context, org OrgID, c Claim, ev AuditEven
 		}
 		// A person named on the link (privo admin setup-link --person) wins over
 		// the caller's fallback, which is the lowercased GitHub login.
-		u.Role = RoleOwner
+		u.Roles = []string{RoleOwner}
 		if linkPerson != "" {
 			u.Person = linkPerson
 		}
@@ -185,10 +187,18 @@ func (s *Store) claim(ctx context.Context, org OrgID, c Claim, ev AuditEvent, co
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
+		roles, err := NormalizeRoles(u.Roles)
+		if err != nil {
+			return err
+		}
+		u.Roles = roles
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO users (org_id, id, person, display_name, role, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			org, u.ID, u.Person, u.DisplayName, u.Role, ts(c.Now)); err != nil {
+			INSERT INTO users (org_id, id, person, display_name, created_at) VALUES (?, ?, ?, ?, ?)`,
+			org, u.ID, u.Person, u.DisplayName, ts(c.Now)); err != nil {
 			return mapErr(err)
+		}
+		if err := insertRoles(ctx, tx, org, u.ID, roles, ev.ActorID, c.Now); err != nil {
+			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO identities (org_id, provider, subject, user_id, login, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -208,16 +218,20 @@ func (s *Store) claim(ctx context.Context, org OrgID, c Claim, ev AuditEvent, co
 	return u, nil
 }
 
-const userCols = `u.id, u.person, u.display_name, u.role, u.created_at, u.disabled_at`
+// userCols selects a user u with their roles, comma-joined.
+const userCols = `u.id, u.person, u.display_name,
+	COALESCE((SELECT group_concat(r.role, ',') FROM user_roles r WHERE r.org_id = u.org_id AND r.user_id = u.id), ''),
+	u.created_at, u.disabled_at`
 
 func scanUser(org OrgID, row interface{ Scan(...any) error }, extra ...any) (User, error) {
 	u := User{OrgID: org}
-	var created string
+	var created, roles string
 	var disabled sql.NullString
-	dest := append([]any{&u.ID, &u.Person, &u.DisplayName, &u.Role, &created, &disabled}, extra...)
+	dest := append([]any{&u.ID, &u.Person, &u.DisplayName, &roles, &created, &disabled}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return User{}, err
 	}
+	u.Roles = splitRoles(roles)
 	u.CreatedAt = parseTS(created)
 	if disabled.Valid {
 		d := parseTS(disabled.String)
@@ -314,27 +328,64 @@ func (s *Store) DeleteSession(ctx context.Context, org OrgID, hash string, ev Au
 	})
 }
 
-// SetUserRole changes a user's role and writes the audit record ev.
-func (s *Store) SetUserRole(ctx context.Context, org OrgID, userID, role string, ev AuditEvent) error {
-	if !ValidRole(role) {
-		return errors.New("store: unknown role")
+// Has reports whether the user holds role.
+func (u User) Has(role string) bool { return slices.Contains(u.Roles, role) }
+
+// SetUserRoles replaces a user's roles with a valid set (NormalizeRoles) and
+// writes the audit record ev, in one transaction. Roles the user keeps keep
+// their grant time; new ones are granted by ev's actor. Losing owner and admin
+// drops the user's catalog grants. It returns the stored set.
+func (s *Store) SetUserRoles(ctx context.Context, org OrgID, userID string, roles []string, ev AuditEvent) ([]string, error) {
+	roles, err := NormalizeRoles(roles)
+	if err != nil {
+		return nil, err
 	}
 	ev.Phase = "admin"
-	return s.tx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE users SET role = ? WHERE org_id = ? AND id = ?`, role, org, userID)
-		if err != nil {
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		var one int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE org_id = ? AND id = ?`, org, userID).Scan(&one); err != nil {
+			return notFound(err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE org_id = ? AND user_id = ? AND role NOT IN (`+placeholders(len(roles))+`)`,
+			append([]any{org, userID}, anySlice(roles)...)...); err != nil {
 			return err
 		}
-		if n, _ := res.RowsAffected(); n != 1 {
-			return ErrNotFound
+		if err := insertRoles(ctx, tx, org, userID, roles, ev.ActorID, ev.Time); err != nil {
+			return err
 		}
-		if !catalogRole(role) {
+		if !catalogRoles(roles) {
 			if err := dropCatalogGrants(ctx, tx, org, userID); err != nil {
 				return err
 			}
 		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
 	})
+	if err != nil {
+		return nil, err
+	}
+	return roles, nil
+}
+
+// insertRoles grants roles a user does not hold yet.
+func insertRoles(ctx context.Context, tx *sql.Tx, org OrgID, userID string, roles []string, by string, at time.Time) error {
+	for _, r := range roles {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO user_roles (org_id, user_id, role, source, granted_by, granted_at) VALUES (?, ?, ?, 'manual', ?, ?)
+			ON CONFLICT (org_id, user_id, role) DO NOTHING`, org, userID, r, by, ts(at)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func placeholders(n int) string { return strings.TrimSuffix(strings.Repeat("?, ", n), ", ") }
+
+func anySlice(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, s := range ss {
+		out[i] = s
+	}
+	return out
 }
 
 // DisableUser stops a user from signing in, ends all of their sessions and

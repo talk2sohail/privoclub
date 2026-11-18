@@ -4,10 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
+	"strings"
 	"time"
 )
 
-// Role names (ADR 0011). Roles combine in the full product; v1 tokens carry one.
+// Role names (ADR 0011). A person holds a set of them (ADR 0021); a token
+// carries one.
 const (
 	RoleOwner    = "owner"
 	RoleAdmin    = "admin"
@@ -26,6 +29,41 @@ const (
 
 // ValidKind reports whether k is a token kind.
 func ValidKind(k string) bool { return k == KindGateway || k == KindControl }
+
+// ErrInvalidRoles is returned for a role set that is not {owner}, {admin} or
+// a non-empty subset of {member, approver, auditor} (ADR 0021).
+var ErrInvalidRoles = errors.New("store: roles must be owner alone, admin alone, or any of member, approver and auditor")
+
+// NormalizeRoles checks a person's role set and returns it sorted, without
+// repeats and surrounding spaces. Owner and admin already hold every
+// permission, so they combine with nothing; the empty set is refused.
+func NormalizeRoles(roles []string) ([]string, error) {
+	out := make([]string, 0, len(roles))
+	for _, r := range roles {
+		r = strings.TrimSpace(r)
+		if !ValidRole(r) {
+			return nil, ErrInvalidRoles
+		}
+		if !slices.Contains(out, r) {
+			out = append(out, r)
+		}
+	}
+	slices.Sort(out)
+	if len(out) == 0 || (len(out) > 1 && (slices.Contains(out, RoleOwner) || slices.Contains(out, RoleAdmin))) {
+		return nil, ErrInvalidRoles
+	}
+	return out, nil
+}
+
+// splitRoles reads the comma-joined roles of a query (group_concat), sorted.
+func splitRoles(s string) []string {
+	if s == "" {
+		return nil
+	}
+	out := strings.Split(s, ",")
+	slices.Sort(out)
+	return out
+}
 
 // ValidRole reports whether r is a known role.
 func ValidRole(r string) bool {

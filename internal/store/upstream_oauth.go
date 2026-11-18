@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -12,9 +13,11 @@ import (
 // maxInviteTTL caps an invite whatever the caller asks for.
 const maxInviteTTL = 7 * 24 * time.Hour
 
-// catalogRole reports whether a user with role may hold a server's catalog
+// catalogRoles reports whether a user with roles may hold a server's catalog
 // grant: the roles that manage servers (auth.PermManageServers).
-func catalogRole(role string) bool { return role == RoleOwner || role == RoleAdmin }
+func catalogRoles(roles []string) bool {
+	return slices.Contains(roles, RoleOwner) || slices.Contains(roles, RoleAdmin)
+}
 
 // NewInvite describes an invite to store. SecretHash is the hex SHA-256 of the
 // token that is shown once.
@@ -22,7 +25,7 @@ type NewInvite struct {
 	ID         string
 	SecretHash string
 	Person     string
-	Role       string
+	Roles      []string
 	CreatedBy  string
 	Now        time.Time
 	ExpiresAt  time.Time
@@ -32,7 +35,7 @@ type NewInvite struct {
 type Invite struct {
 	ID        string
 	Person    string
-	Role      string
+	Roles     []string
 	CreatedBy string
 	CreatedAt time.Time
 	ExpiresAt time.Time
@@ -42,11 +45,14 @@ type Invite struct {
 // for the same person. Invites never make owners (only a setup link does), and
 // a person who is already a member gets ErrConflict.
 func (s *Store) CreateInvite(ctx context.Context, org OrgID, in NewInvite, ev AuditEvent) error {
+	roles, err := NormalizeRoles(in.Roles)
 	switch {
 	case in.ID == "" || in.SecretHash == "" || in.Person == "":
 		return errors.New("store: an invite needs an id, a secret hash and a person")
-	case !ValidRole(in.Role) || in.Role == RoleOwner:
-		return errors.New("store: an invite's role must be admin, auditor, approver or member")
+	case err != nil:
+		return err
+	case slices.Contains(roles, RoleOwner):
+		return errors.New("store: an invite never makes an owner")
 	case !in.ExpiresAt.After(in.Now) || in.ExpiresAt.After(in.Now.Add(maxInviteTTL)):
 		return errors.New("store: an invite must expire within 7 days")
 	}
@@ -65,10 +71,15 @@ func (s *Store) CreateInvite(ctx context.Context, org OrgID, in NewInvite, ev Au
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO invites (org_id, id, secret_hash, person, role, created_by, created_at, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			org, in.ID, in.SecretHash, in.Person, in.Role, in.CreatedBy, ts(in.Now), ts(in.ExpiresAt)); err != nil {
+			INSERT INTO invites (org_id, id, secret_hash, person, created_by, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			org, in.ID, in.SecretHash, in.Person, in.CreatedBy, ts(in.Now), ts(in.ExpiresAt)); err != nil {
 			return mapErr(err)
+		}
+		for _, r := range roles {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO invite_roles (org_id, invite_id, role) VALUES (?, ?, ?)`, org, in.ID, r); err != nil {
+				return err
+			}
 		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
 	})
@@ -77,11 +88,12 @@ func (s *Store) CreateInvite(ctx context.Context, org OrgID, in NewInvite, ev Au
 // Invite finds the claimable invite with this secret hash, or ErrNotFound.
 func (s *Store) Invite(ctx context.Context, org OrgID, secretHash string, now time.Time) (Invite, error) {
 	var in Invite
-	var created, expires string
+	var created, expires, roles string
 	err := s.r.QueryRowContext(ctx, `
-		SELECT id, person, role, created_by, created_at, expires_at FROM invites
-		WHERE org_id = ? AND secret_hash = ? AND claimed_at IS NULL AND retired_at IS NULL AND expires_at > ?`,
-		org, secretHash, ts(now)).Scan(&in.ID, &in.Person, &in.Role, &in.CreatedBy, &created, &expires)
+		SELECT i.id, i.person, `+inviteRoles+`, i.created_by, i.created_at, i.expires_at FROM invites i
+		WHERE i.org_id = ? AND i.secret_hash = ? AND i.claimed_at IS NULL AND i.retired_at IS NULL AND i.expires_at > ?`,
+		org, secretHash, ts(now)).Scan(&in.ID, &in.Person, &roles, &in.CreatedBy, &created, &expires)
+	in.Roles = splitRoles(roles)
 	if errors.Is(err, sql.ErrNoRows) {
 		return in, ErrNotFound
 	}
@@ -92,20 +104,31 @@ func (s *Store) Invite(ctx context.Context, org OrgID, secretHash string, now ti
 	return in, nil
 }
 
-// ClaimInvite turns an invite into a member, with the invite's person and role
-// (c.Person is ignored). Like ClaimSetup, a refused claim keeps the invite and
-// of concurrent claims exactly one wins.
+// inviteRoles selects an invite's roles, comma-joined, for the invite i.
+const inviteRoles = `COALESCE((SELECT group_concat(r.role, ',') FROM invite_roles r WHERE r.org_id = i.org_id AND r.invite_id = i.id), '')`
+
+// ClaimInvite turns an invite into a member, with the invite's person and
+// roles (c.Person is ignored). Like ClaimSetup, a refused claim keeps the
+// invite and of concurrent claims exactly one wins.
 func (s *Store) ClaimInvite(ctx context.Context, org OrgID, c Claim, ev AuditEvent) (User, error) {
 	return s.claim(ctx, org, c, ev, func(tx *sql.Tx, u *User) error {
 		err := tx.QueryRowContext(ctx, `
 			UPDATE invites SET claimed_at = ?, claimed_by = ?
 			WHERE org_id = ? AND id = ? AND claimed_at IS NULL AND retired_at IS NULL AND expires_at > ?
-			RETURNING person, role`,
-			ts(c.Now), c.UserID, org, c.LinkID, ts(c.Now)).Scan(&u.Person, &u.Role)
+			RETURNING person`,
+			ts(c.Now), c.UserID, org, c.LinkID, ts(c.Now)).Scan(&u.Person)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrSetupUnavailable
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		var roles string
+		if err := tx.QueryRowContext(ctx, `SELECT `+inviteRoles+` FROM invites i WHERE i.org_id = ? AND i.id = ?`, org, c.LinkID).Scan(&roles); err != nil {
+			return err
+		}
+		u.Roles = splitRoles(roles)
+		return nil
 	})
 }
 
@@ -185,8 +208,8 @@ func (s *Store) SaveGrant(ctx context.Context, org OrgID, g Grant, catalogOK boo
 		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM servers WHERE org_id = ? AND id = ?`, org, g.ServerID).Scan(&one); err != nil {
 			return notFound(err)
 		}
-		var role string
-		if err := tx.QueryRowContext(ctx, `SELECT role FROM users WHERE org_id = ? AND id = ? AND disabled_at IS NULL`, org, g.UserID).Scan(&role); err != nil {
+		u, err := scanUser(org, tx.QueryRowContext(ctx, `SELECT `+userCols+` FROM users u WHERE u.org_id = ? AND u.id = ? AND u.disabled_at IS NULL`, org, g.UserID))
+		if err != nil {
 			return notFound(err)
 		}
 		var wasCatalog bool
@@ -204,7 +227,7 @@ func (s *Store) SaveGrant(ctx context.Context, org OrgID, g Grant, catalogOK boo
 			return err
 		}
 		g.Catalog = wasCatalog
-		if !g.Catalog && catalogOK && catalogRole(role) {
+		if !g.Catalog && catalogOK && catalogRoles(u.Roles) {
 			var n int
 			if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM upstream_grants WHERE org_id = ? AND server_id = ? AND catalog = 1`, org, g.ServerID).Scan(&n); err != nil {
 				return err
@@ -393,7 +416,8 @@ func promoteCatalog(ctx context.Context, tx *sql.Tx, org OrgID, serverID string)
 		WHERE org_id = ? AND server_id = ? AND user_id = (
 			SELECT g.user_id FROM upstream_grants g
 			JOIN users u ON u.org_id = g.org_id AND u.id = g.user_id
-			WHERE g.org_id = ? AND g.server_id = ? AND u.disabled_at IS NULL AND u.role IN (?, ?)
+			WHERE g.org_id = ? AND g.server_id = ? AND u.disabled_at IS NULL
+			  AND EXISTS (SELECT 1 FROM user_roles r WHERE r.org_id = u.org_id AND r.user_id = u.id AND r.role IN (?, ?))
 			  AND NOT EXISTS (SELECT 1 FROM upstream_grants x WHERE x.org_id = g.org_id AND x.server_id = g.server_id AND x.catalog = 1)
 			ORDER BY g.connected_at, g.user_id LIMIT 1)`,
 		org, serverID, org, serverID, RoleOwner, RoleAdmin)

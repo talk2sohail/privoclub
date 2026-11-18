@@ -30,5 +30,5 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0018](0018-admin-ui-server-rendered.md) | Admin UI: server-rendered pages over the admin API | Superseded by 0019 |
 | [0019](0019-admin-app-preact.md) | Admin app: Preact and Vite, embedded in the binary | Accepted |
 | [0020](0020-teams-and-server-catalog.md) | Teams decide which servers a person reaches; a built-in catalog adds them | Proposed (accept after the F26 review) |
-| [0021](0021-several-roles-per-person.md) | A person holds several roles; their gateway token only uses the gateway | Proposed (accept after the F20 first-slice review) |
+| [0021](0021-several-roles-per-person.md) | A person holds several roles; their gateway token only uses the gateway | Accepted |
 | [0022](0022-tokens-bound-to-a-user.md) | A token is bound to its member by id, never by a person name | Proposed (accept after the security review of the fix) |

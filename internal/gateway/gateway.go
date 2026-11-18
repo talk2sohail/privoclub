@@ -159,8 +159,27 @@ func Access(ctx context.Context, st Store, p auth.Principal) (store.Access, erro
 	return st.AccessFor(ctx, p.OrgID, p.UserID)
 }
 
+// access is Access for a call through the gateway. A member's own token
+// works only while one of the member's current roles uses the gateway (ADR
+// 0021): a person who is now only an approver reaches nothing with it.
 func (g *Gateway) access(ctx context.Context, p auth.Principal) (store.Access, error) {
-	return Access(ctx, g.Store, p)
+	acc, err := Access(ctx, g.Store, p)
+	if err != nil {
+		return store.Access{}, err
+	}
+	if p.UserID != "" && !auth.RolesCan(acc.Roles, auth.PermUseGateway) {
+		return store.Access{Servers: map[string]bool{}}, nil
+	}
+	return acc, nil
+}
+
+// callerRoles are the roles rules see (ADR 0021): a member's current roles,
+// read with their access, or the token's own role when no member is behind it.
+func callerRoles(p auth.Principal, acc store.Access) []string {
+	if p.UserID != "" {
+		return acc.Roles
+	}
+	return p.Roles
 }
 
 // visible returns the reviewed items of kind on the servers p reaches,
@@ -307,7 +326,7 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	}
 	// Rules match tools, prompts and resources alike by upstream name, so a
 	// server-wide deny or a default deny covers everything the server offers.
-	dec := policy.Evaluate(rules, policy.Request{Role: c.p.Role, TokenID: c.p.TokenID, Teams: acc.Teams, Server: c.item.Alias, Tool: c.item.Name,
+	dec := policy.Evaluate(rules, policy.Request{Roles: callerRoles(c.p, acc), TokenID: c.p.TokenID, Teams: acc.Teams, Server: c.item.Alias, Tool: c.item.Name,
 		PinHash: c.item.Hash, Annotations: ann}, def, time.Now())
 	switch dec.Action {
 	case store.ActionAllow:

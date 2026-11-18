@@ -1,6 +1,6 @@
 # 0021. A person holds several roles; their gateway token only uses the gateway
 
-- Status: Proposed, 2026-11-18 (accept after the F20 first-slice review)
+- Status: Accepted, 2026-11-18 (by the owner)
 - Date: 2026-11-18
 - Amends: 0011 (roles combine, now for people), 0014 (point 2: a person who
   approves may also use the gateway)

@@ -47,7 +47,7 @@ func TestBootstrapToken(t *testing.T) {
 		if err != nil {
 			t.Fatalf("bootstrap token does not authenticate: %v", err)
 		}
-		if p.Role != store.RoleOwner || p.Kind != store.KindControl || p.OrgID != org || p.Name != BootstrapTokenName {
+		if !p.Has(store.RoleOwner) || p.Kind != store.KindControl || p.OrgID != org || p.Name != BootstrapTokenName {
 			t.Fatalf("principal %+v", p)
 		}
 		if d := time.Until(exp); d < 23*time.Hour || d > 24*time.Hour+time.Minute {

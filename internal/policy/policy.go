@@ -22,7 +22,7 @@ import (
 
 // Request describes a call to decide on.
 type Request struct {
-	Role        string
+	Roles       []string // the caller's roles: a member's current ones (ADR 0021), or a token's own
 	TokenID     string
 	Teams       []string // the caller's teams, "everyone" included when they are in it
 	Server      string   // alias
@@ -86,7 +86,7 @@ func matches(r store.Policy, req Request, now time.Time) bool {
 	case r.Subject == "*":
 		return true
 	case strings.HasPrefix(r.Subject, "role:"):
-		return strings.TrimPrefix(r.Subject, "role:") == req.Role
+		return slices.Contains(req.Roles, strings.TrimPrefix(r.Subject, "role:"))
 	case strings.HasPrefix(r.Subject, "team:"):
 		return slices.Contains(req.Teams, strings.TrimPrefix(r.Subject, "team:"))
 	case strings.HasPrefix(r.Subject, "token:"):

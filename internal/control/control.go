@@ -657,7 +657,7 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if req.Kind == "" {
 		req.Kind = store.KindGateway
 	}
-	if (req.Role == store.RoleOwner || req.Role == store.RoleAdmin) && p.Role != store.RoleOwner {
+	if (req.Role == store.RoleOwner || req.Role == store.RoleAdmin) && !p.Has(store.RoleOwner) {
 		return errorf(http.StatusForbidden, "only owners can issue owner or admin tokens")
 	}
 	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL})
@@ -676,7 +676,7 @@ func (a *API) revokeToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if err != nil || target.OrgID != p.OrgID || target.RevokedAt != nil {
 		return errorf(http.StatusNotFound, "no active token %q", id)
 	}
-	if (target.Role == store.RoleOwner || target.Role == store.RoleAdmin) && p.Role != store.RoleOwner && target.ID != p.TokenID {
+	if (target.Role == store.RoleOwner || target.Role == store.RoleAdmin) && !p.Has(store.RoleOwner) && target.ID != p.TokenID {
 		return errorf(http.StatusForbidden, "only owners can revoke owner or admin tokens")
 	}
 	if err := a.Store.RevokeToken(r.Context(), p.OrgID, id); err != nil {
@@ -1010,6 +1010,19 @@ func (a *API) approvalView(ctx context.Context, org store.OrgID, ap store.Approv
 	return v
 }
 
+// markOwn tells a person which requests are their own, and why they cannot
+// decide them (ADR 0021: a member who also approves sees their own calls).
+// Decide refuses them in any case.
+func markOwn(v map[string]any, ap store.Approval, p auth.Principal, allowSelf bool) map[string]any {
+	if approval.Own(approval.Decider{TokenID: p.TokenID, UserID: p.UserID, Name: p.Name, Person: p.Person}, ap) {
+		v["own"] = true
+		if !allowSelf {
+			v["decide_blocked"] = "This is your own request. Another approver decides it."
+		}
+	}
+	return v
+}
+
 func (a *API) listApprovals(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	status := r.URL.Query().Get("status")
 	if status != "" && status != store.ApprovalPending && status != store.ApprovalApproved && status != store.ApprovalDenied &&
@@ -1020,13 +1033,17 @@ func (a *API) listApprovals(w http.ResponseWriter, r *http.Request, p auth.Princ
 	if err != nil {
 		return err
 	}
+	allowSelf, err := a.Store.Setting(r.Context(), p.OrgID, approval.SettingAllowSelf, "false")
+	if err != nil {
+		return err
+	}
 	now := time.Now()
 	out := make([]map[string]any, 0, len(list))
 	for _, ap := range list {
 		if status == store.ApprovalPending && ap.EffectiveStatus(now) != store.ApprovalPending {
 			continue
 		}
-		out = append(out, a.approvalView(r.Context(), p.OrgID, ap, true))
+		out = append(out, markOwn(a.approvalView(r.Context(), p.OrgID, ap, true), ap, p, allowSelf == "true"))
 	}
 	a.adminEvent(r.Context(), p, "approvals.view:"+strconv.Itoa(len(out)), "")
 	writeJSON(w, http.StatusOK, map[string]any{"approvals": out})

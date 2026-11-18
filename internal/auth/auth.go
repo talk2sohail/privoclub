@@ -4,6 +4,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -18,9 +19,11 @@ type Principal struct {
 	OrgID   store.OrgID
 	TokenID string
 	Name    string
-	Role    string
-	Kind    string // gateway | control
-	Person  string // the name it acts as; never used to find a member (F07 R-01)
+	// Roles are the signed-in person's current roles, or a token's one role
+	// (ADR 0021). Code asks Has or Can, never compares a role.
+	Roles  []string
+	Kind   string // gateway | control
+	Person string // the name it acts as; never used to find a member (F07 R-01)
 	// UserID is the member behind the principal: the signed-in person (kind
 	// "session", ADR 0018), or the person whose own token this is. It is ""
 	// for every other token, which then reaches no one's account or teams.
@@ -64,8 +67,22 @@ var grants = map[string]map[Permission]bool{
 	store.RoleMember:   {PermUseGateway: true, PermReadServers: true},
 }
 
-// Can reports whether p has perm.
-func (p Principal) Can(perm Permission) bool { return grants[p.Role][perm] }
+// Can reports whether any of p's roles grants perm. No role, or only unknown
+// ones, grants nothing.
+func (p Principal) Can(perm Permission) bool { return RolesCan(p.Roles, perm) }
+
+// Has reports whether p holds role.
+func (p Principal) Has(role string) bool { return slices.Contains(p.Roles, role) }
+
+// RolesCan reports whether any of roles grants perm.
+func RolesCan(roles []string, perm Permission) bool {
+	for _, r := range roles {
+		if grants[r][perm] {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrUnauthenticated is returned for any token that does not verify.
 var ErrUnauthenticated = errors.New("auth: invalid or expired token")
@@ -126,7 +143,7 @@ func (a *Authenticator) Verify(ctx context.Context, bearer string) (Principal, t
 	if person == "" {
 		person = t.Name
 	}
-	p := Principal{OrgID: t.OrgID, TokenID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: person, UserID: t.UserID}
+	p := Principal{OrgID: t.OrgID, TokenID: t.ID, Name: t.Name, Roles: []string{t.Role}, Kind: t.Kind, Person: person, UserID: t.UserID}
 	a.mu.Lock()
 	if len(a.cache) > 10000 {
 		a.cache = map[string]cachedPrincipal{}

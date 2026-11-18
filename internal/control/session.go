@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -112,7 +113,8 @@ func (a *API) registerMembers(mux *http.ServeMux, wrap func(auth.Permission, han
 type memberView struct {
 	Person    string    `json:"person"`
 	Name      string    `json:"name"`
-	Role      string    `json:"role"`
+	Roles     []string  `json:"roles"`
+	Role      string    `json:"role"` // the strongest of Roles; kept for scripts for one release (ADR 0021)
 	Login     string    `json:"github_login"`
 	CreatedAt time.Time `json:"created_at"`
 	Removed   bool      `json:"removed"`
@@ -125,7 +127,7 @@ func (a *API) listMembers(w http.ResponseWriter, r *http.Request, p auth.Princip
 	}
 	out := make([]memberView, 0, len(users))
 	for _, u := range users {
-		out = append(out, memberView{Person: u.Person, Name: u.DisplayName, Role: u.Role, Login: u.Login, CreatedAt: u.CreatedAt, Removed: u.DisabledAt != nil})
+		out = append(out, memberView{Person: u.Person, Name: u.DisplayName, Roles: u.Roles, Role: primaryRole(u.Roles), Login: u.Login, CreatedAt: u.CreatedAt, Removed: u.DisabledAt != nil})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"members": out})
 	return nil
@@ -144,10 +146,42 @@ func (a *API) member(r *http.Request, p auth.Principal) (store.User, error) {
 	if u.Person == p.Person {
 		return u, errorf(http.StatusForbidden, "you cannot change your own membership; ask another owner")
 	}
-	if (u.Role == store.RoleOwner || u.Role == store.RoleAdmin) && p.Role != store.RoleOwner {
+	if elevated(u.Roles) && !p.Has(store.RoleOwner) {
 		return u, errorf(http.StatusForbidden, "only owners can change owners and admins")
 	}
 	return u, nil
+}
+
+// elevated reports whether roles hold owner or admin, which only owners give
+// or take (ADR 0021).
+func elevated(roles []string) bool {
+	return slices.Contains(roles, store.RoleOwner) || slices.Contains(roles, store.RoleAdmin)
+}
+
+// primaryRole is the strongest of roles, for the deprecated single "role" field.
+func primaryRole(roles []string) string {
+	for _, r := range []string{store.RoleOwner, store.RoleAdmin, store.RoleApprover, store.RoleAuditor, store.RoleMember} {
+		if slices.Contains(roles, r) {
+			return r
+		}
+	}
+	return ""
+}
+
+// requestRoles reads a role set from a request: "roles", or the single "role"
+// that scripts sent before ADR 0021, or def when neither is given.
+func requestRoles(roles []string, role string, def ...string) ([]string, error) {
+	if roles == nil && role != "" {
+		roles = []string{role}
+	}
+	if roles == nil {
+		roles = def
+	}
+	out, err := store.NormalizeRoles(roles)
+	if err != nil {
+		return nil, errorf(http.StatusUnprocessableEntity, "roles must be owner alone, admin alone, or any of member, approver and auditor")
+	}
+	return out, nil
 }
 
 func (a *API) patchMember(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -156,30 +190,34 @@ func (a *API) patchMember(w http.ResponseWriter, r *http.Request, p auth.Princip
 		return err
 	}
 	var req struct {
-		Role string `json:"role"`
+		Roles []string `json:"roles"`
+		Role  string   `json:"role"`
 	}
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	if !store.ValidRole(req.Role) {
-		return errorf(http.StatusUnprocessableEntity, "role must be owner, admin, approver, auditor or member")
+	roles, err := requestRoles(req.Roles, req.Role)
+	if err != nil {
+		return err
 	}
-	if (req.Role == store.RoleOwner || req.Role == store.RoleAdmin) && p.Role != store.RoleOwner {
+	if elevated(roles) && !p.Has(store.RoleOwner) {
 		return errorf(http.StatusForbidden, "only owners can make owners and admins")
 	}
-	if u.Role == store.RoleOwner && req.Role != store.RoleOwner {
+	if u.Has(store.RoleOwner) && !slices.Contains(roles, store.RoleOwner) {
 		if n, err := a.activeOwners(r.Context(), p.OrgID); err != nil {
 			return err
 		} else if n <= 1 {
 			return errorf(http.StatusConflict, "%q is the last owner", u.Person)
 		}
 	}
+	// One event with the set before and after (ADR 0021).
 	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(),
-		Action: "member.role:" + u.Person + ":" + req.Role, Decision: "allow", Outcome: "ok"}
-	if err := a.Store.SetUserRole(r.Context(), p.OrgID, u.ID, req.Role, ev); err != nil {
+		Action: "member.roles:" + u.Person + ":" + strings.Join(u.Roles, "+") + "->" + strings.Join(roles, "+"), Decision: "allow", Outcome: "ok"}
+	roles, err = a.Store.SetUserRoles(r.Context(), p.OrgID, u.ID, roles, ev)
+	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"person": u.Person, "role": req.Role})
+	writeJSON(w, http.StatusOK, map[string]any{"person": u.Person, "roles": roles, "role": primaryRole(roles)})
 	return nil
 }
 
@@ -190,7 +228,7 @@ func (a *API) activeOwners(ctx context.Context, org store.OrgID) (int, error) {
 	}
 	n := 0
 	for _, u := range users {
-		if u.Role == store.RoleOwner && u.DisabledAt == nil {
+		if u.Has(store.RoleOwner) && u.DisabledAt == nil {
 			n++
 		}
 	}
@@ -204,7 +242,7 @@ func (a *API) removeMember(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err != nil {
 		return err
 	}
-	if u.Role == store.RoleOwner {
+	if u.Has(store.RoleOwner) {
 		if n, err := a.activeOwners(r.Context(), p.OrgID); err != nil {
 			return err
 		} else if n <= 1 {
@@ -258,7 +296,9 @@ func (a *API) listMyTokens(w http.ResponseWriter, r *http.Request, p auth.Princi
 }
 
 // createMyToken gives a signed-in person a gateway token of their own for an
-// AI client: bound to them (F07 R-01), with their person and role.
+// AI client: bound to them (F07 R-01), with their person. It carries the
+// member role whatever roles the person holds: it only uses the gateway, and
+// rules read the person's current roles (ADR 0021).
 func (a *API) createMyToken(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	if p.UserID == "" || p.Person == "" {
 		return errNotSignedIn
@@ -270,7 +310,7 @@ func (a *API) createMyToken(w http.ResponseWriter, r *http.Request, p auth.Princ
 		return err
 	}
 	name := strings.TrimSpace(req.Name)
-	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: name, Role: p.Role, Kind: store.KindGateway, Person: p.Person, UserID: p.UserID, TTL: a.TokenTTL})
+	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: name, Role: store.RoleMember, Kind: store.KindGateway, Person: p.Person, UserID: p.UserID, TTL: a.TokenTTL})
 	if err != nil {
 		return err
 	}

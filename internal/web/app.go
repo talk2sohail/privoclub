@@ -197,9 +197,9 @@ func (s *Server) appAuth(w http.ResponseWriter, r *http.Request) (store.User, bo
 
 type sessionAnswer struct {
 	User struct {
-		Name   string `json:"name"`
-		Person string `json:"person"`
-		Role   string `json:"role"`
+		Name   string   `json:"name"`
+		Person string   `json:"person"`
+		Roles  []string `json:"roles"`
 	} `json:"user"`
 	Can         map[string]bool `json:"can"`
 	CSRF        string          `json:"csrf"`
@@ -221,7 +221,7 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	p := s.principal(u)
 	var a sessionAnswer
-	a.User.Name, a.User.Person, a.User.Role = u.DisplayName, u.Person, u.Role
+	a.User.Name, a.User.Person, a.User.Roles = u.DisplayName, u.Person, u.Roles
 	a.Can = map[string]bool{
 		"decide":        p.Can(auth.PermDecide),
 		"servers":       p.Can(auth.PermManageServers),
@@ -237,7 +237,7 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 	a.CSRF, a.MCPURL = sess.CSRF, s.origin+"/mcp"
 	a.InviteRoles, a.ChangeRoles = inviteRoles(u), changeRoles(u)
 	a.TokenRoles = []string{store.RoleOwner, store.RoleAdmin, store.RoleAuditor, store.RoleApprover}
-	if u.Role != store.RoleOwner {
+	if !u.Has(store.RoleOwner) {
 		a.TokenRoles = a.TokenRoles[1:]
 	}
 	a.Landing = s.landing(u)
@@ -246,16 +246,17 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 // inviteRoles are the roles u may invite with; changeRoles the ones u may set.
-// The API enforces both; the app only offers them.
+// The app offers them as boxes to tick; the API enforces them and which sets
+// are valid (ADR 0021).
 func inviteRoles(u store.User) []string {
-	if u.Role == store.RoleOwner {
+	if u.Has(store.RoleOwner) {
 		return []string{store.RoleMember, store.RoleApprover, store.RoleAuditor, store.RoleAdmin}
 	}
 	return []string{store.RoleMember, store.RoleApprover, store.RoleAuditor}
 }
 
 func changeRoles(u store.User) []string {
-	if u.Role == store.RoleOwner {
+	if u.Has(store.RoleOwner) {
 		return []string{store.RoleMember, store.RoleApprover, store.RoleAuditor, store.RoleAdmin, store.RoleOwner}
 	}
 	return []string{store.RoleMember, store.RoleApprover, store.RoleAuditor}

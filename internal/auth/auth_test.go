@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestVerify(t *testing.T) {
 	plain := issue(f, store.RoleMember, time.Now().Add(time.Hour))
 
 	p, _, err := a.Verify(ctx, plain)
-	if err != nil || p.OrgID != "org" || p.Role != store.RoleMember {
+	if err != nil || p.OrgID != "org" || !p.Has(store.RoleMember) || len(p.Roles) != 1 {
 		t.Fatalf("Verify: %+v %v", p, err)
 	}
 	last := plain[len(plain)-1]
@@ -79,22 +80,22 @@ func TestRevocationTakesEffectWithinCacheTTL(t *testing.T) {
 }
 
 func TestPermissions(t *testing.T) {
-	member := Principal{Role: store.RoleMember}
+	member := Principal{Roles: []string{store.RoleMember}}
 	if !member.Can(PermUseGateway) || member.Can(PermManageServers) || member.Can(PermReadAudit) || member.Can(PermManageAudit) {
 		t.Fatal("member permissions wrong")
 	}
-	auditor := Principal{Role: store.RoleAuditor}
+	auditor := Principal{Roles: []string{store.RoleAuditor}}
 	if !auditor.Can(PermReadAudit) || auditor.Can(PermManageAudit) || auditor.Can(PermUseGateway) {
 		t.Fatal("auditor permissions wrong")
 	}
-	approver := Principal{Role: store.RoleApprover}
+	approver := Principal{Roles: []string{store.RoleApprover}}
 	if !approver.Can(PermDecide) || approver.Can(PermManagePolicy) || approver.Can(PermManageServers) || approver.Can(PermUseGateway) {
 		t.Fatal("approver permissions wrong")
 	}
 	if member.Can(PermDecide) || member.Can(PermManagePolicy) {
 		t.Fatal("member can decide approvals or manage policy")
 	}
-	if (Principal{Role: "nobody"}).Can(PermUseGateway) {
+	if (Principal{Roles: []string{"nobody"}}).Can(PermUseGateway) {
 		t.Fatal("unknown role granted access")
 	}
 }
@@ -133,5 +134,49 @@ func TestPrincipalCarriesTokenUser(t *testing.T) {
 	}
 	if p, _, err := a.Verify(ctx, named.Plain); err != nil || p.UserID != "" || p.Person != "ada" {
 		t.Fatalf("a token that only names ada: %+v %v", p, err)
+	}
+}
+
+// ADR 0021: a person's permissions are the union of their roles.
+func TestCanIsUnionOfRoles(t *testing.T) {
+	both := Principal{Roles: []string{store.RoleApprover, store.RoleMember}}
+	if !both.Can(PermUseGateway) || !both.Can(PermDecide) || both.Can(PermManageServers) || both.Can(PermReadAudit) {
+		t.Fatal("member and approver: want the gateway and deciding, nothing else")
+	}
+	if !both.Has(store.RoleApprover) || both.Has(store.RoleAdmin) {
+		t.Fatal("Has")
+	}
+	if a := (Principal{Roles: []string{store.RoleAuditor, store.RoleMember}}); !a.Can(PermReadAudit) || a.Can(PermManageAudit) {
+		t.Fatal("auditor and member")
+	}
+}
+
+func TestNoRolesNoPermissions(t *testing.T) {
+	for _, p := range []Principal{{}, {Roles: []string{}}, {Roles: []string{""}}, {Roles: []string{"root", "superuser"}}} {
+		for _, perm := range []Permission{PermUseGateway, PermManageServers, PermManageTokens, PermReadAudit, PermManageAudit,
+			PermReadServers, PermManagePolicy, PermDecide, PermManageMembers} {
+			if p.Can(perm) {
+				t.Errorf("%q can %s", p.Roles, perm)
+			}
+		}
+	}
+}
+
+func TestApproverAloneCannotUseGateway(t *testing.T) {
+	if (Principal{Roles: []string{store.RoleApprover}}).Can(PermUseGateway) {
+		t.Fatal("an approver alone uses the gateway")
+	}
+	if !(Principal{Roles: []string{store.RoleApprover, store.RoleMember}}).Can(PermUseGateway) {
+		t.Fatal("an approver who is also a member cannot use the gateway")
+	}
+}
+
+// Principal and User carry a set of roles, never one: a single-role field
+// brought back would let code compare one role again (ADR 0021).
+func TestNoSingleRoleField(t *testing.T) {
+	for _, typ := range []reflect.Type{reflect.TypeOf(Principal{}), reflect.TypeOf(store.User{})} {
+		if _, ok := typ.FieldByName("Role"); ok {
+			t.Errorf("%s has a Role field; use Roles with Has and Can", typ)
+		}
 	}
 }

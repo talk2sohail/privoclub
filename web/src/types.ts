@@ -46,7 +46,7 @@ export type Policy = {
 export type Member = {
   person: string;
   name: string;
-  role: string;
+  roles: string[]; // ADR 0021
   github_login: string;
   created_at: string;
   removed: boolean;
@@ -90,6 +90,8 @@ export type Approval = {
   expires_at: string;
   arguments?: unknown;
   arguments_error?: string;
+  own?: boolean; // the viewer's own request
+  decide_blocked?: string; // why the viewer cannot decide it
 };
 
 export type MyConnection = {

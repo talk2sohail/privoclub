@@ -605,8 +605,8 @@ ADRs: 0008
 - [x] Cap the size of upstream responses (tool results, resource reads, list pages): `PRIVO_UPSTREAM_MAX_RESPONSE_BYTES` and the list limits, see R-04 in F24
 
 ## F20. Enterprise identity and roles
-Status: In progress (first slice specified 2026-11-18, ADR 0021 proposed; no code yet)
-ADRs: 0011, 0021
+Status: In progress (first slice built 2026-11-18, 0.8.0, ADR 0021 accepted; security review and the owner's walkthrough, `docs/manual-test.md` section 10, open)
+ADRs: 0011, 0021, 0022
 
 ### First slice: goal
 
@@ -673,22 +673,22 @@ person's AI client still can never approve or administer anything.
 
 - [x] Spec (this section) and ADR 0021; ADRs 0011 and 0014 marked as amended
 - [x] Prerequisite: F07 R-01, tokens bound to a user id (ADR 0022, 2026-11-18)
-- [ ] Store: migration `00008_user_roles.sql` (`user_roles`, `invite_roles`, both with `org_id`; copy `users.role` and `invites.role`, then drop both columns; rewrite gateway tokens of signed-in people to `member`); `SetUserRoles`, `UserRoles`; catalog grants and `promoteCatalog` read `user_roles`
-  - tests: `TestUserRolesMigration` (each person keeps their role; personal gateway tokens become `member`; automation tokens unchanged), `TestRoleSetRules` (owner alone, admin alone, subsets of member, approver and auditor; empty and mixed sets refused), `TestSetUserRolesAudited` (set before and after), `TestLosingAdminDropsCatalogGrants`, `TestPromoteCatalogReadsUserRoles`, `TestUserRolesAreIsolatedPerOrg`, `TestInviteCarriesRoleSet`
-- [ ] Auth: `Principal.Roles` (sorted set), `Has`, `Can` as the union; no roles means no permission; unknown roles ignored
-  - tests: `TestCanIsUnionOfRoles`, `TestNoRolesNoPermissions`, `TestUnknownRoleGrantsNothing`, `TestApproverAloneCannotUseGateway`, `TestMemberApproverCanUseGatewayAndDecide`
-- [ ] Code check: no direct `Role ==` or `Role !=` comparisons outside `internal/auth` and `internal/store`
-  - tests: `TestNoDirectRoleComparisons` (reads the Go sources; fails with an example comparison added back)
-- [ ] Policy and gateway: `role:` subjects match any of the person's current roles, read per request; a token without a user matches by its own role
-  - tests: `TestRoleSubjectMatchesAnyRole`, `TestRoleSubjectForAutomationToken`, `TestRoleChangeAppliesOnNextRequest`, `TestReadingRolesFailsClosed`
-- [ ] Control API: `PATCH /api/v1/members/{person}` takes `roles` (a set) and keeps accepting `role` for one release; invites take `roles`; personal gateway tokens are issued as `member`; control tokens keep one role
-  - tests: `TestPatchMemberRolesRules` (an admin cannot grant or remove admin or owner, nobody edits their own roles, the last owner keeps owner), `TestPatchMemberRoleStillWorks`, `TestPersonalGatewayTokenIsMemberOnly`, `TestGatewayTokenNeedsGatewayUse` (an approver-only person is refused), `TestControlTokenHasOneRole`, `TestMemberApproverGatewayTokenIsRefusedByAdminAPI`
-- [ ] Approvals: self-approval check tested with a person who holds member and approver; the list marks the caller's own requests
-  - tests: `TestSelfApprovalRefusedForMemberApprover`, `TestSelfApprovalAllowedWhenOrgAllows`, `TestApprovalsListMarksOwnRequests`
-- [ ] App: Members page shows each person's roles as checkboxes, offering only the sets the editor may set; invite form takes a set; approvals page turns off decide on one's own requests with the reason; start page appears for anyone who holds member
-  - tests (Vitest): role checkboxes follow the editor (owner, admin), an invalid set cannot be saved, the invite sends a set, own requests show the reason and no active buttons
-- [ ] Acceptance through the real binary: `TestMemberWhoApproves` (a person with member and approver calls a tool that needs approval from their client; their gateway token gets 401 on the admin API; they cannot approve their own call in the browser; they approve another member's call; an owner removes approver and their next request cannot decide; the audit names each actor)
-- [ ] Docs: README (roles), `docs/manual-test.md` (a new section for combined roles), version 0.8.0
+- [x] Store: migration `00008_user_roles.sql` (`user_roles` with `source`, `granted_by`, `granted_at`; `invite_roles`, deleted with its invite; both with `org_id`; copies `users.role` and `invites.role`, then drops both; gateway tokens bound to a member become `member`; down keeps each person's strongest role); `NormalizeRoles`, `SetUserRoles` (kept roles keep their grant), `User.Roles` and `Has`, `Access.Roles` read with access; catalog grants and `promoteCatalog` read `user_roles`
+  - tests: `TestUserRolesMigration` (each person and invite keeps its role; own gateway tokens become `member`; automation and control tokens unchanged; an invite with roles can still be pruned), `TestRoleSetRules`, `TestSetUserRoles` (sorted set, who granted a new role, kept roles untouched, audit event, an invalid set changes nothing), `TestUserRolesAreIsolatedPerOrg`, `TestAccessCarriesRoles`, `TestInviteCarriesRoleSet`; losing owner and admin drops the catalog grant and promotion reads `user_roles`: `TestCatalogGrantFirstManagerAndPromotion`
+- [x] Auth: `Principal.Roles`, `Has`, `Can` as the union (`RolesCan`); no roles, or only unknown ones, grant nothing
+  - tests: `TestCanIsUnionOfRoles` (member and approver: the gateway and deciding, nothing else), `TestNoRolesNoPermissions` (unknown roles included), `TestApproverAloneCannotUseGateway`
+- [x] Code check: `Principal` and `store.User` have no single `Role` field any more, so the compiler refuses a role comparison on a person; a test keeps the field from coming back (the source scan planned here was replaced by this, which cannot be fooled by formatting). Token roles (`APIToken.Role`) stay single
+  - tests: `TestNoSingleRoleField`
+- [x] Policy and gateway: `role:` subjects match any of the caller's roles; for a member's own token those are the member's current roles, read with their access on each request; an automation token matches by its own role. Beyond the ADR text, in its spirit: a member's own token reaches nothing while none of the member's current roles uses the gateway (an approver-only person)
+  - tests: `internal/policy` `TestEvaluate` (a role among several matches, no roles match no role rule), `internal/gateway` `TestRoleRulesSeeTheMembersCurrentRoles`, `TestDemotedMembersTokenReachesNothing`, `TestAccessFailsClosed`; the change on the next request is in the acceptance test below
+- [x] Control API: `PATCH /api/v1/members/{person}` takes `roles` and still reads `role`; members list `roles` and the strongest as `role` for one release; invites take `roles` (also `privo admin invite --role member,approver`); a person's own gateway token is issued as `member`; control tokens keep one role; the audit action is `member.roles:<person>:<before>-><after>`. The last-owner check stays, though only another owner can reach it
+  - tests: `TestPatchMemberRolesRules` (an admin cannot grant admin or change owners and admins, nobody edits their own roles, invalid sets are 422, one audit event per change with both sets), `TestPatchMemberRoleStillWorks`, `TestPersonalGatewayTokenIsMemberOnly`, `TestInviteTakesRoles`; the existing `TestMyTokensAreOnlyMine` (an approver alone gets no gateway token)
+- [x] Approvals: `approval.Own` is the one rule for "own request", used by `Decide` and by the list, which marks `own` and gives `decide_blocked` unless the org allows self-approval
+  - tests: `TestMemberApproverAndOwnRequests` (own marked and refused, another's approved, then allowed once the org allows self-approval)
+- [x] App: People shows each person's roles with a **change** picker (checkboxes; owner and admin clear the others; Save disabled with none); admins see no change for owners and admins; the invite form takes a set; Approvals shows why one's own request cannot be decided, without buttons; the bar shows the roles; rules offer approvers and auditors; a member who also approves lands on Start
+  - tests (Vitest): `roles.test.ts` (`pickRole`, `roleText`), `pages.test.tsx` (the invite sends a set, a member's roles change as a set, admins get no change for owners and admins, own approvals show the reason and no buttons); 38/38
+- [x] Acceptance through the real binary: `TestMemberWhoApproves` (a person with member and approver calls a tool that needs approval; their gateway token gets 401 on the admin API; their own request is marked and refused; they approve another member's call, which then runs; without approver they cannot list approvals; with auditor a `role:auditor` deny applies to their next call; as approver only their token lists nothing and calls are "not available", and they get no new token; every change is audited with the owner as actor). Mutation-checked: reading the token's role instead of the person's fails it
+- [x] Docs: README (Roles), `docs/manual-test.md` section 10, version 0.8.0
 - [ ] Independent security review (auth and tenancy), findings recorded here
 
 ### Later in F20

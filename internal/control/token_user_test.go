@@ -78,7 +78,7 @@ func TestControlTokenHasNoOwnTokens(t *testing.T) {
 	_, adaP := e.user(t, "ada", store.RoleMember)
 	res := e.call(t, adaP, http.MethodPost, "/api/v1/me/tokens", map[string]any{"name": "laptop"}, http.StatusCreated)
 	id := res["id"].(string)
-	ctl := auth.Principal{OrgID: e.org, TokenID: "tok-ctl", Name: "ops", Role: store.RoleOwner, Kind: store.KindControl, Person: "ada"}
+	ctl := auth.Principal{OrgID: e.org, TokenID: "tok-ctl", Name: "ops", Roles: []string{store.RoleOwner}, Kind: store.KindControl, Person: "ada"}
 	for _, tc := range []struct {
 		name string
 		h    handler

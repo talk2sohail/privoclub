@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -16,7 +17,7 @@ import (
 )
 
 const (
-	adminUsage = "usage: privo admin setup-link [--person NAME]\n       privo admin invite --person NAME [--role admin|auditor|approver|member]"
+	adminUsage = "usage: privo admin setup-link [--person NAME]\n       privo admin invite --person NAME [--role admin | --role member,approver,auditor (any of them)]"
 
 	// setupLinkTTL is how long a setup link works. It is short on purpose: the
 	// link makes whoever opens it the owner.
@@ -39,7 +40,8 @@ func adminCmd(args []string, stdout, stderr io.Writer, getenv func(string) strin
 }
 
 // inviteCmd prints a one-time link that makes whoever signs in with it a member
-// with the given person name and role (ADR 0017). Only its hash is stored.
+// with the given person name and roles (ADR 0017, 0021): --role takes one
+// role or several separated by commas. Only its hash is stored.
 func inviteCmd(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	person, role := "", store.RoleMember
 	for i := 0; i < len(args); i++ {
@@ -62,8 +64,9 @@ func inviteCmd(args []string, stdout, stderr io.Writer, getenv func(string) stri
 		_, _ = fmt.Fprintf(stderr, "privo admin invite: --person is required: 1 to %d characters without control characters\n%s\n", maxPersonLen, adminUsage)
 		return 2
 	}
-	if !store.ValidRole(role) || role == store.RoleOwner {
-		_, _ = fmt.Fprintf(stderr, "privo admin invite: --role must be admin, auditor, approver or member\n%s\n", adminUsage)
+	roles, err := store.NormalizeRoles(strings.Split(role, ","))
+	if err != nil || slices.Contains(roles, store.RoleOwner) {
+		_, _ = fmt.Fprintf(stderr, "privo admin invite: --role must be admin alone, or any of member, approver and auditor separated by commas\n%s\n", adminUsage)
 		return 2
 	}
 	cfg, err := config.Load(getenv)
@@ -91,14 +94,14 @@ func inviteCmd(args []string, stdout, stderr io.Writer, getenv func(string) stri
 		return 1
 	}
 	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: "cli", ActorID: "cli", Client: "cli", Decision: "allow", Outcome: "ok"}
-	link, _, err := control.CreateInvite(ctx, st, org.ID, cfg.PublicURL, person, role, "cli", ev)
+	link, _, err := control.CreateInvite(ctx, st, org.ID, cfg.PublicURL, person, roles, "cli", ev)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "privo admin invite: %v\n", err)
 		return 1
 	}
 	_, _ = fmt.Fprintln(stdout, link)
 	_, _ = fmt.Fprintf(stderr, "Give this link to %s. It works once, within %d hours, and makes the GitHub account they sign in with a %s. A new invite for the same person cancels this one.\n",
-		person, int(control.InviteTTL.Hours()), role)
+		person, int(control.InviteTTL.Hours()), strings.Join(roles, " and "))
 	return 0
 }
 

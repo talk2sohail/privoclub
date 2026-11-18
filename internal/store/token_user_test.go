@@ -74,8 +74,12 @@ func TestMigrationBindsOnlyAPersonsOwnTokens(t *testing.T) {
 	if _, err := provider.DownTo(ctx, 6); err != nil {
 		t.Fatalf("down to 6: %v", err)
 	}
-	addUser(t, s, org, "u-ada", "ada")
-	addUser(t, s, org, "u-boss", "boss")
+	for _, u := range [][2]string{{"u-ada", "ada"}, {"u-boss", "boss"}} { // users as stored at version 6
+		if _, err := s.w.ExecContext(ctx, `INSERT INTO users (org_id, id, person, display_name, role, created_at) VALUES (?, ?, ?, ?, 'member', ?)`,
+			org, u[0], u[1], u[1], ts(t0)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	token := func(id, name, person string, created time.Time) {
 		t.Helper()
 		if _, err := s.w.ExecContext(ctx, `INSERT INTO api_tokens (org_id, id, name, role, kind, person, secret_hash, created_at, expires_at)
