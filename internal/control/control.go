@@ -679,6 +679,17 @@ func (a *API) revokeToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if (target.Role == store.RoleOwner || target.Role == store.RoleAdmin) && !p.Has(store.RoleOwner) && target.ID != p.TokenID {
 		return errorf(http.StatusForbidden, "only owners can revoke owner or admin tokens")
 	}
+	// A member's own token carries member (ADR 0021); it is protected by its
+	// person's roles, as it was by its own role before.
+	if target.UserID != "" && target.UserID != p.UserID && !p.Has(store.RoleOwner) {
+		u, err := a.Store.UserByID(r.Context(), p.OrgID, target.UserID)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			return err
+		}
+		if err == nil && elevated(u.Roles) {
+			return errorf(http.StatusForbidden, "only owners can revoke an owner's or an admin's tokens")
+		}
+	}
 	if err := a.Store.RevokeToken(r.Context(), p.OrgID, id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return errorf(http.StatusNotFound, "no active token %q", id)

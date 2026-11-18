@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"privo.club/privo/internal/approval"
+	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/store"
 )
 
@@ -169,4 +170,23 @@ func TestMemberApproverAndOwnRequests(t *testing.T) {
 		t.Fatalf("with self-approval allowed: %v", list)
 	}
 	e.call(t, dan, http.MethodPost, "/api/v1/approvals/"+own+"/approve", nil, http.StatusOK)
+}
+
+// A member's own token is stored as member, so it is protected by its
+// person's roles: an admin cannot revoke an owner's or another admin's.
+func TestAdminCannotRevokeAnOwnersOwnToken(t *testing.T) {
+	e := newSessionEnv(t)
+	_, owner := e.user(t, "boss", store.RoleOwner)
+	_, admin := e.user(t, "carol", store.RoleAdmin)
+	_, other := e.user(t, "dan", store.RoleAdmin)
+	_, ada := e.user(t, "ada", store.RoleMember)
+	tok := func(p auth.Principal, name string) string {
+		return e.call(t, p, http.MethodPost, "/api/v1/me/tokens", map[string]any{"name": name}, http.StatusCreated)["id"].(string)
+	}
+	bossTok, danTok, adaTok, carolTok := tok(owner, "boss-laptop"), tok(other, "dan-laptop"), tok(ada, "ada-laptop"), tok(admin, "carol-laptop")
+	e.call(t, admin, http.MethodDelete, "/api/v1/tokens/"+bossTok, nil, http.StatusForbidden)
+	e.call(t, admin, http.MethodDelete, "/api/v1/tokens/"+danTok, nil, http.StatusForbidden)
+	e.call(t, admin, http.MethodDelete, "/api/v1/tokens/"+adaTok, nil, http.StatusOK)
+	e.call(t, admin, http.MethodDelete, "/api/v1/tokens/"+carolTok, nil, http.StatusOK) // their own
+	e.call(t, owner, http.MethodDelete, "/api/v1/tokens/"+danTok, nil, http.StatusOK)
 }

@@ -605,7 +605,7 @@ ADRs: 0008
 - [x] Cap the size of upstream responses (tool results, resource reads, list pages): `PRIVO_UPSTREAM_MAX_RESPONSE_BYTES` and the list limits, see R-04 in F24
 
 ## F20. Enterprise identity and roles
-Status: In progress (first slice built 2026-11-18, 0.8.0, ADR 0021 accepted; security review and the owner's walkthrough, `docs/manual-test.md` section 10, open)
+Status: In progress (first slice built and reviewed 2026-11-18, 0.8.0, ADR 0021 accepted; the owner's walkthrough, `docs/manual-test.md` section 10, open)
 ADRs: 0011, 0021, 0022
 
 ### First slice: goal
@@ -689,7 +689,8 @@ person's AI client still can never approve or administer anything.
   - tests (Vitest): `roles.test.ts` (`pickRole`, `roleText`), `pages.test.tsx` (the invite sends a set, a member's roles change as a set, admins get no change for owners and admins, own approvals show the reason and no buttons); 38/38
 - [x] Acceptance through the real binary: `TestMemberWhoApproves` (a person with member and approver calls a tool that needs approval; their gateway token gets 401 on the admin API; their own request is marked and refused; they approve another member's call, which then runs; without approver they cannot list approvals; with auditor a `role:auditor` deny applies to their next call; as approver only their token lists nothing and calls are "not available", and they get no new token; every change is audited with the owner as actor). Mutation-checked: reading the token's role instead of the person's fails it
 - [x] Docs: README (Roles), `docs/manual-test.md` section 10, version 0.8.0
-- [ ] Independent security review (auth and tenancy), findings recorded here
+- [x] Security review 2026-11-18 (`docs/reviews/2026-11-18-f20-roles-security-review.md`): no findings at 0.8 or above. Acted on: an admin could revoke an owner's or admin's own gateway token once those carry `member`; revoking is now protected by the person's roles (`TestAdminCannotRevokeAnOwnersOwnToken`). For the release: a `role:member` rule no longer matches an owner's or admin's own AI client token
+- [ ] Owner's walkthrough on app.privo.club: `docs/manual-test.md` section 10
 
 ### Later in F20
 

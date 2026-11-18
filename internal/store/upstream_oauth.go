@@ -93,13 +93,13 @@ func (s *Store) Invite(ctx context.Context, org OrgID, secretHash string, now ti
 		SELECT i.id, i.person, `+inviteRoles+`, i.created_by, i.created_at, i.expires_at FROM invites i
 		WHERE i.org_id = ? AND i.secret_hash = ? AND i.claimed_at IS NULL AND i.retired_at IS NULL AND i.expires_at > ?`,
 		org, secretHash, ts(now)).Scan(&in.ID, &in.Person, &roles, &in.CreatedBy, &created, &expires)
-	in.Roles = splitRoles(roles)
 	if errors.Is(err, sql.ErrNoRows) {
 		return in, ErrNotFound
 	}
 	if err != nil {
 		return in, err
 	}
+	in.Roles = splitRoles(roles)
 	in.CreatedAt, in.ExpiresAt = parseTS(created), parseTS(expires)
 	return in, nil
 }
