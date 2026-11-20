@@ -602,7 +602,7 @@ text, with characters a person cannot see made visible (⟦U+200B⟧).
 - [ ] From that review: `previous` and "Available to AI clients" should follow the definition the gateway serves now, not the newest accepted one by time; route token events through `audit.Writer`; refuse refreshing a disabled server's grant
 
 ## F12. Audit log
-Status: In progress (second slice specified 2026-11-20)
+Status: In progress (second slice built 2026-11-21, 0.13.0; ADR 0025 proposed)
 ADRs: 0001, 0002, 0006, 0025
 
 - [x] Synchronous intent record; batched completion; bounded queue that refuses rather than drops
@@ -643,17 +643,18 @@ Threat note:
 
 Tasks and the tests that name them:
 
-- [ ] Spec (this section) and ADR 0025
-- [ ] Store: migration `00012_audit_chain.sql` (`audit_events.chain_seq`, `payload_sha256`; `audit_blocks`); `SealAudit`, `AuditBlocks`, `AuditEventsInRange`, `SearchAudit`, `PruneAudit`, `EraseAuditPayloads`
-  - tests: `TestSealAssignsSequence`, `TestSearchAudit`, `TestPruneKeepsUnsealed`, `TestEraseKeepsDigest`
-- [ ] Audit: signing key derivation, event and block hashes, `Sealer`, `Verify`
-  - tests: `TestSigningKeyIsDerived`, `TestVerifyFindsTampering` (changed field, deleted row, reordered, forged block, foreign key), `TestVerifyAfterRetentionAndErasure`
-- [ ] Admin API and CLI: filters and cursor on `/api/v1/audit/events`; `/audit/export`, `/audit/integrity`, `/audit/checkpoints`, `/audit/keys`, `/audit/erase`; `retention_days` in audit settings; `privo audit verify`
-  - tests: `TestAuditSearchAPI`, `TestAuditIntegrityAPI`, `TestAuditEraseAPI`, `cmd/privo` `TestAuditVerifyCommand`
-- [ ] App: Activity filters, Load more, Export CSV, integrity, retention and erasure
-  - tests (Vitest)
-- [ ] Acceptance: `TestAuditChainEndToEnd` (calls sealed, verify passes, a row changed in the database is found)
-- [ ] Docs: README, `docs/manual-test.md`, version; security review
+- [x] Spec (this section) and ADR 0025
+- [x] Store: migration `00012_audit_chain.sql` (`audit_events.chain_seq`, `payload_sha256`; `audit_blocks`); `SealAudit`, `AuditBlocks`, `AuditEventsInRange`, `SearchAudit`, `PruneAudit`, `EraseAuditPayloads`
+  - tests: `TestSearchAudit` (pages, filters by actor, server, decision and time, admin kind, bad cursor, other orgs); sealing, retention (whole blocks, never unsealed) and erasure (digests kept) in the audit tests below
+- [x] Audit: signing key derivation (HKDF from the master key, per org), event and block hashes, `Sealer` (with hourly retention), `Verify`
+  - tests: `TestSigningKeyIsDerived`, `TestSealAndVerify`, `TestVerifyFindsTampering` (a changed field or actor, a deleted or reordered event, changed arguments or digest, a deleted block, a forged signature, an untrusted key, a broken link, an edited block hash), `TestVerifyRefusesAnotherKey` (a forger re-signing with their own key), `TestVerifyAfterRetentionAndErasure`
+- [x] Admin API and CLI: filters and cursor on `/api/v1/audit/events`; `/audit/export`, `/audit/integrity`, `/audit/checkpoints`, `/audit/keys`, `/audit/erase`; `retention_days` in audit settings; `privo audit verify`
+  - tests: `TestAuditSearchAPI` (pages, bad filters, CSV without arguments and with formulas neutralised, members refused), `TestAuditIntegrityAPI` (off without keys, report, keys and checkpoints agree, retention bounds and permission), `TestAuditEraseAPI` (only that person's calls, permission), `cmd/privo` `TestAuditVerifyCommand` (intact, a changed row, another master key)
+- [x] App: Activity filters, Load more, Export CSV, integrity, retention and erasure
+  - tests (Vitest): `pages.test.tsx` audit (filters, load more, an integrity problem shown, retention and erasure sent; hidden from those who only read); 52/52
+- [x] Acceptance: `TestAuditChainEndToEnd` (calls sealed, verify passes, a row changed in the database is found)
+- [x] Docs: README, `docs/manual-test.md` section 15, version 0.13.0
+- [ ] Security review
 
 ## F13. Stdio runner
 Status: Not started

@@ -10,6 +10,7 @@ export type Can = {
   manage_tokens: boolean;
   use_gateway: boolean;
   activity: boolean;
+  manage_audit: boolean;
   connections: boolean;
   oauth_servers: boolean;
 };

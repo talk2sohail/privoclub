@@ -231,6 +231,7 @@ func (s *Server) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		"manage_tokens": p.Can(auth.PermManageTokens),
 		"use_gateway":   p.Can(auth.PermUseGateway),
 		"activity":      p.Can(auth.PermReadAudit),
+		"manage_audit":  p.Can(auth.PermManageAudit),
 		"connections":   s.connections() && p.Can(auth.PermUseGateway),
 		"oauth_servers": s.connections(),
 	}
