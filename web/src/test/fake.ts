@@ -24,7 +24,7 @@ export function fakeServer(routes: Record<string, unknown | ((body: unknown) => 
 export function session(role: "owner" | "member" | "approver", over: Partial<Session> = {}): Session {
   const owner = role === "owner";
   return {
-    user: { name: "Ada Lovelace", person: "ada", role },
+    user: { name: "Ada Lovelace", person: "ada", roles: [role] },
     can: {
       decide: role !== "member",
       servers: owner,

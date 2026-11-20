@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,7 +15,7 @@ import (
 
 func newInvite(t *testing.T, s *Store, org OrgID, id, hash, person, role string, now time.Time) {
 	t.Helper()
-	err := s.CreateInvite(context.Background(), org, NewInvite{ID: id, SecretHash: hash, Person: person, Role: role, CreatedBy: "tester", Now: now, ExpiresAt: now.Add(72 * time.Hour)}, adminEv("invite.create:"+id))
+	err := s.CreateInvite(context.Background(), org, NewInvite{ID: id, SecretHash: hash, Person: person, Roles: []string{role}, CreatedBy: "tester", Now: now, ExpiresAt: now.Add(72 * time.Hour)}, adminEv("invite.create:"+id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +57,7 @@ func TestInviteSingleUseRoleAndExpiry(t *testing.T) {
 	newInvite(t, s, org, "i1", "ih-1", "ada", RoleMember, t0)
 
 	inv, err := s.Invite(ctx, org, "ih-1", t0.Add(time.Hour))
-	if err != nil || inv.Person != "ada" || inv.Role != RoleMember {
+	if err != nil || inv.Person != "ada" || !slices.Equal(inv.Roles, []string{RoleMember}) {
 		t.Fatalf("Invite = %+v, %v", inv, err)
 	}
 	if _, err := s.Invite(ctx, org, "ih-1", t0.Add(72*time.Hour)); !errors.Is(err, ErrNotFound) {
@@ -66,7 +67,7 @@ func TestInviteSingleUseRoleAndExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if u.Person != "ada" || u.Role != RoleMember {
+	if u.Person != "ada" || !slices.Equal(u.Roles, []string{RoleMember}) {
 		t.Errorf("claimed user %+v: the person and role come from the invite", u)
 	}
 	if _, err := s.ClaimInvite(ctx, org, claimFor("i1", "2002", "x", "sess-2", t0.Add(2*time.Minute)), adminEv("invite.claim2")); !errors.Is(err, ErrSetupUnavailable) {
@@ -79,16 +80,16 @@ func TestInviteSingleUseRoleAndExpiry(t *testing.T) {
 	// Invites cannot make owners, need a known role, cannot outlive 7 days and
 	// cannot name a person who is already a member.
 	for name, inv := range map[string]NewInvite{
-		"owner":     {ID: "x1", SecretHash: "x1", Person: "bob", Role: RoleOwner, CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(time.Hour)},
-		"bad role":  {ID: "x2", SecretHash: "x2", Person: "bob", Role: "root", CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(time.Hour)},
-		"too long":  {ID: "x3", SecretHash: "x3", Person: "bob", Role: RoleMember, CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(8 * 24 * time.Hour)},
-		"no person": {ID: "x4", SecretHash: "x4", Person: "", Role: RoleMember, CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(time.Hour)},
+		"owner":     {ID: "x1", SecretHash: "x1", Person: "bob", Roles: []string{RoleOwner}, CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(time.Hour)},
+		"bad role":  {ID: "x2", SecretHash: "x2", Person: "bob", Roles: []string{"root"}, CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(time.Hour)},
+		"too long":  {ID: "x3", SecretHash: "x3", Person: "bob", Roles: []string{RoleMember}, CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(8 * 24 * time.Hour)},
+		"no person": {ID: "x4", SecretHash: "x4", Person: "", Roles: []string{RoleMember}, CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(time.Hour)},
 	} {
 		if err := s.CreateInvite(ctx, org, inv, adminEv("invite.create:"+name)); err == nil {
 			t.Errorf("%s: invite accepted", name)
 		}
 	}
-	if err := s.CreateInvite(ctx, org, NewInvite{ID: "x5", SecretHash: "x5", Person: "ada", Role: RoleMember, CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(time.Hour)}, adminEv("invite.create:x5")); !errors.Is(err, ErrConflict) {
+	if err := s.CreateInvite(ctx, org, NewInvite{ID: "x5", SecretHash: "x5", Person: "ada", Roles: []string{RoleMember}, CreatedBy: "t", Now: t0, ExpiresAt: t0.Add(time.Hour)}, adminEv("invite.create:x5")); !errors.Is(err, ErrConflict) {
 		t.Errorf("invite for an existing member: %v, want ErrConflict", err)
 	}
 
@@ -253,7 +254,7 @@ func TestCatalogGrantFirstManagerAndPromotion(t *testing.T) {
 	}
 	// Carol is demoted to member: her grant stops being the catalog, and no
 	// other manager has a grant.
-	if err := s.SetUserRole(ctx, org, admin.ID, RoleMember, adminEv("demote")); err != nil {
+	if _, err := s.SetUserRoles(ctx, org, admin.ID, []string{RoleMember}, adminEv("demote")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.CatalogGrant(ctx, org, srv); !errors.Is(err, ErrNotFound) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -98,7 +99,7 @@ func TestSetupFlowCreatesOwner(t *testing.T) {
 		t.Fatal("no session cookie after setup")
 	}
 	u, err := e.st.UserByIdentity(context.Background(), e.org, store.ProviderGitHub, "1001")
-	if err != nil || u.Role != store.RoleOwner || u.Person != "octocat" || u.DisplayName != "The Octocat" {
+	if err != nil || !slices.Equal(u.Roles, []string{store.RoleOwner}) || u.Person != "octocat" || u.DisplayName != "The Octocat" {
 		t.Fatalf("user %+v, %v", u, err)
 	}
 	if page := b.get("/admin/api/session"); page.StatusCode != http.StatusOK || !strings.Contains(page.Body, `"person":"octocat"`) {
@@ -529,7 +530,7 @@ func TestRoleChangeAppliesAtOnce(t *testing.T) {
 		t.Fatalf("approver: %d %v", code, ok)
 	}
 	ctx := context.Background()
-	if err := e.st.SetUserRole(ctx, e.org, u.ID, store.RoleMember, e.event("role")); err != nil {
+	if _, err := e.st.SetUserRoles(ctx, e.org, u.ID, []string{store.RoleMember}, e.event("role")); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := canDecide(); ok {
@@ -537,10 +538,10 @@ func TestRoleChangeAppliesAtOnce(t *testing.T) {
 	}
 	// The bridge runs as the live role, so the API refuses at once.
 	b.call(http.MethodGet, "/admin/api/v1/approvals", b.csrf(), "", nil)
-	if calls := e.api().all(); len(calls) != 1 || calls[0].P.Role != store.RoleMember {
+	if calls := e.api().all(); len(calls) != 1 || !slices.Equal(calls[0].P.Roles, []string{store.RoleMember}) {
 		t.Errorf("bridge principal after demotion: %+v", calls)
 	}
-	if err := e.st.SetUserRole(ctx, e.org, u.ID, store.RoleAdmin, e.event("role2")); err != nil {
+	if _, err := e.st.SetUserRoles(ctx, e.org, u.ID, []string{store.RoleAdmin}, e.event("role2")); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := canDecide(); !ok {

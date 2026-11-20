@@ -237,10 +237,10 @@ func TestRemovingAMemberRevokesTheirGrants(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A role that may not use the gateway; a role that may keeps its grants.
-	if err := s.SetUserRole(ctx, org, bob.ID, RoleAuditor, adminEv("role:bob")); err != nil {
+	if _, err := s.SetUserRoles(ctx, org, bob.ID, []string{RoleAuditor}, adminEv("role:bob")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetUserRole(ctx, org, cy.ID, RoleMember, adminEv("role:cy")); err != nil {
+	if _, err := s.SetUserRoles(ctx, org, cy.ID, []string{RoleMember}, adminEv("role:cy")); err != nil {
 		t.Fatal(err)
 	}
 	if got := live(); len(got) != 1 || got[0] != "cy" {
@@ -250,7 +250,7 @@ func TestRemovingAMemberRevokesTheirGrants(t *testing.T) {
 		t.Errorf("%d token rows, want cy's 2", n)
 	}
 	// Giving the role back does not bring a grant back.
-	_ = s.SetUserRole(ctx, org, bob.ID, RoleMember, adminEv("role:bob2"))
+	_, _ = s.SetUserRoles(ctx, org, bob.ID, []string{RoleMember}, adminEv("role:bob2"))
 	if got := live(); len(got) != 1 {
 		t.Errorf("grants after the role came back: %v", got)
 	}

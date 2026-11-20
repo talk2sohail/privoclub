@@ -134,11 +134,11 @@ refusal. See `docs/deploy-coolify.md` for the Coolify steps.
 ### Invite your team
 
 ```sh
-privo admin invite --person ada [--role member|approver|auditor|admin]
+privo admin invite --person ada [--role admin | --role member,approver,auditor]
 ```
 
 prints a link that works once, for 72 hours (also `POST /api/v1/invites` with
-`{"person": "ada", "role": "member"}`). Ada opens it and signs in with GitHub;
+`{"person": "ada", "roles": ["member"]}`). Ada opens it and signs in with GitHub;
 her account is bound by its numeric GitHub id. She then makes a token for each
 of her AI clients on the **Tokens** page.
 
@@ -311,6 +311,21 @@ address on an internal network): `/metrics` there gives
 `privo_upstream_up{server}`, `privo_audit_events_lost_total`,
 `privo_telemetry_dropped_total` and `privo_build_info`. It has no sign-in, so
 it never shares the public port.
+
+## Roles
+
+A person holds a set of roles (ADR 0021): **owner** or **admin** alone, or
+any of **member** (uses tools through an AI client), **approver** (decides
+other people's approvals) and **auditor** (reads the activity). A member who
+also approves keeps using their AI client and decides everyone's calls but
+their own, in the browser. Change them on **People**, or with
+`PATCH /api/v1/members/<person>` and `{"roles": ["member", "approver"]}`.
+Owners change any set; admins change sets of member, approver and auditor for
+people who are not owners or admins; nobody changes their own. Changes apply to
+the person's next request, and rules for `role:<role>` follow them. A person's
+own AI client token carries `member` and only uses the gateway, whatever roles
+they hold; while none of their roles uses the gateway it reaches nothing. The
+single `"role"` of the member API is still read and returned for one release.
 
 ## Tokens
 

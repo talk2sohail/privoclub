@@ -109,7 +109,7 @@ func TestAMemberSeesAndRevokesOnlyTheirOwnClients(t *testing.T) {
 	}
 	// A token is not a person: it has no clients of its own, even a token of
 	// the member.
-	tokenP := auth.Principal{OrgID: e.org, TokenID: "tok", Name: "script", Role: store.RoleMember, Kind: store.KindControl}
+	tokenP := auth.Principal{OrgID: e.org, TokenID: "tok", Name: "script", Roles: []string{store.RoleMember}, Kind: store.KindControl}
 	rec := httptest.NewRecorder()
 	if err := e.api.listMyClients(rec, httptest.NewRequest(http.MethodGet, "/api/v1/me/clients", nil), tokenP); err != nil || strings.Contains(rec.Body.String(), "gb") {
 		t.Errorf("a token's clients: %v %s", err, rec.Body.String())

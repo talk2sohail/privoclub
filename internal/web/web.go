@@ -442,11 +442,11 @@ func (s *Server) session(r *http.Request) (store.Session, store.User, bool) {
 
 // principal is who a signed-in person is, in the terms the permission table uses.
 func (s *Server) principal(u store.User) auth.Principal {
-	return auth.Principal{OrgID: s.o.Org, Name: u.Person, Role: u.Role, Kind: kindSession, Person: u.Person, UserID: u.ID}
+	return auth.Principal{OrgID: s.o.Org, Name: u.Person, Roles: u.Roles, Kind: kindSession, Person: u.Person, UserID: u.ID}
 }
 
 func view(u store.User) *userView {
-	return &userView{Name: u.DisplayName, Person: u.Person, Role: u.Role}
+	return &userView{Name: u.DisplayName, Person: u.Person, Role: strings.Join(u.Roles, ", ")}
 }
 
 // sameOrigin accepts a request that comes from this site's own pages. The

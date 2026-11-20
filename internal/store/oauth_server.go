@@ -155,7 +155,8 @@ func (s *Store) CreateClientGrant(ctx context.Context, org OrgID, g ClientGrant)
 	res, err := s.oauthW(ctx).ExecContext(ctx, `
 		INSERT INTO oauth_grants (org_id, id, user_id, client_id, client_name, client_kind, scope, created_at, expires_at, last_used_at)
 		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-		WHERE EXISTS (SELECT 1 FROM users WHERE org_id = ? AND id = ? AND disabled_at IS NULL AND role IN (?, ?, ?))
+		WHERE EXISTS (SELECT 1 FROM users u WHERE u.org_id = ? AND u.id = ? AND u.disabled_at IS NULL
+			AND EXISTS (SELECT 1 FROM user_roles r WHERE r.org_id = u.org_id AND r.user_id = u.id AND r.role IN (?, ?, ?)))
 		ON CONFLICT (org_id, id) DO NOTHING`,
 		org, g.ID, g.UserID, g.ClientID, g.ClientName, g.ClientKind, g.Scope, ts(g.CreatedAt), ts(g.ExpiresAt), ts(g.CreatedAt),
 		org, g.UserID, RoleOwner, RoleAdmin, RoleMember)

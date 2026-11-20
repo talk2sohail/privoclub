@@ -200,10 +200,10 @@ func (e *env) member(person, role string) store.User {
 		e.t.Fatal(err)
 	}
 	if role != store.RoleOwner {
-		if err := e.st.SetUserRole(ctx, e.org, u.ID, role, ev("role")); err != nil {
+		if _, err := e.st.SetUserRoles(ctx, e.org, u.ID, []string{role}, ev("role")); err != nil {
 			e.t.Fatal(err)
 		}
-		u.Role = role
+		u.Roles = []string{role}
 	}
 	return u
 }

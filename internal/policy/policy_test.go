@@ -15,7 +15,8 @@ func rule(id, server, tool, subject, action string, prio int) store.Policy {
 
 func TestEvaluate(t *testing.T) {
 	now := time.Now()
-	member := Request{Role: "member", TokenID: "t1", Server: "github", Tool: "create_issue"}
+	member := Request{Roles: []string{"member"}, TokenID: "t1", Server: "github", Tool: "create_issue"}
+	approverMember := Request{Roles: []string{"approver", "member"}, TokenID: "t1", Server: "github", Tool: "create_issue"}
 	past := now.Add(-time.Minute)
 	cases := []struct {
 		name  string
@@ -32,6 +33,9 @@ func TestEvaluate(t *testing.T) {
 		{"higher priority grant beats ask", []store.Policy{rule("k", "*", "*", "*", "ask", 0), rule("g", "github", "create_issue", "token:t1", "allow", 100)}, member, "allow", "allow"},
 		{"other server ignored", []store.Policy{rule("d", "slack", "*", "*", "deny", 0)}, member, "allow", "allow"},
 		{"other role ignored", []store.Policy{rule("d", "*", "*", "role:admin", "deny", 0)}, member, "allow", "allow"},
+		{"a role among several matches", []store.Policy{rule("d", "*", "*", "role:approver", "deny", 0)}, approverMember, "allow", "deny"},
+		{"another role among several matches", []store.Policy{rule("k", "*", "*", "role:member", "ask", 0)}, approverMember, "allow", "ask"},
+		{"no roles match no role rule", []store.Policy{rule("d", "*", "*", "role:member", "deny", 0)}, Request{Server: "github", Tool: "x"}, "allow", "allow"},
 		{"other token ignored", []store.Policy{rule("d", "*", "*", "token:t2", "deny", 0)}, member, "allow", "allow"},
 		{"glob mismatch ignored", []store.Policy{rule("d", "*", "delete_*", "*", "deny", 0)}, member, "allow", "allow"},
 		{"expired rule ignored", []store.Policy{{ID: "x", Server: "*", Tool: "*", Subject: "*", Action: "deny", ExpiresAt: &past}}, member, "allow", "allow"},

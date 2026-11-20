@@ -4,6 +4,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"time"
 
@@ -18,9 +19,11 @@ type Principal struct {
 	OrgID   store.OrgID
 	TokenID string
 	Name    string
-	Role    string
-	Kind    string // gateway | control
-	Person  string // a label: who the caller is called. It gives no access (F27)
+	// Roles are the signed-in person's current roles, or a token's one role
+	// (ADR 0025). Code asks Has or Can, never compares a role.
+	Roles  []string
+	Kind   string // gateway | control
+	Person string // a label: who the caller is called. It gives no access (F27)
 	// UserID is the member the caller is: a signed-in person (kind "session",
 	// no token id), or the member a token belongs to. It alone decides whose
 	// teams and upstream accounts the caller gets; "" is a token of nobody.
@@ -86,8 +89,22 @@ var grants = map[string]map[Permission]bool{
 	store.RoleMember:   {PermUseGateway: true, PermReadServers: true},
 }
 
-// Can reports whether p has perm.
-func (p Principal) Can(perm Permission) bool { return grants[p.Role][perm] }
+// Can reports whether any of p's roles grants perm. No role, or only unknown
+// ones, grants nothing.
+func (p Principal) Can(perm Permission) bool { return RolesCan(p.Roles, perm) }
+
+// Has reports whether p holds role.
+func (p Principal) Has(role string) bool { return slices.Contains(p.Roles, role) }
+
+// RolesCan reports whether any of roles grants perm.
+func RolesCan(roles []string, perm Permission) bool {
+	for _, r := range roles {
+		if grants[r][perm] {
+			return true
+		}
+	}
+	return false
+}
 
 // ErrUnauthenticated is returned for any token that does not verify.
 var ErrUnauthenticated = errors.New("auth: invalid or expired token")
@@ -157,7 +174,7 @@ func (a *Authenticator) VerifyGateway(ctx context.Context, bearer string) (Princ
 	if name == "" {
 		name = g.ClientID
 	}
-	p := Principal{OrgID: u.OrgID, TokenID: OAuthPrefix + g.ID, Name: name, Role: u.Role, Kind: store.KindGateway, Person: u.Person, UserID: u.ID, Client: name}
+	p := Principal{OrgID: u.OrgID, TokenID: OAuthPrefix + g.ID, Name: name, Roles: []string{store.RoleMember}, Kind: store.KindGateway, Person: u.Person, UserID: u.ID, Client: name}
 	a.mu.Lock()
 	if len(a.cache) > 10000 {
 		a.cache = map[string]cachedPrincipal{}
@@ -195,7 +212,7 @@ func (a *Authenticator) Verify(ctx context.Context, bearer string) (Principal, t
 	if person == "" {
 		person = t.Name
 	}
-	p := Principal{OrgID: t.OrgID, TokenID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: person, UserID: t.UserID}
+	p := Principal{OrgID: t.OrgID, TokenID: t.ID, Name: t.Name, Roles: []string{t.Role}, Kind: t.Kind, Person: person, UserID: t.UserID}
 	a.mu.Lock()
 	if len(a.cache) > 10000 {
 		a.cache = map[string]cachedPrincipal{}

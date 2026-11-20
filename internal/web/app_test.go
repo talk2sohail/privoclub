@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -230,7 +231,7 @@ func TestSessionEndpointSaysWhoAndWhatTheyMayDo(t *testing.T) {
 	if err != nil || sess.CSRF != csrf {
 		t.Fatalf("csrf %q is not the session's (%v)", csrf, err)
 	}
-	if s.User.Person != "octo" || s.User.Role != store.RoleOwner || s.User.Name != "The Octocat" || s.MCPURL != e.pub+"/mcp" || s.Landing != "/admin/servers" {
+	if s.User.Person != "octo" || !slices.Equal(s.User.Roles, []string{store.RoleOwner}) || s.User.Name != "The Octocat" || s.MCPURL != e.pub+"/mcp" || s.Landing != "/admin/servers" {
 		t.Errorf("owner: %+v", s)
 	}
 	for _, k := range []string{"decide", "servers", "rules", "people", "manage_tokens", "use_gateway", "activity", "connections", "oauth_servers"} {
@@ -279,7 +280,7 @@ func TestBridgeRunsAsThePerson(t *testing.T) {
 		t.Fatalf("calls %+v", calls)
 	}
 	for _, c := range calls {
-		if c.P.Kind != kindSession || c.P.UserID != user.ID || c.P.Person != "octo" || c.P.Name != "octo" || c.P.Role != store.RoleAdmin || c.P.OrgID != e.org {
+		if c.P.Kind != kindSession || c.P.UserID != user.ID || c.P.Person != "octo" || c.P.Name != "octo" || !slices.Equal(c.P.Roles, []string{store.RoleAdmin}) || c.P.OrgID != e.org {
 			t.Errorf("principal %+v", c.P)
 		}
 	}

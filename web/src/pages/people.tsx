@@ -3,14 +3,21 @@ import { api, seg } from "../api";
 import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
 import type { Member } from "../types";
+import { RolePicker, roleText } from "../roles";
 import { Copy, ErrorLine, Loading, formValues, useAction, when } from "../ui";
 
-type Invite = { person: string; role: string; url: string; expires_at: string };
+type Invite = { person: string; roles: string[]; url: string; expires_at: string };
+
+// Only owners change owners and admins (ADR 0025); the API enforces it.
+const elevated = (roles: string[]) => roles.includes("owner") || roles.includes("admin");
 
 export function People({ session }: PageProps) {
   const res = useData<{ members: Member[] }>("/v1/members");
   const [invite, setInvite] = useState<Invite | null>(null);
   const [removing, setRemoving] = useState("");
+  const [inviteRoles, setInviteRoles] = useState<string[]>(["member"]);
+  const [editing, setEditing] = useState<{ person: string; roles: string[] } | null>(null);
+  const ownerEditor = session.change_roles.includes("owner");
   const [busy, run] = useAction();
   const members = res.data?.members;
 
@@ -19,17 +26,19 @@ export function People({ session }: PageProps) {
     const f = formValues(e);
     const person = (f.person ?? "").trim();
     void run(async () => {
-      const out = await api<{ invite: Invite }>("POST", "/v1/invites", { person, role: f.role });
+      const out = await api<{ invite: Invite }>("POST", "/v1/invites", { person, roles: inviteRoles });
       setInvite(out.invite);
       form.reset();
+      setInviteRoles(["member"]);
     }, "Invite created. Send the link below to " + person + ".");
   };
 
-  const setRole = (person: string, role: string) =>
+  const saveRoles = (person: string, roles: string[]) =>
     void run(async () => {
-      await api("PATCH", "/v1/members/" + seg(person), { role });
+      await api("PATCH", "/v1/members/" + seg(person), { roles });
+      setEditing(null);
       invalidate("/v1/members");
-    }, "Role changed.");
+    }, "Roles changed. They apply to " + person + "'s next request.");
 
   const remove = (person: string) =>
     void run(async () => {
@@ -47,7 +56,7 @@ export function People({ session }: PageProps) {
           <h2>Invite link for {invite.person}</h2>
           <p>
             Send this link to {invite.person}. It works once, until {when(invite.expires_at)}, and makes the GitHub account they sign in with a{" "}
-            <strong>{invite.role}</strong>. It is shown only now.
+            <strong>{roleText(invite.roles)}</strong>. It is shown only now.
           </p>
           <Copy text={invite.url} label="invite link" />
         </section>
@@ -63,7 +72,7 @@ export function People({ session }: PageProps) {
                 <tr>
                   <th>Person</th>
                   <th>GitHub</th>
-                  <th>Role</th>
+                  <th>Roles</th>
                   <th />
                 </tr>
               </thead>
@@ -87,21 +96,34 @@ export function People({ session }: PageProps) {
                           "removed"
                         ) : me ? (
                           <>
-                            {m.role} <small class="meta">(you)</small>
+                            {roleText(m.roles)} <small class="meta">(you)</small>
                           </>
+                        ) : editing?.person === m.person ? (
+                          <div class="stack">
+                            <RolePicker
+                              legend={"Roles of " + m.person}
+                              offered={session.change_roles}
+                              value={editing.roles}
+                              onChange={(roles) => setEditing({ person: m.person, roles })}
+                            />
+                            <span class="row">
+                              <button type="button" class="primary small" disabled={busy || editing.roles.length === 0} onClick={() => saveRoles(m.person, editing.roles)}>
+                                Save roles
+                              </button>
+                              <button type="button" class="link" onClick={() => setEditing(null)}>
+                                Cancel
+                              </button>
+                            </span>
+                          </div>
                         ) : (
-                          <select
-                            aria-label={"Role of " + m.person}
-                            value={m.role}
-                            disabled={busy}
-                            onChange={(e) => setRole(m.person, (e.currentTarget as HTMLSelectElement).value)}
-                          >
-                            {(session.change_roles.includes(m.role) ? session.change_roles : [m.role, ...session.change_roles]).map((r) => (
-                              <option key={r} value={r}>
-                                {r}
-                              </option>
-                            ))}
-                          </select>
+                          <>
+                            {roleText(m.roles)}{" "}
+                            {(ownerEditor || !elevated(m.roles)) && (
+                              <button type="button" class="link" aria-label={"Change roles of " + m.person} onClick={() => setEditing({ person: m.person, roles: m.roles })}>
+                                change
+                              </button>
+                            )}
+                          </>
                         )}
                       </td>
                       <td>
@@ -138,21 +160,10 @@ export function People({ session }: PageProps) {
             Person <small class="meta">the name their tokens and approvals will show, for example ada</small>
             <input name="person" required maxLength={128} autocomplete="off" />
           </label>
-          <label>
-            Role
-            <select name="role">
-              {session.invite_roles.map((r) => (
-                <option key={r} value={r}>
-                  {r}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p class="meta">
-            Members use tools through their AI clients. Approvers decide approvals. Auditors read the activity. Admins manage everything except owners.
-          </p>
+          <RolePicker legend="Roles" offered={session.invite_roles} value={inviteRoles} onChange={setInviteRoles} />
+          <p class="meta">A person can hold several of member, approver and auditor: a member who also approves decides other people's calls, never their own. Admin stands alone.</p>
           <div class="actions">
-            <button type="submit" class="primary" disabled={busy}>
+            <button type="submit" class="primary" disabled={busy || inviteRoles.length === 0}>
               Create invite link
             </button>
           </div>

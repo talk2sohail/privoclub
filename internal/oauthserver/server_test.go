@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -611,15 +612,15 @@ func TestVerifyReadsTheMembersRoleLive(t *testing.T) {
 	ev := store.AuditEvent{ID: "e1", CallID: "c1", Time: e.clk.now(), Actor: "t", ActorID: "t", Action: "role", Decision: "allow", Outcome: "ok"}
 
 	// Promoted: the same token now carries the new role.
-	if err := e.st.SetUserRole(ctx, e.org, ada.ID, store.RoleAdmin, ev); err != nil {
+	if _, err := e.st.SetUserRoles(ctx, e.org, ada.ID, []string{store.RoleAdmin}, ev); err != nil {
 		t.Fatal(err)
 	}
-	if _, u, _, err := e.srv.VerifyAccessToken(ctx, tok.AccessToken); err != nil || u.Role != store.RoleAdmin {
-		t.Errorf("after a promotion: role %q, %v", u.Role, err)
+	if _, u, _, err := e.srv.VerifyAccessToken(ctx, tok.AccessToken); err != nil || !slices.Equal(u.Roles, []string{store.RoleAdmin}) {
+		t.Errorf("after a promotion: roles %q, %v", u.Roles, err)
 	}
 	// A role that may not use the gateway: refused, and the grant is gone.
 	ev.ID, ev.CallID = "e2", "c2"
-	if err := e.st.SetUserRole(ctx, e.org, ada.ID, store.RoleAuditor, ev); err != nil {
+	if _, err := e.st.SetUserRoles(ctx, e.org, ada.ID, []string{store.RoleAuditor}, ev); err != nil {
 		t.Fatal(err)
 	}
 	if e.verifies(tok.AccessToken) {
@@ -642,14 +643,18 @@ func TestVerifyReadsTheMembersRoleLive(t *testing.T) {
 	// so the checks above pass by that alone. Verification does not rely on
 	// it: with the grant still there (the rows changed behind the store's
 	// back), the member's role and membership are still read.
-	for _, change := range []string{`role = 'auditor'`, `role = 'approver'`, `disabled_at = '2026-01-01T00:00:00Z'`} {
+	for _, change := range []string{
+		`UPDATE user_roles SET role = 'auditor' WHERE user_id = ?`,
+		`UPDATE user_roles SET role = 'approver' WHERE user_id = ?`,
+		`UPDATE users SET disabled_at = '2026-01-01T00:00:00Z' WHERE id = ?`,
+	} {
 		who := e.member("w"+fmt.Sprint(len(change)), store.RoleMember)
 		theirs := e.signedIn(who)
 		rw, err := sql.Open("sqlite", "file:"+filepath.Join(e.dir, "privo.db"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := rw.Exec(`UPDATE users SET `+change+` WHERE id = ?`, who.ID); err != nil {
+		if _, err := rw.Exec(change, who.ID); err != nil {
 			t.Fatal(err)
 		}
 		_ = rw.Close()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -277,7 +278,7 @@ func TestInvitePrintsOnceStoresHash(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	org, _ := st.EnsureOrg(ctx, DefaultOrgSlug, "Default")
 	in, err := st.Invite(ctx, org.ID, web.HashSecret(tok), time.Now())
-	if err != nil || in.Person != "ada" || in.Role != store.RoleApprover || in.CreatedBy != "cli" {
+	if err != nil || in.Person != "ada" || !slices.Equal(in.Roles, []string{store.RoleApprover}) || in.CreatedBy != "cli" {
 		t.Fatalf("stored invite %+v %v", in, err)
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, "privo.db*"))

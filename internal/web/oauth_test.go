@@ -357,7 +357,7 @@ func TestApproverCannotAuthorizeAClient(t *testing.T) {
 	// A member who is demoted between the page and the button.
 	b, u := o.signedIn(ada, "ada", store.RoleMember)
 	page := b.get(o.request())
-	if err := o.st.SetUserRole(context.Background(), o.org, u.ID, store.RoleAuditor, o.event("role")); err != nil {
+	if _, err := o.st.SetUserRoles(context.Background(), o.org, u.ID, []string{store.RoleAuditor}, o.event("role")); err != nil {
 		t.Fatal(err)
 	}
 	res := b.post("/oauth/authorize", url.Values{"csrf": {csrfOf(t, page.Body)}, "request": {hidden(t, page.Body, "request")}, "decision": {"allow"}})

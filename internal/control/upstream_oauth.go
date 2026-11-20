@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -249,7 +250,8 @@ func validInvitePerson(p string) bool {
 }
 
 // CreateInvite stores an invite and returns the link to give the person.
-func CreateInvite(ctx context.Context, st *store.Store, org store.OrgID, publicURL *url.URL, person, role, createdBy string, ev store.AuditEvent) (string, time.Time, error) {
+// roles must be a valid set without owner (ADR 0025); nil means member.
+func CreateInvite(ctx context.Context, st *store.Store, org store.OrgID, publicURL *url.URL, person string, roles []string, createdBy string, ev store.AuditEvent) (string, time.Time, error) {
 	if publicURL == nil {
 		return "", time.Time{}, errorf(http.StatusUnprocessableEntity, "invites need PRIVO_PUBLIC_URL")
 	}
@@ -257,11 +259,12 @@ func CreateInvite(ctx context.Context, st *store.Store, org store.OrgID, publicU
 	if !validInvitePerson(person) {
 		return "", time.Time{}, errorf(http.StatusUnprocessableEntity, "person must be 1 to 128 characters without control characters")
 	}
-	if role == "" {
-		role = store.RoleMember
+	roles, err := requestRoles(roles, "", store.RoleMember)
+	if err != nil {
+		return "", time.Time{}, err
 	}
-	if !store.ValidRole(role) || role == store.RoleOwner {
-		return "", time.Time{}, errorf(http.StatusUnprocessableEntity, "role must be admin, auditor, approver or member")
+	if slices.Contains(roles, store.RoleOwner) {
+		return "", time.Time{}, errorf(http.StatusUnprocessableEntity, "invites never make owners: admin alone, or any of member, approver and auditor")
 	}
 	plain, hash, err := web.NewInviteToken()
 	if err != nil {
@@ -269,8 +272,8 @@ func CreateInvite(ctx context.Context, st *store.Store, org store.OrgID, publicU
 	}
 	now := time.Now()
 	expires := now.Add(InviteTTL)
-	ev.Action = "invite.create:" + role + ":" + person
-	err = st.CreateInvite(ctx, org, store.NewInvite{ID: ids.New(), SecretHash: hash, Person: person, Role: role, CreatedBy: createdBy, Now: now, ExpiresAt: expires}, ev)
+	ev.Action = "invite.create:" + strings.Join(roles, "+") + ":" + person
+	err = st.CreateInvite(ctx, org, store.NewInvite{ID: ids.New(), SecretHash: hash, Person: person, Roles: roles, CreatedBy: createdBy, Now: now, ExpiresAt: expires}, ev)
 	if errors.Is(err, store.ErrConflict) {
 		return "", time.Time{}, errorf(http.StatusConflict, "%q is already a member", person)
 	}
@@ -282,25 +285,27 @@ func CreateInvite(ctx context.Context, st *store.Store, org store.OrgID, publicU
 
 func (a *API) createInvite(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	var req struct {
-		Person string `json:"person"`
-		Role   string `json:"role"`
+		Person string   `json:"person"`
+		Roles  []string `json:"roles"`
+		Role   string   `json:"role"` // before ADR 0025; still read for one release
 	}
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	if req.Role == store.RoleAdmin && p.Role != store.RoleOwner {
-		return errorf(http.StatusForbidden, "only owners can invite admins")
-	}
-	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(), Decision: "allow", Outcome: "ok"}
-	link, expires, err := CreateInvite(r.Context(), a.Store, p.OrgID, a.PublicURL, req.Person, req.Role, p.Name, ev)
+	roles, err := requestRoles(req.Roles, req.Role, store.RoleMember)
 	if err != nil {
 		return err
 	}
-	role := req.Role
-	if role == "" {
-		role = store.RoleMember
+	if elevated(roles) && !p.Has(store.RoleOwner) {
+		return errorf(http.StatusForbidden, "only owners can invite admins")
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{"invite": map[string]any{"person": strings.TrimSpace(req.Person), "role": role, "url": link, "expires_at": expires}})
+	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(), Decision: "allow", Outcome: "ok"}
+	link, expires, err := CreateInvite(r.Context(), a.Store, p.OrgID, a.PublicURL, req.Person, roles, p.Name, ev)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"invite": map[string]any{"person": strings.TrimSpace(req.Person), "roles": roles, "role": primaryRole(roles),
+		"url": link, "expires_at": expires}})
 	return nil
 }
 

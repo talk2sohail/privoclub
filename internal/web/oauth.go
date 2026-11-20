@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"privo.club/privo/internal/oauthserver"
@@ -124,8 +125,8 @@ func (s *Server) authorizePage(w http.ResponseWriter, r *http.Request) {
 	if fromCookie {
 		s.clearCookie(w, s.authzCookie)
 	}
-	if !store.GatewayRole(u.Role) {
-		s.pageFor(w, http.StatusForbidden, sess, u, "Your role cannot connect an AI client",
+	if !slices.ContainsFunc(u.Roles, store.GatewayRole) {
+		s.pageFor(w, http.StatusForbidden, sess, u, "Your roles cannot connect an AI client",
 			"Only an owner, an administrator or a member uses servers through Privo, so only they can let a client do it for them. Nothing was sent to "+req.Client.Name+".")
 		return
 	}
@@ -184,8 +185,8 @@ func (s *Server) authorizeDecision(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.PostForm.Get("decision") {
 	case "allow":
-		if !store.GatewayRole(u.Role) {
-			s.pageFor(w, http.StatusForbidden, sess, u, "Your role cannot connect an AI client", "Nothing was sent to "+req.Client.Name+".")
+		if !slices.ContainsFunc(u.Roles, store.GatewayRole) {
+			s.pageFor(w, http.StatusForbidden, sess, u, "Your roles cannot connect an AI client", "Nothing was sent to "+req.Client.Name+".")
 			return
 		}
 		s.o.AuthServer.Allow(w, req, u)
