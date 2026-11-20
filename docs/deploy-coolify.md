@@ -82,7 +82,7 @@ People approve calls at `https://app.privo.club/admin/approvals` with their GitH
 1. In GitHub, Settings > Developer settings > OAuth Apps > New OAuth App (an organisation's settings work too). Homepage URL `https://app.privo.club`, authorization callback URL `https://app.privo.club/auth/github/callback`. Leave device flow off. Copy the **Client ID**, then **Generate a new client secret** and copy it at once.
 2. In Coolify → privo-gateway → Persistent Storage, add a file mount at `/run/secrets/privo_github_client_secret` holding the client secret (one line). The secret is a file for the same reason as the master key: an environment variable stays readable in `/proc/<pid>/environ`. Store a copy in your password manager.
 3. In Environment Variables add `PRIVO_GITHUB_CLIENT_ID=<the Client ID>` and `PRIVO_GITHUB_CLIENT_SECRET_FILE=/run/secrets/privo_github_client_secret`. `PRIVO_PUBLIC_URL` must be `https://app.privo.club` with no path. Deploy and check the log: `admin site is on`.
-4. Print the setup link on the host (the binary runs without a shell): `docker exec $(docker ps -qf name=f46equvu3pb9kmq0shusvojo) /privo admin setup-link --person <your name in Privo>`. It prints `https://app.privo.club/admin/setup/privo_setup_...` once and stores only a hash.
+4. Print the setup link on the host (the binary runs without a shell): `docker exec $(docker ps -qf name=f46equvu3pb9kmq0shusvojo) /privo admin setup-link --person <the name your tokens carry>`. It prints `https://app.privo.club/admin/setup/privo_setup_...` once and stores only a hash.
 5. Open the link within an hour and choose **Continue with GitHub**. The GitHub account you sign in with becomes the owner. The link works once; a new link cancels the old one.
 
 Treat the setup link as a secret until it is used. It sits in the URL path, so a proxy's access log may record it; once claimed it is worthless, and unclaimed it expires after an hour.
@@ -99,6 +99,86 @@ Nothing new to configure: once sign-in with GitHub works, add a remote server wi
 - For GitHub's MCP server, create a second GitHub OAuth App for it (not the sign-in one) with the callback URL `https://app.privo.club/connect/callback`, and give its client id and secret when adding the server.
 
 Invite people with `privo admin invite --person NAME` in the container's terminal, or with `POST /api/v1/invites`.
+
+## Review fixes (0.10.1)
+
+The fixes from the independent reviews of 2026-11-15 for pull requests #12
+and #13. Migration 00010 adds one column to the call statistics (the time a
+call waited for an approval); it runs on start. Nothing to set. Going back to
+0.10.0 is the older image; it ignores the column.
+
+## Activity statistics and metrics (0.10.0)
+
+Migration 00009 adds two tables (call statistics and the diagnostic log); it
+runs on start. Nothing to set: statistics are kept 30 days by default
+(`PRIVO_TELEMETRY_RETENTION_DAYS`, `0` turns them off) and pruned hourly.
+Prometheus metrics are off; to scrape them from another container on the same
+Docker network, set `PRIVO_METRICS_ADDR=0.0.0.0:9464` and **do not** add a
+domain or port mapping for 9464 in Coolify (the metrics have no sign-in). Every container on
+that Docker network can then read them: the server aliases, call counts by
+outcome, whether each upstream is up, and the exact version. Put Prometheus
+and Privo on a network of their own if other services share it.
+Going back to 0.9.x is the older image; it ignores the two new tables.
+
+## Each person's own API key; OAuth settings by hand (0.9.0)
+
+No migration and no new setting. Servers that take each person's own API key,
+and OAuth servers that publish no sign-in metadata, can now be added (README,
+"Each person's own API key"; ADR 0023). Both need GitHub sign-in and
+`PRIVO_PUBLIC_URL`, like the other per-person servers. Going back to 0.8.x
+is the older image; servers added with a personal key do not work there (it
+does not know them) until they are deleted.
+
+## AI clients sign in with OAuth (0.8.0)
+
+0.8.0 adds migration `00008` (four new tables; it also drops three columns of
+`oauth_states` that 0.7.1 stopped writing and clears that table, whose rows
+live ten minutes). It runs by itself at start. Back up first, as before every
+upgrade with a migration.
+
+**Nothing changes until you switch it on.** To let AI clients sign in instead
+of using pasted tokens:
+
+1. GitHub sign-in must work (section above) and `PRIVO_PUBLIC_URL` must be
+   the public address with no path.
+2. Add `PRIVO_OAUTH_SERVER=on` in Environment Variables and deploy. The log
+   says `authorization server on` with the issuer and the client policy.
+3. Check: `https://app.privo.club/.well-known/oauth-authorization-server`
+   answers JSON, and `https://app.privo.club/.well-known/oauth-protected-resource/mcp`
+   lists `https://app.privo.club` under `authorization_servers`.
+4. Optional: `PRIVO_OAUTH_CLIENTS=approved|any` (default `known`);
+   `PRIVO_OAUTH_DYNAMIC_REGISTRATION=on` for Cursor, Gemini CLI and Mistral.
+
+The independent security review of the authorization server (required by
+CLAUDE.md) should be done before step 2 on a production deployment. Going
+back: switch it off, or run the 0.7.1 or 0.7.2 image, which starts on the
+migrated database and leaves the new tables alone (checked). **Do not go back
+to 0.7.0 or older** once 0.8.0 has run: their sign-in writes the columns the
+migration drops, so signing in would fail; restore the backup instead.
+
+## Sign-in no longer writes before GitHub answers (0.7.1)
+
+0.7.1 has no migration and no new setting. A sign-in, setup link or invite
+that someone started before the deploy and had not finished must be started
+again (the cookie it travels in changed); sessions are not affected. Going
+back to 0.7.0 needs nothing but the older image. What changed and why: ADR
+0016, amendment 1.
+
+## Tokens belong to members (0.7.0)
+
+0.7.0 adds migration `00007_token_owner.sql` (two columns; it has a down step,
+and restoring the backup is the way back) and closes a hole: an owner or admin
+could issue a token that named a member and use that member's own accounts
+(ADR 0021).
+
+**Breaking:** a gateway token made before 0.7.0 belongs to nobody. It keeps
+working on servers that everyone reaches with a shared credential. On a server
+where each person uses their own account it is answered with "this token does
+not belong to a member" and the address of the Tokens page; servers given to a
+team disappear from its list. Each person signs in, makes a new token on
+**Tokens** and puts it in their AI client; the old one is listed there as "not
+tied to your account" and can be revoked. Tokens issued with
+`POST /api/v1/tokens` or `privo token create` are for scripts from now on.
 
 ## Teams (0.6.0)
 

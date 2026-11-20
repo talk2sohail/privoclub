@@ -7,15 +7,13 @@ import (
 	"time"
 )
 
-// Providers and purposes for web sign-in (ADR 0016).
-const (
-	ProviderGitHub = "github"
+// ProviderGitHub is the one sign-in provider (ADR 0016).
+const ProviderGitHub = "github"
 
-	PurposeSignIn  = "signin"
-	PurposeSetup   = "setup"
-	PurposeInvite  = "invite"  // claiming an invite (ADR 0017)
-	PurposeConnect = "connect" // connecting an upstream account (ADR 0017)
-)
+// purposeConnect is the one kind of row oauth_states holds since ADR 0016
+// amendment 1: a connection to an upstream account in flight (ADR 0017). The
+// column is kept so rows written before the upgrade are never mistaken for one.
+const purposeConnect = "connect"
 
 // maxSetupLinkTTL caps a setup link whatever the caller asks for.
 const maxSetupLinkTTL = 24 * time.Hour
@@ -30,8 +28,6 @@ var (
 	ErrSetupUnavailable = errors.New("store: the setup link is unknown, expired, used or retired")
 	// ErrIdentityExists: the identity already belongs to a member.
 	ErrIdentityExists = errors.New("store: this identity already belongs to a member")
-	// ErrTooManyStates: too many sign-ins are in flight.
-	ErrTooManyStates = errors.New("store: too many sign-ins in progress")
 )
 
 // User is a person who can sign in to the admin site.
@@ -333,6 +329,13 @@ func (s *Store) SetUserRole(ctx context.Context, org OrgID, userID, role string,
 				return err
 			}
 		}
+		if !GatewayRole(role) {
+			// A role that may not use the gateway cannot be acted as by an AI
+			// client either (ADR 0022 point 3).
+			if err := endUserClientGrants(ctx, tx, org, userID); err != nil {
+				return err
+			}
+		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
 	})
 }
@@ -356,80 +359,80 @@ func (s *Store) DisableUser(ctx context.Context, org OrgID, userID string, now t
 		if err := deleteUserGrants(ctx, tx, org, userID); err != nil {
 			return err
 		}
+		if err := endUserClientGrants(ctx, tx, org, userID); err != nil {
+			return err
+		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
 	})
 }
 
-// OAuthState is a sign-in in flight. Hash is the hex SHA-256 of the state value
-// sent to the provider.
-type OAuthState struct {
-	Hash        string
-	Purpose     string
-	SetupLinkID string
-	InviteID    string
-	Verifier    string // PKCE code verifier
-	// For PurposeConnect: who started it, from which session, for which
-	// server, and the authorization server expected to answer.
+// ConnectState is a connection to an upstream account in flight (ADR 0017):
+// who started it, from which session, for which server, and the authorization
+// server expected to answer. Hash is the hex SHA-256 of the state value sent
+// to that server together with the nonce in the browser's cookie.
+//
+// A sign-in in flight is not stored here or anywhere on the server: it lives
+// in a sealed cookie (ADR 0016 amendment 1), so only a signed-in member can
+// add a row to this table.
+type ConnectState struct {
+	Hash      string
+	Verifier  string // PKCE code verifier
 	UserID    string
 	SessionID string
 	ServerID  string
 	Issuer    string
-	// ReturnTo is a local path to go back to after signing in; the web
-	// layer accepts only fixed shapes.
-	ReturnTo  string
 	ExpiresAt time.Time
 }
 
-// CreateOAuthState stores a sign-in in flight. It first deletes expired rows,
-// then refuses with ErrTooManyStates when limit unexpired ones exist, so
-// unauthenticated requests cannot fill the disk.
-func (s *Store) CreateOAuthState(ctx context.Context, org OrgID, st OAuthState, now time.Time, limit int) error {
-	switch st.Purpose {
-	case PurposeSignIn, PurposeSetup, PurposeInvite, PurposeConnect:
-	default:
-		return errors.New("store: unknown sign-in purpose")
+// CreateConnectState stores a connection in flight and deletes what it
+// replaces: expired rows, and the same member's earlier state for the same
+// server. The table therefore holds at most one row per member and server
+// (a unique index says so too), and no member can take room from another
+// (F07 R-03). There is no cap to
+// fill: a state needs a session, and an older one of the same member is
+// useless anyway, because each start overwrites the browser's one cookie.
+func (s *Store) CreateConnectState(ctx context.Context, org OrgID, st ConnectState, now time.Time) error {
+	if st.Hash == "" || st.Verifier == "" || st.UserID == "" || st.SessionID == "" || st.ServerID == "" {
+		return errors.New("store: a connect state needs its hash, verifier, member, session and server")
 	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_states WHERE org_id = ? AND expires_at <= ?`, org, ts(now)); err != nil {
 			return err
 		}
-		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM oauth_states WHERE org_id = ?`, org).Scan(&n); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_states WHERE org_id = ? AND purpose = ? AND user_id = ? AND server_id = ?`,
+			org, purposeConnect, st.UserID, st.ServerID); err != nil {
 			return err
 		}
-		if n >= limit {
-			return ErrTooManyStates
-		}
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO oauth_states (org_id, state_hash, purpose, setup_link_id, invite_id, verifier, user_id, session_id, server_id, issuer, return_to, created_at, expires_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			org, st.Hash, st.Purpose, st.SetupLinkID, st.InviteID, st.Verifier, st.UserID, st.SessionID, st.ServerID, st.Issuer, st.ReturnTo, ts(now), ts(st.ExpiresAt))
+			INSERT INTO oauth_states (org_id, state_hash, purpose, verifier, user_id, session_id, server_id, issuer, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			org, st.Hash, purposeConnect, st.Verifier, st.UserID, st.SessionID, st.ServerID, st.Issuer, ts(now), ts(st.ExpiresAt))
 		return mapErr(err)
 	})
 }
 
-// UseOAuthState consumes a state: it returns it and deletes it in one
-// statement, so a second use finds nothing. An expired or unknown state is
-// ErrNotFound.
-func (s *Store) UseOAuthState(ctx context.Context, org OrgID, hash string, now time.Time) (OAuthState, error) {
-	st := OAuthState{Hash: hash}
+// UseConnectState consumes a state: it returns it and deletes it in one
+// statement, so a second use finds nothing. An expired or unknown state, and
+// a row of any other purpose, is ErrNotFound.
+func (s *Store) UseConnectState(ctx context.Context, org OrgID, hash string, now time.Time) (ConnectState, error) {
+	st := ConnectState{Hash: hash}
 	var expires string
 	err := s.w.QueryRowContext(ctx, `
-		DELETE FROM oauth_states WHERE org_id = ? AND state_hash = ? AND expires_at > ?
-		RETURNING purpose, setup_link_id, invite_id, verifier, user_id, session_id, server_id, issuer, return_to, expires_at`, org, hash, ts(now)).
-		Scan(&st.Purpose, &st.SetupLinkID, &st.InviteID, &st.Verifier, &st.UserID, &st.SessionID, &st.ServerID, &st.Issuer, &st.ReturnTo, &expires)
+		DELETE FROM oauth_states WHERE org_id = ? AND state_hash = ? AND purpose = ? AND expires_at > ?
+		RETURNING verifier, user_id, session_id, server_id, issuer, expires_at`, org, hash, purposeConnect, ts(now)).
+		Scan(&st.Verifier, &st.UserID, &st.SessionID, &st.ServerID, &st.Issuer, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
-		return OAuthState{}, ErrNotFound
+		return ConnectState{}, ErrNotFound
 	}
 	if err != nil {
-		return OAuthState{}, err
+		return ConnectState{}, err
 	}
 	st.ExpiresAt = parseTS(expires)
 	return st, nil
 }
 
 // PruneSignIn deletes what can no longer be used: sessions past their lifetime
-// or idle for longer than idle, expired sign-ins in flight, and setup links that
+// or idle for longer than idle, expired connections in flight, and setup links that
 // expired or were retired without being claimed. Claimed links stay as a record.
 func (s *Store) PruneSignIn(ctx context.Context, org OrgID, now time.Time, idle time.Duration) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {

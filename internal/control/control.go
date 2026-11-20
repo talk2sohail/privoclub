@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,9 +28,11 @@ import (
 	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
+	"privo.club/privo/internal/oauthserver"
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/token"
 	"privo.club/privo/internal/upstream"
 	"privo.club/privo/internal/upstreamauth"
@@ -55,7 +58,16 @@ type API struct {
 	OAuth     *upstreamauth.Client
 	Grants    *grants.Service
 	PublicURL *url.URL
-	in        internal // the mux of in-process calls (Serve)
+	// Privo's own authorization server (ADR 0022) and its client rules; nil
+	// while PRIVO_OAUTH_SERVER is off.
+	AuthServer *oauthserver.Server
+	Clients    *oauthserver.Clients
+	// Call statistics and the diagnostic log (ADR 0024). The endpoints answer
+	// with empty data while retention is 0 (recording off).
+	Telemetry              *telemetry.Recorder
+	TelemetryRetentionDays int
+	stats                  statCache
+	in                     internal // the mux of in-process calls (Serve)
 }
 
 // ConnectWait bounds how long registration waits for the first connection.
@@ -72,6 +84,7 @@ func (a *API) Routes(mux *http.ServeMux) { a.register(mux, a.with) }
 func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) http.Handler) {
 	a.registerMembers(mux, wrap)
 	a.registerTeams(mux, wrap)
+	a.registerOAuthClients(mux, wrap)
 	mux.Handle("GET /api/v1/servers", wrap(auth.PermReadServers, a.listServers))
 	mux.Handle("POST /api/v1/servers", wrap(auth.PermManageServers, a.createServer))
 	mux.Handle("PATCH /api/v1/servers/{alias}", wrap(auth.PermManageServers, a.patchServer))
@@ -96,6 +109,7 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("PATCH /api/v1/settings/approvals", wrap(auth.PermManagePolicy, a.patchApprovalSettings))
 	mux.Handle("GET /api/v1/audit/events", wrap(auth.PermReadAudit, a.listAudit))
 	mux.Handle("PATCH /api/v1/settings/audit", wrap(auth.PermManageAudit, a.patchAuditSettings))
+	a.telemetryRoutes(mux, wrap)
 }
 
 type handler func(w http.ResponseWriter, r *http.Request, p auth.Principal) error
@@ -196,6 +210,9 @@ type serverView struct {
 	Auth         string `json:"auth,omitempty"`
 	Registration string `json:"registration,omitempty"`
 	ConnectURL   string `json:"connect_url,omitempty"`
+	// KeyHeader is the header each person's own key goes in (ADR 0023);
+	// shown to admins only.
+	KeyHeader string `json:"key_header,omitempty"`
 	// Teams that reach the server (ADR 0020); shown to admins only, and
 	// always to them, so an empty list ("nobody") is visible (F26 R-04).
 	Teams *[]string `json:"teams,omitempty"`
@@ -219,10 +236,13 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams 
 	if !s.Enabled {
 		v.Status = upstream.StatusDisabled
 	}
-	if s.Config.Auth == store.AuthOAuth {
-		v.Auth, v.ConnectURL = store.AuthOAuth, a.connectURL(s.Alias)
+	if s.Config.PerPerson() {
+		v.Auth, v.ConnectURL = s.Config.Auth, a.connectURL(s.Alias)
 		if s.Config.OAuth != nil && admin {
 			v.Registration = s.Config.OAuth.Registration
+		}
+		if s.Config.Key != nil && admin {
+			v.KeyHeader = s.Config.Key.Header
 		}
 	}
 	if st, ok := a.Upstream.State(s.ID); ok {
@@ -282,6 +302,9 @@ type createServerReq struct {
 	Env     map[string]string `json:"env"`
 	// OAuth makes every call run with the caller's own account (ADR 0017).
 	OAuth *oauthReq `json:"oauth"`
+	// PersonalKey makes every call run with the caller's own API key, which
+	// each person enters once on the connect page (ADR 0023).
+	PersonalKey *personalKeyReq `json:"personal_key"`
 	// Teams that reach the server (ADR 0020); absent means everyone.
 	Teams *[]string `json:"teams"`
 }
@@ -321,6 +344,20 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	}
 	if req.OAuth != nil && len(req.Headers) > 0 {
 		return errorf(http.StatusUnprocessableEntity, "a server that uses each person's own account (oauth) takes no static headers")
+	}
+	if req.PersonalKey != nil && req.OAuth != nil {
+		return errorf(http.StatusUnprocessableEntity, "a server takes each person's own account (oauth) or each person's own key (personal_key), not both")
+	}
+	var key *store.ServerKey
+	if req.PersonalKey != nil {
+		if req.Transport != "http" && req.Transport != "sse" {
+			return errorf(http.StatusUnprocessableEntity, "only http and sse servers can take each person's own key")
+		}
+		k, err := req.PersonalKey.check(req.Headers)
+		if err != nil {
+			return err
+		}
+		key = &k
 	}
 	switch req.Transport {
 	case "stdio":
@@ -364,6 +401,13 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err != nil {
 		return err
 	}
+	if key != nil {
+		if a.Grants == nil || a.PublicURL == nil {
+			return errorf(http.StatusUnprocessableEntity,
+				"servers that take each person's own key need PRIVO_PUBLIC_URL and the admin site (GitHub sign-in) to be configured")
+		}
+		srv.Config.Auth, srv.Config.Key = store.AuthKey, key
+	}
 	if req.OAuth != nil {
 		o, secret, err := a.configureOAuth(ctx, srv, req.OAuth)
 		if err != nil {
@@ -394,6 +438,9 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	a.adminEvent(ctx, p, "server.teams="+strings.Join(srv.Teams, ","), srv.Alias)
 	if srv.Config.OAuth != nil {
 		a.adminEvent(ctx, p, "server.oauth_register:"+srv.Alias+":"+srv.Config.OAuth.Registration, srv.Alias)
+	}
+	if srv.Config.Key != nil {
+		a.adminEvent(ctx, p, "server.personal_key:"+srv.Alias+":"+srv.Config.Key.Header, srv.Alias)
 	}
 	if err := a.Upstream.Sync(ctx, p.OrgID); err != nil {
 		return err
@@ -551,14 +598,20 @@ func (a *API) acceptPins(w http.ResponseWriter, r *http.Request, p auth.Principa
 // ---- tokens
 
 type tokenView struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Role      string    `json:"role"`
-	Kind      string    `json:"kind"`
-	Person    string    `json:"person"`
-	Personal  bool      `json:"personal"` // a member's own token (F07 R-01)
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Role   string `json:"role"`
+	Kind   string `json:"kind"`
+	Person string `json:"person"`
+	// Bound says the token belongs to a member, who made it for themselves:
+	// only such a token uses that member's teams and accounts (F27).
+	Bound     bool      `json:"bound"`
 	CreatedAt time.Time `json:"created_at"`
 	ExpiresAt time.Time `json:"expires_at"`
+}
+
+func viewToken(t store.APIToken) tokenView {
+	return tokenView{ID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: t.Person, Bound: t.UserID != "", CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt}
 }
 
 func (a *API) listTokens(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -574,18 +627,14 @@ func (a *API) listTokens(w http.ResponseWriter, r *http.Request, p auth.Principa
 	return nil
 }
 
-// TokenSpec describes a token to issue.
+// TokenSpec describes a token to issue. Person is a label. UserID makes the
+// token belong to that member, with their teams and accounts: only a signed-in
+// member sets it, for themselves (F27). Everything else issues a token of
+// nobody, whatever person it names.
 type TokenSpec struct {
 	Name, Role, Kind, Person string
-	// UserID binds the token to a member: only for a member's own token,
-	// made while they are signed in (POST /api/v1/me/tokens). Every other
-	// token is bound to no one and may not act as a member (F07 R-01).
-	UserID string
-	TTL    time.Duration
-}
-
-func viewToken(t store.APIToken) tokenView {
-	return tokenView{ID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: t.Person, Personal: t.UserID != "", CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt}
+	UserID                   string
+	TTL                      time.Duration
 }
 
 // IssueToken creates a token and returns its plain text once. Shared with the CLI.
@@ -613,18 +662,6 @@ func IssueToken(ctx context.Context, s *store.Store, org store.OrgID, spec Token
 	if strings.TrimSpace(name) == "" || len(name) > 64 {
 		return "", store.APIToken{}, errorf(http.StatusUnprocessableEntity, "name must be 1 to 64 characters")
 	}
-	// F07 R-01: a token that is not a member's own must not carry a member's
-	// name. Nothing finds a member by it any more; refusing keeps the audit
-	// and the token list honest about who a token is.
-	if spec.UserID == "" {
-		switch _, err := s.UserByPerson(ctx, org, person); {
-		case err == nil:
-			return "", store.APIToken{}, errorf(http.StatusUnprocessableEntity,
-				"%q is a member of this organisation; members make their own tokens on the Tokens page while signed in. Name a service or script that is not a member", person)
-		case !errors.Is(err, store.ErrNotFound):
-			return "", store.APIToken{}, err
-		}
-	}
 	tok, err := token.New()
 	if err != nil {
 		return "", store.APIToken{}, err
@@ -635,6 +672,9 @@ func IssueToken(ctx context.Context, s *store.Store, org store.OrgID, spec Token
 	if err := s.CreateToken(ctx, rec); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return "", rec, errorf(http.StatusConflict, "an active token named %q already exists", name)
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			return "", rec, errorf(http.StatusForbidden, "only an active member can make a token of their own")
 		}
 		return "", rec, err
 	}
@@ -660,13 +700,15 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if (req.Role == store.RoleOwner || req.Role == store.RoleAdmin) && p.Role != store.RoleOwner {
 		return errorf(http.StatusForbidden, "only owners can issue owner or admin tokens")
 	}
+	// No UserID: a token an administrator issues never belongs to a member,
+	// whatever person it names, so it cannot use anyone's accounts or teams.
 	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL})
 	if err != nil {
 		return err
 	}
 	a.adminEvent(r.Context(), p, "token.create:"+rec.Kind+":"+rec.Role+":"+rec.Name, "")
 	writeJSON(w, http.StatusCreated, map[string]any{"id": rec.ID, "token": plain, "name": rec.Name, "role": rec.Role, "kind": rec.Kind,
-		"person": rec.Person, "personal": false, "expires_at": rec.ExpiresAt})
+		"person": rec.Person, "bound": false, "expires_at": rec.ExpiresAt})
 	return nil
 }
 
@@ -709,6 +751,18 @@ func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal
 	if err != nil {
 		return err
 	}
+	// Whose account and teams each call ran as (F27): the member's person, by
+	// the user id recorded with the call.
+	persons := map[string]string{}
+	if slices.ContainsFunc(calls, func(c store.CallRecord) bool { return c.Intent.UserID != "" }) {
+		users, err := a.Store.ListUsers(r.Context(), p.OrgID)
+		if err != nil {
+			return err
+		}
+		for _, u := range users {
+			persons[u.ID] = u.Person
+		}
+	}
 	out := make([]map[string]any, 0, len(calls))
 	for _, c := range calls {
 		e := map[string]any{
@@ -721,8 +775,11 @@ func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal
 		if c.Intent.ApprovedBy != "" {
 			e["approved_by"] = c.Intent.ApprovedBy
 		}
-		if c.Intent.Account != "" {
-			e["account"] = c.Intent.Account
+		if c.Intent.UserID != "" {
+			e["user_id"], e["user"] = c.Intent.UserID, persons[c.Intent.UserID]
+		}
+		if c.Intent.Client != "" {
+			e["client"] = c.Intent.Client // the AI client, when it signed in with OAuth (ADR 0022)
 		}
 		if c.Completion != nil {
 			e["outcome"], e["latency_ms"] = c.Completion.Outcome, c.Completion.LatencyMS
@@ -745,11 +802,29 @@ func (a *API) listAdminAudit(w http.ResponseWriter, r *http.Request, p auth.Prin
 	if err != nil {
 		return err
 	}
+	// Whom an event is about, when it names a member (an AI client allowed,
+	// revoked or ended by reuse, ADR 0022): their person, by user id.
+	persons := map[string]string{}
+	if slices.ContainsFunc(events, func(ev store.AuditEvent) bool { return ev.UserID != "" }) {
+		users, err := a.Store.ListUsers(r.Context(), p.OrgID)
+		if err != nil {
+			return err
+		}
+		for _, u := range users {
+			persons[u.ID] = u.Person
+		}
+	}
 	out := make([]map[string]any, 0, len(events))
 	for _, ev := range events {
 		e := map[string]any{"id": ev.ID, "time": ev.Time, "actor": ev.Actor, "actor_id": ev.ActorID, "action": ev.Action, "decision": ev.Decision, "outcome": ev.Outcome}
 		if ev.Server != "" {
 			e["server"] = ev.Server
+		}
+		if ev.Client != "" {
+			e["client"] = ev.Client
+		}
+		if ev.UserID != "" {
+			e["user_id"], e["user"] = ev.UserID, persons[ev.UserID]
 		}
 		out = append(out, e)
 	}

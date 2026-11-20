@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -132,7 +133,8 @@ func (s *Store) ListUsers(ctx context.Context, org OrgID) ([]User, error) {
 	return out, rows.Err()
 }
 
-// UserByID returns the user with this id.
+// UserByID returns the member with this id, removed ones included: how a
+// token finds the member it belongs to (F27).
 func (s *Store) UserByID(ctx context.Context, org OrgID, id string) (User, error) {
 	u, err := scanUser(org, s.r.QueryRowContext(ctx, `SELECT `+userCols+` FROM users u WHERE u.org_id = ? AND u.id = ?`, org, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -141,9 +143,9 @@ func (s *Store) UserByID(ctx context.Context, org OrgID, id string) (User, error
 	return u, err
 }
 
-// UserByPerson returns the user with this person name: how an administrator
-// names a member in the admin API. Tokens never find their member this way;
-// they carry its id (F07 R-01).
+// UserByPerson returns the user with this person name: how the admin API finds
+// the member an administrator names. It never decides whose account or teams a
+// caller gets; that is the caller's user id (F27).
 func (s *Store) UserByPerson(ctx context.Context, org OrgID, person string) (User, error) {
 	u, err := scanUser(org, s.r.QueryRowContext(ctx, `SELECT `+userCols+` FROM users u WHERE u.org_id = ? AND u.person = ?`, org, person))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -171,11 +173,12 @@ type Grant struct {
 // its tokens, and writes ev. The grant becomes the server's catalog grant when
 // it already was, or when catalogOK and the server has none; the caller sets
 // catalogOK for users who manage servers. The credential must belong to this
-// server and user. Unknown or disabled users and unknown servers are
+// server and user, and be an OAuth grant or a person's own key (ADR 0023).
+// Unknown or disabled users and unknown servers are
 // ErrNotFound.
 func (s *Store) SaveGrant(ctx context.Context, org OrgID, g Grant, catalogOK bool, ev AuditEvent) (Grant, error) {
 	c := g.Credential
-	if c.ServerID != g.ServerID || c.OwnerID != g.UserID || c.Purpose != PurposeOAuthGrant || c.ID == "" {
+	if c.ServerID != g.ServerID || c.OwnerID != g.UserID || (c.Purpose != PurposeOAuthGrant && c.Purpose != PurposeKeyGrant) || c.ID == "" {
 		return Grant{}, errors.New("store: the grant's credential does not belong to this server and user")
 	}
 	ev.Phase = "admin"
@@ -239,18 +242,23 @@ func notFound(err error) error {
 }
 
 const grantCols = `g.server_id, g.user_id, g.scopes, g.catalog, g.connected_at, g.last_used_at, g.refreshed_at,
-	c.id, c.key_version, c.row_version, c.ciphertext`
+	c.id, c.purpose, c.key_version, c.row_version, c.ciphertext`
 
 func scanGrant(row interface{ Scan(...any) error }) (Grant, error) {
 	var g Grant
 	var connected, used, refreshed string
 	c := &g.Credential
 	if err := row.Scan(&g.ServerID, &g.UserID, &g.Scopes, &g.Catalog, &connected, &used, &refreshed,
-		&c.ID, &c.KeyVersion, &c.RowVersion, &c.Ciphertext); err != nil {
+		&c.ID, &c.Purpose, &c.KeyVersion, &c.RowVersion, &c.Ciphertext); err != nil {
 		return Grant{}, notFound(err)
 	}
 	g.ConnectedAt, g.LastUsedAt, g.RefreshedAt = parseTS(connected), parseTS(used), parseTS(refreshed)
-	c.ServerID, c.OwnerID, c.Purpose = g.ServerID, g.UserID, PurposeOAuthGrant
+	// The purpose is part of what the credential is sealed under: an OAuth
+	// grant, or a person's own key (ADR 0023). Anything else is not a grant.
+	if c.Purpose != PurposeOAuthGrant && c.Purpose != PurposeKeyGrant {
+		return Grant{}, fmt.Errorf("store: a grant's credential has the purpose %q", c.Purpose)
+	}
+	c.ServerID, c.OwnerID = g.ServerID, g.UserID
 	return g, nil
 }
 
@@ -388,16 +396,52 @@ func deleteGrant(ctx context.Context, tx *sql.Tx, org OrgID, serverID, userID st
 // promoteCatalog makes the oldest grant of an active server manager the
 // server's catalog grant, if there is one.
 func promoteCatalog(ctx context.Context, tx *sql.Tx, org OrgID, serverID string) error {
-	_, err := tx.ExecContext(ctx, `
+	_, err := promoteCatalogExcept(ctx, tx, org, serverID, "")
+	return err
+}
+
+// promoteCatalogExcept is promoteCatalog leaving out one user's grant. It
+// reports whether a grant was promoted.
+func promoteCatalogExcept(ctx context.Context, tx *sql.Tx, org OrgID, serverID, except string) (bool, error) {
+	res, err := tx.ExecContext(ctx, `
 		UPDATE upstream_grants SET catalog = 1
 		WHERE org_id = ? AND server_id = ? AND user_id = (
 			SELECT g.user_id FROM upstream_grants g
 			JOIN users u ON u.org_id = g.org_id AND u.id = g.user_id
-			WHERE g.org_id = ? AND g.server_id = ? AND u.disabled_at IS NULL AND u.role IN (?, ?)
+			WHERE g.org_id = ? AND g.server_id = ? AND u.disabled_at IS NULL AND u.role IN (?, ?) AND g.user_id != ?
 			  AND NOT EXISTS (SELECT 1 FROM upstream_grants x WHERE x.org_id = g.org_id AND x.server_id = g.server_id AND x.catalog = 1)
 			ORDER BY g.connected_at, g.user_id LIMIT 1)`,
-		org, serverID, org, serverID, RoleOwner, RoleAdmin)
-	return err
+		org, serverID, org, serverID, RoleOwner, RoleAdmin, except)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// PassCatalog hands the catalog mark of a server from userID's grant to the
+// oldest grant of another active server manager, when there is one: the
+// upstream refused userID's own key, which stays theirs (ADR 0023 point 5),
+// and the tool list should not stop for everyone because of it (review of
+// 2026-11-15, U-03). It reports whether the mark moved; without another
+// grant it stays where it was.
+func (s *Store) PassCatalog(ctx context.Context, org OrgID, serverID, userID string) (bool, error) {
+	var moved bool
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE upstream_grants SET catalog = 0 WHERE org_id = ? AND server_id = ? AND user_id = ? AND catalog = 1`, org, serverID, userID)
+		if err != nil {
+			return err
+		}
+		if n, err := res.RowsAffected(); err != nil || n == 0 {
+			return err // not the catalog grant (any more): nothing to pass
+		}
+		if moved, err = promoteCatalogExcept(ctx, tx, org, serverID, userID); err != nil || moved {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE upstream_grants SET catalog = 1 WHERE org_id = ? AND server_id = ? AND user_id = ?`, org, serverID, userID)
+		return err
+	})
+	return moved, err
 }
 
 // deleteUserGrants removes all of a user's grants (a disabled user).

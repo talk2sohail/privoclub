@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"privo.club/privo/internal/buildinfo"
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/safe"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/upstreamauth"
@@ -35,12 +37,18 @@ type GrantSource interface {
 	RefreshAfterReject(ctx context.Context, org store.OrgID, srv store.Server, userID, rejected string) (string, error)
 }
 
+// catalogPasser is the optional part of a GrantSource that moves a server's
+// catalog to another administrator's key (grants.Service).
+type catalogPasser interface {
+	PassCatalog(ctx context.Context, org store.OrgID, srv store.Server, userID string) (bool, error)
+}
+
 // PerPerson reports whether calls to the server run with each person's grant.
 func (m *Manager) PerPerson(serverID string) bool {
 	m.mu.Lock()
 	e, ok := m.entries[serverID]
 	m.mu.Unlock()
-	return ok && e.srv.Config.Auth == store.AuthOAuth
+	return ok && e.srv.Config.PerPerson()
 }
 
 type poolKey struct{ serverID, userID string }
@@ -64,7 +72,7 @@ func (m *Manager) PersonSession(ctx context.Context, org store.OrgID, serverID, 
 	m.mu.Lock()
 	e, ok := m.entries[serverID]
 	m.mu.Unlock()
-	if !ok || e.org != org || e.srv.Config.Auth != store.AuthOAuth || m.opts.Grants == nil {
+	if !ok || e.org != org || !e.srv.Config.PerPerson() || m.opts.Grants == nil {
 		return nil, ErrUnavailable
 	}
 	// The grant is checked on every call, so a disconnected or disabled
@@ -131,7 +139,9 @@ func (m *Manager) connectPerson(e *entry, userID string) (*pooled, error) {
 	srv := e.srv
 	org := e.org
 	auth := bearer{
-		token: func(c context.Context) (string, error) { return m.opts.Grants.AccessToken(c, org, srv, userID) },
+		header: credentialHeader(srv),
+		key:    srv.Config.Auth == store.AuthKey,
+		token:  func(c context.Context) (string, error) { return m.opts.Grants.AccessToken(c, org, srv, userID) },
 		refresh: func(c context.Context, old string) (string, error) {
 			return m.opts.Grants.RefreshAfterReject(c, org, srv, userID, old)
 		},
@@ -300,12 +310,32 @@ func (m *Manager) Kick(serverID string) {
 	}
 }
 
-// bearer adds an OAuth access token to each request and, when the server
-// answers 401 invalid_token, refreshes once and retries. It sits inside the
-// origin lock, so the token only reaches the server's own origin.
+// bearer adds a person's credential to each request: an OAuth access token,
+// or their own API key in the header the server names (ADR 0023). When the
+// server answers 401 it refreshes once and retries; a key cannot be
+// refreshed, and the request fails with grants.ErrKeyRefused. It sits inside
+// the origin lock, so the credential only reaches the server's own origin.
 type bearer struct {
+	header  header
 	token   func(context.Context) (string, error)
 	refresh func(ctx context.Context, rejected string) (string, error)
+	// key says the credential is a person's own key: a server may answer 403
+	// to a key it does not know, as API gateways do, so 403 is a refusal of
+	// the key too (review of 2026-11-15, U-04).
+	key bool
+}
+
+// header is where a credential goes: the header's name and what comes
+// before the credential in it.
+type header struct{ name, prefix string }
+
+// credentialHeader is the header a server's per-person credential goes in:
+// the one the admin named for an API key, else Authorization: Bearer.
+func credentialHeader(srv store.Server) header {
+	if srv.Config.Auth == store.AuthKey && srv.Config.Key != nil && srv.Config.Key.Header != "" {
+		return header{name: srv.Config.Key.Header, prefix: srv.Config.Key.Prefix}
+	}
+	return header{name: "Authorization", prefix: "Bearer "}
 }
 
 type bearerRT struct {
@@ -318,7 +348,10 @@ func (b bearerRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := b.next.RoundTrip(withBearer(r, tok))
+	resp, err := b.next.RoundTrip(b.with(r, tok))
+	if err == nil && b.auth.key && resp.StatusCode == http.StatusForbidden {
+		resp.StatusCode = http.StatusUnauthorized // a key is refused the same way either answer
+	}
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}
@@ -327,39 +360,51 @@ func (b bearerRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	if code, _ := upstreamauth.ParseBearerError(resp.Header); code != "" && code != "invalid_token" {
 		return resp, nil
 	}
-	retry, fresh, ok := b.retryable(r, tok)
-	if !ok {
+	retry, fresh, rerr := b.retryable(r, tok)
+	if rerr != nil {
+		if errors.Is(rerr, grants.ErrKeyRefused) {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+			_ = resp.Body.Close()
+			return nil, rerr
+		}
 		return resp, nil
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	_ = resp.Body.Close()
-	return b.next.RoundTrip(withBearer(retry, fresh))
+	return b.next.RoundTrip(b.with(retry, fresh))
 }
 
-// retryable refreshes after a rejected token and prepares the request again;
-// ok is false when there is no new token or the body cannot be replayed.
-func (b bearerRT) retryable(r *http.Request, rejected string) (*http.Request, string, bool) {
+// errNoRetry: the request is not sent again (no new credential, or a body
+// that cannot be replayed); the 401 goes back to the caller.
+var errNoRetry = errors.New("upstream: no retry")
+
+// retryable refreshes after a rejected credential and prepares the request
+// again. It returns the refresh's own error when that is grants.ErrKeyRefused.
+func (b bearerRT) retryable(r *http.Request, rejected string) (*http.Request, string, error) {
 	if r.Body != nil && r.Body != http.NoBody && r.GetBody == nil {
-		return nil, "", false
+		return nil, "", errNoRetry
 	}
 	fresh, ferr := b.auth.refresh(r.Context(), rejected)
+	if errors.Is(ferr, grants.ErrKeyRefused) {
+		return nil, "", ferr
+	}
 	if ferr != nil || fresh == rejected {
-		return nil, "", false
+		return nil, "", errNoRetry
 	}
 	retry := r.Clone(r.Context())
 	if r.GetBody != nil {
 		body, berr := r.GetBody()
 		if berr != nil {
-			return nil, "", false
+			return nil, "", errNoRetry
 		}
 		retry.Body = body
 	}
-	return retry, fresh, true
+	return retry, fresh, nil
 }
 
-func withBearer(r *http.Request, tok string) *http.Request {
+func (b bearerRT) with(r *http.Request, tok string) *http.Request {
 	r2 := r.Clone(r.Context())
 	r2.Body = r.Body
-	r2.Header.Set("Authorization", "Bearer "+tok)
+	r2.Header.Set(b.auth.header.name, b.auth.header.prefix+tok)
 	return r2
 }

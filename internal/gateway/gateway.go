@@ -11,6 +11,7 @@ package gateway
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -38,6 +39,7 @@ import (
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/safe"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstream"
 	"privo.club/privo/internal/vault"
 )
@@ -73,9 +75,14 @@ type Gateway struct {
 	BaseURL string
 	// ResourceMetadataURL is advertised in 401 responses (RFC 9728).
 	ResourceMetadataURL string
+	// Scopes are named in 401 responses when set, so an OAuth client knows
+	// what to ask for (ADR 0022 point 5). Every accepted credential has them.
+	Scopes []string
 	// CallTimeout is how long one call to an upstream server may take; zero
 	// means no limit (R-04). It starts once the call is allowed and approved.
 	CallTimeout time.Duration
+	// Telemetry records how each call went (ADR 0024); nil records nothing.
+	Telemetry *telemetry.Recorder
 }
 
 // Handler returns the authenticated MCP HTTP handler.
@@ -95,6 +102,7 @@ func (g *Gateway) Handler() http.Handler {
 		&mcp.StreamableHTTPOptions{Stateless: true, Logger: g.Logger})
 	return mcpauth.RequireBearerToken(g.Auth.MCPVerifier(), &mcpauth.RequireBearerTokenOptions{
 		ResourceMetadataURL: g.ResourceMetadataURL,
+		Scopes:              g.Scopes,
 	})(h)
 }
 
@@ -150,11 +158,11 @@ func (g *Gateway) finish(req mcp.Request, res mcp.Result, err error) (mcp.Result
 }
 
 // Access returns what a caller reaches (ADR 0020): the servers of their
-// teams. The caller's member is the signed-in person, or the person whose own
-// token it is (F07 R-01); any other token is in "everyone" only, whatever
-// person name it carries. A removed member reaches nothing. Any error is
-// returned, so callers fail closed. The admin API uses it too, so both answer
-// the same.
+// teams. The caller's member is the principal's user id: a signed-in person,
+// or the member a token belongs to (F27). A token of nobody is in "everyone"
+// only, whatever person it names. A removed member reaches nothing. Any error
+// is returned, so callers fail closed. The admin API uses it too, so both
+// answer the same.
 func Access(ctx context.Context, st Store, p auth.Principal) (store.Access, error) {
 	return st.AccessFor(ctx, p.OrgID, p.UserID)
 }
@@ -275,7 +283,10 @@ type call struct {
 
 // refusal is a call stopped by policy or by a person; its message is shown
 // to the model as a tool error.
-type refusal struct{ msg string }
+type refusal struct {
+	msg   string
+	class string // the error class of the call statistic (ADR 0024)
+}
 
 func (r *refusal) Error() string { return r.msg }
 
@@ -286,6 +297,7 @@ type decision struct {
 	label      string // written to the audit log: allow or approved:<id>
 	approvalID string // set when an approval was consumed
 	approvedBy string
+	waited     time.Duration // held for a person's decision (ADR 0024, review T-10)
 }
 
 func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (decision, error) {
@@ -315,44 +327,45 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	case store.ActionDeny:
 		g.recordRefusal(ctx, c, callID, store.ActionDeny, "denied:"+dec.Reason)
 		// The model gets no rule details: they would help it probe the policy.
-		return decision{}, &refusal{msg: "Denied by your organisation's Privo policy."}
+		return decision{}, &refusal{msg: "Denied by your organisation's Privo policy.", class: "denied"}
 	}
 	if c.action != "tools/call" {
 		// Approvals cover tool calls; for prompts and resources "ask" fails closed.
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "denied:approval not supported for "+c.action)
-		return decision{}, &refusal{msg: "Denied by your organisation's Privo policy."}
+		return decision{}, &refusal{msg: "Denied by your organisation's Privo policy.", class: "denied"}
 	}
 	if g.Approval == nil {
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "approvals_unavailable")
-		return decision{}, &refusal{msg: "This call needs approval, but approvals are not configured."}
+		return decision{}, &refusal{msg: "This call needs approval, but approvals are not configured.", class: "approvals_unavailable"}
 	}
+	gated := time.Now()
 	out, err := g.Approval.Gate(ctx, approval.Request{Org: c.p.OrgID, RequesterID: c.p.TokenID, RequesterName: c.p.Name,
 		RequesterPerson: c.p.Person, ServerID: c.item.ServerID, ServerAlias: c.item.Alias, Tool: c.item.Name, ArgsDigest: digest,
 		Args: c.args, Reason: dec.Reason})
 	if errors.Is(err, approval.ErrTooManyPending) {
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "too_many_pending")
-		return decision{}, &refusal{msg: "Too many of your calls are already waiting for approval. Wait for decisions before asking again."}
+		return decision{}, &refusal{msg: "Too many of your calls are already waiting for approval. Wait for decisions before asking again.", class: "too_many_pending"}
 	}
 	if err != nil {
 		return decision{}, err
 	}
 	switch out.Result {
 	case approval.Approved:
-		return decision{label: "approved:" + out.ID, approvalID: out.ID, approvedBy: out.DecidedBy}, nil
+		return decision{label: "approved:" + out.ID, approvalID: out.ID, approvedBy: out.DecidedBy, waited: time.Since(gated)}, nil
 	case approval.Denied:
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "denied_by_approver")
-		return decision{}, &refusal{msg: "A person denied this exact call. Do not retry it unchanged."}
+		return decision{}, &refusal{msg: "A person denied this exact call. Do not retry it unchanged.", class: "denied_by_approver"}
 	}
 	g.recordRefusal(ctx, c, callID, store.ActionAsk, "pending_approval")
 	return decision{}, &refusal{msg: fmt.Sprintf("Approval required: request %s is waiting for a person in Privo (%s/approvals/%s). "+
 		"Tell the user, then retry exactly the same call with the same arguments once it is approved. It expires at %s.",
-		out.ID, g.BaseURL, out.ID, out.ExpiresAt.UTC().Format("15:04 UTC"))}
+		out.ID, g.BaseURL, out.ID, out.ExpiresAt.UTC().Format("15:04 UTC")), class: "pending_approval"}
 }
 
 // recordRefusal writes an intent and its completion for a call that did not run.
 func (g *Gateway) recordRefusal(ctx context.Context, c call, callID, decision, outcome string) {
 	now := time.Now()
-	ev := store.AuditEvent{ID: ids.New(), CallID: callID, Time: now, Actor: c.p.Name, ActorID: c.p.TokenID, Server: c.item.Alias,
+	ev := store.AuditEvent{ID: ids.New(), CallID: callID, Time: now, Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Decision: decision}
 	if err := g.Audit.Intent(ctx, c.p.OrgID, ev); err != nil {
 		g.Logger.Error("audit refusal", "err", err)
@@ -364,16 +377,33 @@ func (g *Gateway) recordRefusal(ctx context.Context, c call, callID, decision, o
 	}
 }
 
-// run executes the pipeline stages around do and records the outcome.
-func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp.ClientSession) (outcome string, err error)) error {
+// run executes the pipeline stages around do and records the outcome: the
+// audit (who did what, ADR 0006) and the call statistic (how it went, ADR
+// 0024). do returns the outcome and the result it relays.
+func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp.ClientSession) (outcome string, result any, err error)) error {
 	callID := ids.New()
+	arrived := time.Now()
+	st := store.CallStat{ID: callID, Time: arrived, UserID: c.p.UserID, TokenID: c.p.TokenID, Client: c.p.Client, Server: c.item.Alias,
+		Method: c.action, Item: c.item.Name, ArgsBytes: int64(len(c.args))}
+	record := func(outcome, class string) {
+		st.Outcome, st.ErrorClass, st.TotalUS = outcome, class, time.Since(arrived).Microseconds()
+		g.Telemetry.Call(c.p.OrgID, st)
+	}
 	// c.args is already the canonical form; it is what gets hashed, approved
 	// and sent upstream (ADR 0001 stage 7).
 	sum := sha256.Sum256(c.args)
 	digest := hex.EncodeToString(sum[:])
 
 	dec, err := g.decide(ctx, c, digest, callID)
+	st.WaitUS = dec.waited.Microseconds()
+	st.DecideUS = time.Since(arrived).Microseconds() - st.WaitUS
 	if err != nil {
+		var r *refusal
+		if errors.As(err, &r) {
+			record(store.OutcomeRefused, r.class)
+		} else {
+			record(store.OutcomeError, "internal")
+		}
 		return err
 	}
 	// If the call cannot start after an approval was consumed, put it back.
@@ -388,28 +418,136 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	payload, err := g.argumentsPayload(ctx, c, callID)
 	if err != nil {
 		restore()
+		record(store.OutcomeError, "internal")
 		return err
 	}
 	start := time.Now()
-	intent := store.AuditEvent{ID: ids.New(), CallID: callID, Time: start, Actor: c.p.Name, ActorID: c.p.TokenID, Server: c.item.Alias,
-		Item: c.item.Name, Action: c.action, Decision: dec.label, ApprovedBy: dec.approvedBy, Account: g.account(c), Payload: payload}
+	intent := store.AuditEvent{ID: ids.New(), CallID: callID, Time: start, Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
+		Item: c.item.Name, Action: c.action, Decision: dec.label, ApprovedBy: dec.approvedBy, Payload: payload}
 	if err := g.Audit.Intent(ctx, c.p.OrgID, intent); err != nil {
 		restore()
 		g.Logger.Error("audit intent failed; refusing call", "err", err)
+		st.AuditUS = time.Since(start).Microseconds()
+		record(store.OutcomeError, "audit_unavailable")
+		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelError, Category: store.CategoryAudit,
+			Message: "the audit record could not be written, so calls are refused"})
 		return errors.New("audit unavailable; call refused")
 	}
+	st.AuditUS = time.Since(start).Microseconds()
 
 	outcome := "error"
+	var result any
+	connecting := time.Now()
 	session, err := g.session(ctx, c)
+	st.ConnectUS = time.Since(connecting).Microseconds()
 	if err == nil {
-		outcome, err = g.callUpstream(ctx, c, session, do)
+		calling := time.Now()
+		outcome, result, err = g.callUpstream(ctx, c, session, do)
+		st.UpstreamUS = time.Since(calling).Microseconds()
 	}
-	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, Server: c.item.Alias,
+	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Outcome: outcome, LatencyMS: time.Since(start).Milliseconds()}
 	if aerr := g.Audit.Completion(ctx, c.p.OrgID, completion); aerr != nil {
 		g.Logger.Error("audit completion not queued", "err", aerr)
 	}
+	class := errorClass(err)
+	if class == "key_refused" {
+		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: c.item.Alias,
+			UserID: c.p.UserID, Message: "the server refused a member's own API key"})
+	}
+	if err == nil {
+		st.ResultBytes = resultSize(result)
+	} else {
+		outcome = store.OutcomeError
+	}
+	record(statOutcome(outcome), class)
 	return g.clientFacing(c, err)
+}
+
+// statOutcome maps the audit outcome of a call that ran to a statistic's.
+func statOutcome(outcome string) string {
+	switch outcome {
+	case store.OutcomeOK, store.OutcomeToolError:
+		return outcome
+	}
+	return store.OutcomeError
+}
+
+// errorClass is the fixed class of a failed call for its statistic (ADR 0024
+// point 2): never the error's text, which can hold an upstream URL.
+func errorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	var acct *accountError
+	var rpc *jsonrpc.Error
+	switch {
+	case errors.As(err, &acct):
+		return acct.class
+	case errors.Is(err, grants.ErrKeyRefused):
+		return "key_refused"
+	case errors.Is(err, grants.ErrNotConnected):
+		return "not_connected"
+	case errors.Is(err, errCallTimeout):
+		return "timeout"
+	case errors.Is(err, upstream.ErrUnavailable):
+		return "unavailable"
+	case errors.Is(err, errMalformedReply), errors.Is(err, errNeedsInput):
+		return "malformed"
+	case errors.As(err, &rpc) && !sdkLocalCode(rpc.Code):
+		return "upstream_error"
+	}
+	return "transport"
+}
+
+// resultSize estimates what a result costs in the model's context (F17):
+// the bytes of its text and of its binary data as base64, the way it is
+// relayed. It reads lengths only: encoding a large result a second time on
+// the request path doubled its cost (review of 2026-11-15, T-06). Structured
+// content is counted only when it is already raw JSON; servers send the same
+// data as text too.
+func resultSize(v any) int64 {
+	var n int64
+	b64 := func(b []byte) int64 { return int64(base64.StdEncoding.EncodedLen(len(b))) }
+	resource := func(r *mcp.ResourceContents) {
+		if r != nil {
+			n += int64(len(r.Text)) + b64(r.Blob)
+		}
+	}
+	content := func(c mcp.Content) {
+		switch c := c.(type) {
+		case *mcp.TextContent:
+			n += int64(len(c.Text))
+		case *mcp.ImageContent:
+			n += b64(c.Data)
+		case *mcp.AudioContent:
+			n += b64(c.Data)
+		case *mcp.EmbeddedResource:
+			resource(c.Resource)
+		case *mcp.ResourceLink:
+			n += int64(len(c.URI) + len(c.Name) + len(c.Title) + len(c.Description))
+		}
+	}
+	switch r := v.(type) {
+	case *mcp.CallToolResult:
+		for _, c := range r.Content {
+			content(c)
+		}
+		if raw, ok := r.StructuredContent.(json.RawMessage); ok {
+			n += int64(len(raw))
+		}
+	case *mcp.GetPromptResult:
+		for _, m := range r.Messages {
+			if m != nil {
+				content(m.Content)
+			}
+		}
+	case *mcp.ReadResourceResult:
+		for _, c := range r.Contents {
+			resource(c)
+		}
+	}
+	return n
 }
 
 // session picks the upstream session for a call: the server's shared one, or,
@@ -419,50 +557,65 @@ func (g *Gateway) session(ctx context.Context, c call) (*mcp.ClientSession, erro
 	if !g.Upstream.PerPerson(c.item.ServerID) {
 		return g.Upstream.Session(c.p.OrgID, c.item.ServerID)
 	}
-	if c.p.UserID == "" {
-		return nil, noAccount(c.item.Alias)
-	}
-	u, err := g.Store.UserByID(ctx, c.p.OrgID, c.p.UserID)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
-		return nil, noAccount(c.item.Alias)
-	}
+	owner, err := g.grantOwner(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-	s, err := g.Upstream.PersonSession(ctx, c.p.OrgID, c.item.ServerID, u.ID)
+	s, err := g.Upstream.PersonSession(ctx, c.p.OrgID, c.item.ServerID, owner)
 	if errors.Is(err, grants.ErrNotConnected) {
 		return nil, g.connectFirst(c.item.Alias)
+	}
+	if errors.Is(err, grants.ErrKeyRefused) {
+		// The handshake with the person's own key was refused (ADR 0023).
+		return nil, g.keyRefused(c.item.Alias)
 	}
 	return s, err
 }
 
-// account names whose upstream account a call uses (F07 R-01): on a server
-// where each person uses their own, the caller's member, the only one session
-// ever picks. Elsewhere the server's shared connection is used and it is "".
-func (g *Gateway) account(c call) string {
-	if c.p.UserID == "" || g.Upstream == nil || !g.Upstream.PerPerson(c.item.ServerID) {
-		return ""
+// grantOwner is the member whose own account a call to a per-person server
+// runs as: the active member the calling token belongs to, by user id. The
+// person a token names is never looked up (F27), so nobody can use another
+// member's account by issuing a token that carries their name.
+func (g *Gateway) grantOwner(ctx context.Context, c call) (string, error) {
+	if c.p.UserID == "" {
+		return "", g.noAccount(c.item.Alias)
 	}
-	return c.p.Person + " (user " + c.p.UserID + ")"
+	u, err := g.Store.UserByID(ctx, c.p.OrgID, c.p.UserID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
+		return "", g.noAccount(c.item.Alias)
+	}
+	if err != nil {
+		return "", err
+	}
+	return u.ID, nil
 }
 
 // accountError is a call that needs the person to act in the browser first. Its
 // text is fixed and safe to show to the AI client and the person.
-type accountError struct{ msg string }
+type accountError struct {
+	msg   string
+	class string // no_account, not_connected or key_refused (ADR 0024)
+}
 
 func (e *accountError) Error() string { return e.msg }
 
-func noAccount(alias string) error {
-	return &accountError{fmt.Sprintf("%q runs with each person's own account, and this token is not a person's own token. "+
-		"Sign in to the Privo admin site and make your token on the Tokens page; if you have no account, ask an administrator for an invite.", alias)}
+// noAccount answers a token that belongs to no member: it cannot use anyone's
+// account. The person makes a token of their own after signing in.
+func (g *Gateway) noAccount(alias string) error {
+	const why = "%q runs with each person's own account, and this token does not belong to a member of this Privo. "
+	if g.BaseURL == "" {
+		return &accountError{fmt.Sprintf(why+"Sign in to the Privo admin site and make a token for this client on the Tokens page.", alias), "no_account"}
+	}
+	link := strings.TrimSuffix(g.BaseURL, "/") + "/admin/tokens"
+	return &accountError{fmt.Sprintf(why+"Sign in and make a token for this client: open %s in your browser.", alias, link), "no_account"}
 }
 
 func (g *Gateway) connectFirst(alias string) error {
 	if g.BaseURL == "" {
-		return &accountError{fmt.Sprintf("Connect your %s account on the Privo admin site first, then try again.", alias)}
+		return &accountError{fmt.Sprintf("Connect your %s account (or enter your API key for it) on the Privo admin site first, then try again.", alias), "not_connected"}
 	}
 	link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias)
-	return &accountError{fmt.Sprintf("Connect your %s account first: open %s in your browser, then try again.", alias, link)}
+	return &accountError{fmt.Sprintf("Connect your %s account first: open %s in your browser, then try again.", alias, link), "not_connected"}
 }
 
 // errCallTimeout means the upstream did not answer within Gateway.CallTimeout.
@@ -472,17 +625,34 @@ var errCallTimeout = errors.New("the upstream server did not answer in time")
 // the deadline was the reason the call failed: a caller that went away, or an
 // answer that arrived anyway, is not one (R-04).
 func (g *Gateway) callUpstream(ctx context.Context, c call, session *mcp.ClientSession,
-	do func(context.Context, *mcp.ClientSession) (string, error)) (string, error) {
+	do func(context.Context, *mcp.ClientSession) (string, any, error)) (string, any, error) {
 	if g.CallTimeout <= 0 {
-		return do(ctx, session)
+		outcome, result, err := do(ctx, session)
+		if errors.Is(err, grants.ErrKeyRefused) {
+			err = g.keyRefused(c.item.Alias)
+		}
+		return outcome, result, err
 	}
 	callCtx, cancel := context.WithTimeout(ctx, g.CallTimeout)
 	defer cancel()
-	outcome, err := do(callCtx, session)
+	outcome, result, err := do(callCtx, session)
 	if err != nil && ctx.Err() == nil && errors.Is(callCtx.Err(), context.DeadlineExceeded) {
 		err = fmt.Errorf("%w (server %q, limit %s)", errCallTimeout, c.item.Alias, g.CallTimeout)
 	}
-	return outcome, err
+	if errors.Is(err, grants.ErrKeyRefused) {
+		err = g.keyRefused(c.item.Alias)
+	}
+	return outcome, result, err
+}
+
+// keyRefused tells the person that the server refused their own API key
+// (ADR 0023) and where to enter a new one.
+func (g *Gateway) keyRefused(alias string) error {
+	if g.BaseURL == "" {
+		return &accountError{fmt.Sprintf("%s refused your API key. Enter a new one on the Privo admin site, then try again.", alias), "key_refused"}
+	}
+	link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias)
+	return &accountError{fmt.Sprintf("%s refused your API key. Enter a new one: open %s in your browser, then try again.", alias, link), "key_refused"}
 }
 
 // sdkLocalCode reports the JSON-RPC codes the SDK raises itself (unknown error,
@@ -568,20 +738,20 @@ func (g *Gateway) callTool(ctx context.Context, p auth.Principal, params *mcp.Ca
 	if err != nil {
 		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil //nolint:nilerr // tool-level error for the model
 	}
-	err = g.run(ctx, call{p: p, item: it, action: "tools/call", args: args}, func(ctx context.Context, s *mcp.ClientSession) (string, error) {
+	err = g.run(ctx, call{p: p, item: it, action: "tools/call", args: args}, func(ctx context.Context, s *mcp.ClientSession) (string, any, error) {
 		res, err := s.CallTool(ctx, &mcp.CallToolParams{Name: it.Name, Arguments: args})
 		if err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		if err = checkTool(res); err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		cleanForRelay(res)
 		result = res
 		if res.IsError {
-			return "tool_error", nil
+			return "tool_error", res, nil
 		}
-		return "ok", nil
+		return "ok", res, nil
 	})
 	if err != nil {
 		// MCP reports tool failures as an error result the model can read,
@@ -613,17 +783,17 @@ func (g *Gateway) getPrompt(ctx context.Context, p auth.Principal, params *mcp.G
 		return nil, err
 	}
 	var result *mcp.GetPromptResult
-	err = g.run(ctx, call{p: p, item: it, action: "prompts/get", args: args}, func(ctx context.Context, s *mcp.ClientSession) (string, error) {
+	err = g.run(ctx, call{p: p, item: it, action: "prompts/get", args: args}, func(ctx context.Context, s *mcp.ClientSession) (string, any, error) {
 		res, err := s.GetPrompt(ctx, &mcp.GetPromptParams{Name: it.Name, Arguments: params.Arguments})
 		if err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		if err = checkPrompt(res); err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		cleanForRelay(res)
 		result = res
-		return "ok", nil
+		return "ok", res, nil
 	})
 	return result, err
 }
@@ -657,18 +827,18 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 	}
 	it := items[idx]
 	var result *mcp.ReadResourceResult
-	err = g.run(ctx, call{p: p, item: it, action: "resources/read"}, func(ctx context.Context, s *mcp.ClientSession) (string, error) {
+	err = g.run(ctx, call{p: p, item: it, action: "resources/read"}, func(ctx context.Context, s *mcp.ClientSession) (string, any, error) {
 		res, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: up})
 		if err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		if err = rewriteRead(alias, res); err != nil {
-			return "error", err
+			return "error", nil, err
 		}
 		cleanForRelay(res)
 		res.Cacheable = readCache()
 		result = res
-		return "ok", nil
+		return "ok", res, nil
 	})
 	return result, err
 }

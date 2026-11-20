@@ -460,10 +460,17 @@ type myServerView struct {
 	ConnectURL string `json:"connect_url,omitempty"`
 }
 
-// userOf is the member behind p, or "" when there is none: the signed-in
-// person or the member whose own token p is, never a person name (F07 R-01).
-func (a *API) userOf(_ context.Context, p auth.Principal) (string, error) {
-	return p.UserID, nil
+// userOf is the active member behind p, or "" when there is none: the
+// principal's user id, never the person it names (F27).
+func (a *API) userOf(ctx context.Context, p auth.Principal) (string, error) {
+	if p.UserID == "" {
+		return "", nil
+	}
+	u, err := a.Store.UserByID(ctx, p.OrgID, p.UserID)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
+		return "", nil
+	}
+	return u.ID, err
 }
 
 // myTools is what the start page shows a person: their teams, the servers
@@ -530,8 +537,8 @@ func (a *API) myTools(w http.ResponseWriter, r *http.Request, p auth.Principal) 
 				}
 			}
 		}
-		if s.Config.Auth == store.AuthOAuth {
-			v.Auth, v.Connected, v.ConnectURL = store.AuthOAuth, connected[s.ID], a.connectURL(s.Alias)
+		if s.Config.PerPerson() {
+			v.Auth, v.Connected, v.ConnectURL = s.Config.Auth, connected[s.ID], a.connectURL(s.Alias)
 		}
 		out = append(out, v)
 	}

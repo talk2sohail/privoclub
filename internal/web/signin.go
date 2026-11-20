@@ -1,7 +1,9 @@
 package web
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -38,12 +40,13 @@ func (s *Server) setupPage(w http.ResponseWriter, r *http.Request) {
 
 // start sends the browser to GitHub. It is a POST so a page cannot start
 // sign-ins for people by embedding a link; the origin check keeps other sites
-// from posting it.
+// from posting it. Neither stops a script, so start writes nothing: the
+// sign-in in flight goes into a sealed cookie (ADR 0016 amendment 1).
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	if !s.form(w, r) {
 		return
 	}
-	st := store.OAuthState{Purpose: store.PurposeSignIn}
+	in := signIn{Purpose: purposeSignIn}
 	if _, setup := r.PostForm["setup_token"]; setup {
 		token := r.PostForm.Get("setup_token")
 		if !validSetupToken(token) {
@@ -58,14 +61,14 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 			s.notFoundSetup(w)
 			return
 		}
-		st.Purpose, st.SetupLinkID = store.PurposeSetup, l.ID
+		in.Purpose, in.Link = purposeSetup, l.ID
 	} else if _, inv := r.PostForm["invite_token"]; inv {
 		token := r.PostForm.Get("invite_token")
 		if !validInviteToken(token) {
 			s.notFoundInvite(w)
 			return
 		}
-		in, err := s.o.Store.Invite(r.Context(), s.o.Org, HashSecret(token), s.now())
+		inv, err := s.o.Store.Invite(r.Context(), s.o.Org, HashSecret(token), s.now())
 		if err != nil {
 			if !errors.Is(err, store.ErrNotFound) {
 				s.log.Error("web: look up invite", "err", err)
@@ -73,31 +76,26 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 			s.notFoundInvite(w)
 			return
 		}
-		st.Purpose, st.InviteID = store.PurposeInvite, in.ID
-	} else if next := r.PostForm.Get("return_to"); returnToRe.MatchString(next) && s.connections() {
-		st.ReturnTo = next
+		in.Purpose, in.Link = purposeInvite, inv.ID
+	} else if next := r.PostForm.Get("return_to"); s.returnOK(next) {
+		in.ReturnTo = next
 	}
 
 	state, err1 := randomSecret()
-	nonce, err2 := randomSecret()
-	verifier, err3 := githubauth.NewVerifier()
-	if err := errors.Join(err1, err2, err3); err != nil {
+	verifier, err2 := githubauth.NewVerifier()
+	if err := errors.Join(err1, err2); err != nil {
 		s.log.Error("web: random", "err", err)
 		s.message(w, http.StatusInternalServerError, "Could not start sign-in", "Try again.")
 		return
 	}
-	now := s.now()
-	st.Hash, st.Verifier, st.ExpiresAt = stateHash(state, nonce), verifier, now.Add(StateTTL)
-	switch err := s.o.Store.CreateOAuthState(r.Context(), s.o.Org, st, now, s.o.StateCap); {
-	case errors.Is(err, store.ErrTooManyStates):
-		s.message(w, http.StatusServiceUnavailable, "Too many sign-ins in progress", "Wait a few minutes and try again.")
-		return
-	case err != nil:
-		s.log.Error("web: store sign-in state", "err", err)
+	in.Verifier, in.Expires = verifier, s.now().Add(StateTTL).Unix()
+	cookie, err := s.sealSignIn(r.Context(), state, in)
+	if err != nil {
+		s.log.Error("web: seal the sign-in cookie", "err", err)
 		s.message(w, http.StatusInternalServerError, "Could not start sign-in", "Try again.")
 		return
 	}
-	s.setCookie(w, s.stateCookie, nonce, int(StateTTL.Seconds()))
+	s.setCookie(w, s.signInCookie, cookie, int(StateTTL.Seconds()))
 	redirect(w, s.o.GitHub.AuthorizeURL(s.callback, state, githubauth.Challenge(verifier)))
 }
 
@@ -106,24 +104,30 @@ func (s *Server) signInFailed(w http.ResponseWriter, status int, lines ...string
 }
 
 // callbackHandler finishes a sign-in. The browser must bring the state it was
-// given and the cookie that was set with it; the state is used up first, so a
-// callback works once.
+// sent to GitHub with and the cookie that was sealed for that state. The
+// purpose, the link being claimed and the PKCE verifier come from the cookie
+// alone, never from the request.
 func (s *Server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state, code := q.Get("state"), q.Get("code")
-	c, err := r.Cookie(s.stateCookie)
-	if err != nil || !validSecret(c.Value) || !validSecret(state) {
-		s.clearCookie(w, s.stateCookie)
-		s.signInFailed(w, http.StatusBadRequest, "This sign-in was not started in this browser, or it has expired.")
+	const notHere = "This sign-in was not started in this browser, or it has expired."
+	var (
+		in signIn
+		ok bool
+	)
+	if c, err := r.Cookie(s.signInCookie); err == nil {
+		in, ok = s.openSignIn(r.Context(), state, c.Value)
+	}
+	if !ok {
+		// The cookie is left as it is: a request that does not belong to the
+		// sign-in in this browser (a link planted on another site, say) must
+		// not be able to cancel it (F05 R-03).
+		s.signInFailed(w, http.StatusBadRequest, notHere)
 		return
 	}
-	s.clearCookie(w, s.stateCookie)
-	st, err := s.o.Store.UseOAuthState(r.Context(), s.o.Org, stateHash(state, c.Value), s.now())
-	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			s.log.Error("web: use sign-in state", "err", err)
-		}
-		s.signInFailed(w, http.StatusBadRequest, "This sign-in was not started in this browser, or it has expired.")
+	s.clearCookie(w, s.signInCookie)
+	if !s.finished.first(state, s.now(), StateTTL) {
+		s.signInFailed(w, http.StatusBadRequest, notHere)
 		return
 	}
 	if q.Get("error") != "" || code == "" || len(code) > maxCodeLen {
@@ -131,7 +135,7 @@ func (s *Server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.o.GitHub.Exchange(r.Context(), code, s.callback, st.Verifier)
+	token, err := s.o.GitHub.Exchange(r.Context(), code, s.callback, in.Verifier)
 	if err != nil {
 		s.githubFailed(w, "exchange the code", err)
 		return
@@ -142,15 +146,15 @@ func (s *Server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch st.Purpose {
-	case store.PurposeSetup:
-		s.finishSetup(w, r, st, prof)
-	case store.PurposeInvite:
-		s.finishInvite(w, r, st, prof)
-	case store.PurposeSignIn:
-		s.finishSignIn(w, r, st, prof)
-	default:
-		s.signInFailed(w, http.StatusBadRequest, "This sign-in was not started in this browser, or it has expired.")
+	switch in.Purpose {
+	case purposeSetup:
+		s.finishSetup(w, r, in, prof)
+	case purposeInvite:
+		s.finishInvite(w, r, in, prof)
+	case purposeSignIn:
+		s.finishSignIn(w, r, in, prof)
+	default: // openSignIn accepts no other
+		s.signInFailed(w, http.StatusBadRequest, notHere)
 	}
 }
 
@@ -174,19 +178,44 @@ func displayName(p githubauth.Profile) string {
 
 // denied is the single answer for an account that is not a member: a stranger
 // and a disabled member see the same page.
-func (s *Server) denied(w http.ResponseWriter, r *http.Request, p githubauth.Profile) {
-	ev := s.event("signin.denied", p.Login, "github:"+p.Subject(), "deny", "denied")
-	if err := s.o.Audit.Admin(r.Context(), s.o.Org, ev); err != nil {
-		s.log.Error("web: audit", "action", "signin.denied", "err", err)
+//
+// A refusal is the one thing a person who is not a member can make Privo
+// write, and anyone with a GitHub account can be refused as often as they
+// like. So the audit gets one row per account in ten minutes and at most
+// maxDenials rows in ten minutes over all strangers; a disabled member is
+// always recorded. What is left out is counted, and the count is written to
+// the audit as one row when the window ends (F05 R-02; review of 2026-11-15,
+// S-06).
+func (s *Server) denied(w http.ResponseWriter, r *http.Request, p githubauth.Profile, member bool) {
+	record, skipped := s.denials.record(p.Subject(), member, s.now())
+	s.deniedSummary(r.Context(), skipped)
+	if record {
+		ev := s.event("signin.denied", p.Login, "github:"+p.Subject(), "deny", "denied")
+		if err := s.o.Audit.Admin(r.Context(), s.o.Org, ev); err != nil {
+			s.log.Error("web: audit", "action", "signin.denied", "err", err)
+		}
 	}
 	s.message(w, http.StatusForbidden, "This GitHub account cannot sign in",
 		"It is not a member of this Privo. Ask an owner to add you.")
 }
 
-func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, st store.OAuthState, p githubauth.Profile) {
+// deniedSummary writes how many refused sign-ins a window left out of the
+// audit, as one row, when there were any.
+func (s *Server) deniedSummary(ctx context.Context, n int) {
+	if n <= 0 {
+		return
+	}
+	s.log.Warn("web: refused sign-ins left out of the audit in the last ten minutes", "count", n)
+	ev := s.event(fmt.Sprintf("signin.denied.skipped:%d", n), "system", "system", "deny", "denied")
+	if err := s.o.Audit.Admin(context.WithoutCancel(ctx), s.o.Org, ev); err != nil {
+		s.log.Error("web: audit", "action", "signin.denied.skipped", "err", err)
+	}
+}
+
+func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, in signIn, p githubauth.Profile) {
 	u, err := s.o.Store.UserByIdentity(r.Context(), s.o.Org, store.ProviderGitHub, p.Subject())
 	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
-		s.denied(w, r, p)
+		s.denied(w, r, p, err == nil)
 		return
 	}
 	if err != nil {
@@ -205,13 +234,13 @@ func (s *Server) finishSignIn(w http.ResponseWriter, r *http.Request, st store.O
 	}
 	s.setCookie(w, s.sessionCookie, secret, int(s.o.MaxAge.Seconds()))
 	to := s.landing(u)
-	if returnToRe.MatchString(st.ReturnTo) && s.connections() {
-		to = st.ReturnTo
+	if s.returnOK(in.ReturnTo) {
+		to = in.ReturnTo
 	}
 	redirect(w, to)
 }
 
-func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request, st store.OAuthState, p githubauth.Profile) {
+func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request, in signIn, p githubauth.Profile) {
 	secret, sess, err := s.newSession("")
 	if err != nil {
 		s.log.Error("web: start session", "err", err)
@@ -221,7 +250,7 @@ func (s *Server) finishSetup(w http.ResponseWriter, r *http.Request, st store.OA
 	userID := ids.New()
 	sess.UserID = userID
 	u, err := s.o.Store.ClaimSetup(r.Context(), s.o.Org, store.Claim{
-		LinkID: st.SetupLinkID, UserID: userID, Person: strings.ToLower(p.Login), Subject: p.Subject(), Login: p.Login,
+		LinkID: in.Link, UserID: userID, Person: strings.ToLower(p.Login), Subject: p.Subject(), Login: p.Login,
 		DisplayName: displayName(p), Session: sess, Now: s.now(),
 	}, s.event("setup.claim", strings.ToLower(p.Login), "github:"+p.Subject(), "allow", "ok"))
 	switch {

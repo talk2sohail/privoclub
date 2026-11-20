@@ -5,6 +5,7 @@ import { invalidate, useData } from "../data";
 import { Link, navigate } from "../router";
 import { TeamPicker } from "../catalog";
 import type { Pin, ServerConnection, ServerView, Team } from "../types";
+import { Definition, previousOf } from "../review";
 import { Empty, ErrorLine, Loading, Status, firstLine, when, useAction } from "../ui";
 import { authLabel } from "./servers";
 
@@ -67,7 +68,19 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
           first owner or admin who connects.
         </p>
       )}
-      <Review alias={alias} pending={pending} loading={pins.loading && !pins.data} />
+      {current.auth === "key" && current.connect_url && (
+        <p class="card">
+          People enter their own API key at <a href={current.connect_url}>{current.connect_url}</a>
+          {current.key_header && (
+            <>
+              {" "}
+              (sent as <code>{current.key_header}</code>)
+            </>
+          )}
+          . The tool list is read with the key of the first owner or admin who enters one.
+        </p>
+      )}
+      <Review alias={alias} pending={pending} all={all} loading={pins.loading && !pins.data} />
       {accepted.length > 0 && (
         <section class="card">
           <h2>Available to AI clients</h2>
@@ -96,13 +109,13 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
         </section>
       )}
       {session.can.teams && <Access srv={current} />}
-      {current.auth === "oauth" && <Connected alias={alias} />}
+      {(current.auth === "oauth" || current.auth === "key") && <Connected alias={alias} />}
       <Settings srv={current} />
     </>
   );
 }
 
-function Review({ alias, pending, loading }: { alias: string; pending: Pin[]; loading: boolean }) {
+function Review({ alias, pending, all, loading }: { alias: string; pending: Pin[]; all: Pin[]; loading: boolean }) {
   const [unticked, setUnticked] = useState<Set<string>>(new Set());
   const [busy, run] = useAction();
   const key = (p: Pin) => p.kind + "|" + p.hash + "|" + p.name;
@@ -121,7 +134,9 @@ function Review({ alias, pending, loading }: { alias: string; pending: Pin[]; lo
       {!loading && pending.length === 0 && <Empty>Nothing waiting.</Empty>}
       {pending.length > 0 && (
         <>
-          <p class="meta">New or changed tools are hidden from AI clients until you accept them. Read what each one says it does.</p>
+          <p class="meta">
+            New or changed tools are hidden from AI clients until you accept them. Read all of what each one says it does: an AI client reads every word of it.
+          </p>
           <div class="list-wrap">
             <table class="list">
               <thead>
@@ -152,7 +167,9 @@ function Review({ alias, pending, loading }: { alias: string; pending: Pin[]; lo
                     <td>
                       <code>{p.name}</code>
                     </td>
-                    <td>{firstLine(p.definition?.description)}</td>
+                    <td>
+                      <Definition pin={p} previous={previousOf(p, all)} />
+                    </td>
                   </tr>
                 ))}
               </tbody>

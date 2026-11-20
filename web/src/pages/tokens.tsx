@@ -3,6 +3,7 @@ import { api, seg } from "../api";
 import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
 import { ClientSetup } from "../setup";
+import { SignedInClients } from "./oauth";
 import type { Token } from "../types";
 import { Copy, Empty, ErrorLine, formValues, useAction, when } from "../ui";
 
@@ -84,7 +85,15 @@ export function Tokens({ session }: PageProps) {
                 <tbody>
                   {mine.data.tokens.map((t) => (
                     <tr key={t.id}>
-                      <td>{t.name}</td>
+                      <td>
+                        {t.name}
+                        {t.bound === false && (
+                          <>
+                            <br />
+                            <small class="meta">Not tied to your account: it reaches only what everyone can use. Make a new token and revoke this one.</small>
+                          </>
+                        )}
+                      </td>
                       <td>{when(t.created_at)}</td>
                       <td>{when(t.expires_at)}</td>
                       <td>
@@ -106,6 +115,7 @@ export function Tokens({ session }: PageProps) {
           </form>
         </section>
       )}
+      {can.use_gateway && <SignedInClients mcpURL={session.mcp_url} />}
       {can.manage_tokens && (
         <section class="card">
           <h2>All tokens</h2>
@@ -128,7 +138,8 @@ export function Tokens({ session }: PageProps) {
                   {allTokens.map((t) => (
                     <tr key={t.id}>
                       <td>
-                        {t.person} <small class="meta">{t.personal ? "own token" : "service"}</small>
+                        {t.person}
+                        {t.kind === "gateway" && !t.bound && <small class="meta"> (a label: the token has no member's teams or accounts)</small>}
                       </td>
                       <td>{t.name}</td>
                       <td>{t.kind === "gateway" ? "AI client" : "API"}</td>
@@ -152,7 +163,7 @@ export function Tokens({ session }: PageProps) {
                 Name <input name="name" required maxLength={64} autocomplete="off" />
               </label>
               <label>
-                Service <small class="meta">the script or system that uses it, not a member: members make their own tokens</small>{" "}
+                Person <small class="meta">a label for approvals and the audit; it gives the token nobody's teams or accounts</small>{" "}
                 <input name="person" maxLength={128} autocomplete="off" />
               </label>
               <label>

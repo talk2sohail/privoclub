@@ -20,6 +20,7 @@ import (
 	"privo.club/privo/internal/egress"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstreamauth"
 	"privo.club/privo/internal/vault"
 )
@@ -29,6 +30,7 @@ type fakeAS struct {
 	mu        sync.Mutex
 	refreshes atomic.Int32
 	revoked   []string
+	revokedBy []string // the client_id of each revocation
 	next      int
 	answer    func(form url.Values) (int, string)
 	delay     time.Duration
@@ -59,6 +61,7 @@ func newAS(t *testing.T) *fakeAS {
 		case "/revoke":
 			f.mu.Lock()
 			f.revoked = append(f.revoked, r.PostForm.Get("token"))
+			f.revokedBy = append(f.revokedBy, r.PostForm.Get("client_id"))
 			f.mu.Unlock()
 		}
 	}))
@@ -391,5 +394,171 @@ func TestTokensNeverInLogsAuditOrErrors(t *testing.T) {
 	b, _ := json.Marshal(evs)
 	if strings.Contains(string(b), "secret") {
 		t.Errorf("audit holds a token")
+	}
+}
+
+// F07 R-02: a process that holds the server as it was before a re-registration
+// (the upstream manager does) refreshes with the client id that is stored now,
+// not the one it read at startup. With the old one the authorization server
+// answers invalid_grant and the grant would be deleted.
+func TestRefreshUsesTheClientStoredNow(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	stale := e.srv // what a running process holds
+	o := *e.srv.Config.OAuth
+	o.ClientID = "client-after-reregistration"
+	if err := e.st.UpdateServerOAuth(ctx, e.org, e.srv.ID, o, nil); err != nil {
+		t.Fatal(err)
+	}
+	var seen []string
+	e.as.answer = func(form url.Values) (int, string) {
+		e.as.mu.Lock()
+		seen = append(seen, form.Get("client_id"))
+		e.as.mu.Unlock()
+		if form.Get("client_id") != "client-after-reregistration" {
+			return http.StatusBadRequest, `{"error":"invalid_grant"}`
+		}
+		return http.StatusOK, `{"access_token":"at-new","token_type":"Bearer","refresh_token":"rt-new","expires_in":3600}`
+	}
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old", RefreshToken: "rt-0", Expiry: t0})
+	at, err := e.svc.AccessToken(ctx, e.org, stale, e.ada.ID)
+	if err != nil || at != "at-new" {
+		t.Fatalf("refresh with the server as it was at startup: %q, %v; the authorization server saw client ids %v", at, err, seen)
+	}
+	if _, err := e.st.Grant(ctx, e.org, e.srv.ID, e.ada.ID); err != nil {
+		t.Errorf("the grant is gone: %v", err)
+	}
+	// Disconnecting revokes with the current client too (U-06, review of
+	// 2026-11-15: this was not checked).
+	if err := e.svc.Disconnect(ctx, e.org, stale, e.ada.ID, store.AuditEvent{ID: "d1", CallID: "d1", Time: t0, Actor: "ada", ActorID: "u", Action: "disconnect", Decision: "allow", Outcome: "ok"}); err != nil {
+		t.Fatal(err)
+	}
+	e.as.mu.Lock()
+	by := append([]string(nil), e.as.revokedBy...)
+	e.as.mu.Unlock()
+	if len(by) != 1 || by[0] != "client-after-reregistration" {
+		t.Fatalf("revoked with client ids %v, want the one stored now", by)
+	}
+	// A server that was removed meanwhile is not refreshed at all.
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old2", RefreshToken: "rt-2", Expiry: t0})
+	gone := stale
+	gone.ID = "no-such-server"
+	if _, err := e.svc.RefreshAfterReject(ctx, e.org, gone, e.ada.ID, "old2"); err == nil {
+		t.Error("a server that does not exist was refreshed")
+	}
+}
+
+// ADR 0023: each person's own API key, kept like a grant.
+func TestPersonalKey(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	keySrv := store.Server{OrgID: e.org, ID: "srv-key", Alias: "acme", Transport: "http", Enabled: true, CreatedAt: t0,
+		Config: store.ServerConfig{URL: e.as.srv.URL + "/mcp", Auth: store.AuthKey, Key: &store.ServerKey{Header: "X-Api-Key"}}}
+	if err := e.st.CreateServer(ctx, keySrv, nil); err != nil {
+		t.Fatal(err)
+	}
+	ev := func() store.AuditEvent {
+		return store.AuditEvent{ID: fmt.Sprintf("ev-k-%d", evSeq.Add(1)), CallID: "c", Time: t0, Actor: "ada", Action: "upstream.connect:acme", Decision: "allow", Outcome: "ok"}
+	}
+	if _, err := e.svc.AccessToken(ctx, e.org, keySrv, e.ada.ID); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("before a key: %v", err)
+	}
+	g, err := e.svc.SaveKey(ctx, e.org, keySrv, e.ada, "ada-key-0123456789", false, ev())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Credential.Purpose != store.PurposeKeyGrant || g.Credential.OwnerID != e.ada.ID || bytes.Contains(g.Credential.Ciphertext, []byte("ada-key-0123456789")) {
+		t.Errorf("stored as %q for %q, sealed=%v", g.Credential.Purpose, g.Credential.OwnerID, !bytes.Contains(g.Credential.Ciphertext, []byte("ada-key")))
+	}
+	if k, err := e.svc.AccessToken(ctx, e.org, keySrv, e.ada.ID); err != nil || k != "ada-key-0123456789" {
+		t.Fatalf("AccessToken = %q, %v", k, err)
+	}
+	// Refused: never refreshed at the token endpoint, and the key is kept.
+	if _, err := e.svc.RefreshAfterReject(ctx, e.org, keySrv, e.ada.ID, "ada-key-0123456789"); !errors.Is(err, ErrKeyRefused) {
+		t.Fatalf("after a refusal: %v, want ErrKeyRefused", err)
+	}
+	if e.as.refreshes.Load() != 0 {
+		t.Error("a key server's token endpoint was called")
+	}
+	if _, err := e.st.Grant(ctx, e.org, keySrv.ID, e.ada.ID); err != nil {
+		t.Errorf("the refused key was deleted: %v", err)
+	}
+	// A new key replaces it; a request that was refused with the old one gets it.
+	if _, err := e.svc.SaveKey(ctx, e.org, keySrv, e.ada, "ada-key-new", false, ev()); err != nil {
+		t.Fatal(err)
+	}
+	if k, err := e.svc.RefreshAfterReject(ctx, e.org, keySrv, e.ada.ID, "ada-key-0123456789"); err != nil || k != "ada-key-new" {
+		t.Errorf("after a new key: %q, %v", k, err)
+	}
+	// What a key can be, and where it can go.
+	for _, bad := range []string{"", "has space", "line\nbreak", "tab\tkey", "é", strings.Repeat("k", 4097)} {
+		if _, err := e.svc.SaveKey(ctx, e.org, keySrv, e.ada, bad, false, ev()); err == nil {
+			t.Errorf("key %q was saved", bad)
+		}
+	}
+	if _, err := e.svc.SaveKey(ctx, e.org, e.srv, e.ada, "a-key", false, ev()); err == nil {
+		t.Error("a key was saved for an OAuth server")
+	}
+	// Removing it calls nothing at the server and deletes it.
+	if err := e.svc.Disconnect(ctx, e.org, keySrv, e.ada.ID, ev()); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.as.revoked) != 0 {
+		t.Errorf("revocation was called for a key: %v", e.as.revoked)
+	}
+	if _, err := e.svc.AccessToken(ctx, e.org, keySrv, e.ada.ID); !errors.Is(err, ErrNotConnected) {
+		t.Errorf("after removing: %v", err)
+	}
+}
+
+// ADR 0024: a grant the authorization server refuses, and a failed refresh,
+// are in the diagnostic log with the server and the member, and nothing of
+// the token or the endpoint.
+func TestGrantLostIsLogged(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	rec := telemetry.New(e.st, telemetry.Options{})
+	e.svc.Diagnostics = rec
+	e.as.answer = func(url.Values) (int, string) { return 400, `{"error":"invalid_grant"}` }
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old", RefreshToken: "rt-secret-0", Expiry: t0})
+	_, _ = e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID)
+	e.as.answer = func(url.Values) (int, string) { return 503, `busy` }
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old2", RefreshToken: "rt-secret-1", Expiry: t0})
+	_, _ = e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID)
+	rec.Close()
+	ds, err := e.st.Diagnostics(ctx, e.org, store.DiagnosticQuery{Category: store.CategoryGrant})
+	if err != nil || len(ds) != 2 {
+		t.Fatalf("grant diagnostics: %+v, %v", ds, err)
+	}
+	for _, d := range ds {
+		if d.Server != "linear" || d.UserID != e.ada.ID || d.Level != store.LevelWarn {
+			t.Errorf("diagnostic: %+v", d)
+		}
+		if strings.Contains(d.Message, "rt-secret") || strings.Contains(d.Message, e.as.srv.URL) {
+			t.Errorf("the message carries a secret or the endpoint: %q", d.Message)
+		}
+	}
+	if !strings.Contains(ds[1].Message, "must connect again") {
+		t.Errorf("the refused grant reads %q", ds[1].Message)
+	}
+}
+
+// Review of 2026-11-15, U-07: a stored credential is used only for a server
+// of its own kind; a mismatch reads as not connected.
+func TestCredentialKindMustMatchTheServer(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "AT-oauth", RefreshToken: "RT", Expiry: t0.Add(time.Hour)})
+	if tok, err := e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID); err != nil || tok != "AT-oauth" {
+		t.Fatalf("the OAuth grant for its OAuth server: %q %v", tok, err)
+	}
+	asKey := e.srv
+	asKey.Config.Auth = store.AuthKey
+	asKey.Config.Key = &store.ServerKey{Header: "X-Api-Key"}
+	if tok, err := e.svc.AccessToken(ctx, e.org, asKey, e.ada.ID); !errors.Is(err, ErrNotConnected) || tok != "" {
+		t.Fatalf("an OAuth grant used as a key: %q %v", tok, err)
+	}
+	if _, tok, err := e.svc.CatalogAccessToken(ctx, e.org, asKey); !errors.Is(err, ErrNotConnected) || tok != "" {
+		t.Fatalf("an OAuth grant read the catalog of a key server: %q %v", tok, err)
 	}
 }

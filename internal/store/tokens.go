@@ -43,21 +43,38 @@ type APIToken struct {
 	Name       string
 	Role       string
 	Kind       string
-	Person     string // the name it acts as; never used to find a member (F07 R-01)
-	UserID     string // the member whose own token this is; "" for every other token
+	Person     string // a label: who the token is for. It gives no access; UserID does
+	UserID     string // the member the token belongs to; "" is a token of nobody (F27)
 	SecretHash string
 	CreatedAt  time.Time
 	ExpiresAt  time.Time
 	RevokedAt  *time.Time
 }
 
-// CreateToken stores a token.
+// CreateToken stores a token. With t.UserID set the token belongs to that
+// member, who must be an active member of the same org: the check and the
+// insert are one statement, and ErrNotFound means nothing was stored.
 func (s *Store) CreateToken(ctx context.Context, t APIToken) error {
-	_, err := s.w.ExecContext(ctx, `
+	if t.UserID == "" {
+		_, err := s.w.ExecContext(ctx, `
+			INSERT INTO api_tokens (org_id, id, name, role, kind, person, user_id, secret_hash, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
+			t.OrgID, t.ID, t.Name, t.Role, t.Kind, t.Person, t.SecretHash, ts(t.CreatedAt), ts(t.ExpiresAt))
+		return mapErr(err)
+	}
+	res, err := s.w.ExecContext(ctx, `
 		INSERT INTO api_tokens (org_id, id, name, role, kind, person, user_id, secret_hash, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.OrgID, t.ID, t.Name, t.Role, t.Kind, t.Person, t.UserID, t.SecretHash, ts(t.CreatedAt), ts(t.ExpiresAt))
-	return mapErr(err)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM users WHERE org_id = ? AND id = ? AND disabled_at IS NULL)`,
+		t.OrgID, t.ID, t.Name, t.Role, t.Kind, t.Person, t.UserID, t.SecretHash, ts(t.CreatedAt), ts(t.ExpiresAt),
+		t.OrgID, t.UserID)
+	if err != nil {
+		return mapErr(err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // TokenByID looks a token up by its public id across orgs (it is globally unique).

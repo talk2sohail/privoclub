@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -60,6 +61,10 @@ type Config struct {
 	RetryBase, RetryMax time.Duration
 	// EgressAllow lists non-public CIDRs operators allow (PRIVO_EGRESS_ALLOW_CIDRS).
 	EgressAllow string
+	// TrustedProxies are the reverse proxies in front of Privo
+	// (PRIVO_TRUSTED_PROXIES, CIDRs), so per-address limits count the client
+	// named in X-Forwarded-For and not the proxy.
+	TrustedProxies []netip.Prefix
 	// TokenTTL is the default personal token lifetime (PRIVO_TOKEN_TTL).
 	TokenTTL time.Duration
 	// ApprovalHold is how long a call waits for a person's decision before the
@@ -81,6 +86,12 @@ type Config struct {
 	BackupKeep int
 	// BackupDir is where snapshots go (PRIVO_BACKUP_DIR, default <data dir>/backups).
 	BackupDir string
+	// TelemetryRetentionDays is how long call statistics and the diagnostic
+	// log are kept (PRIVO_TELEMETRY_RETENTION_DAYS, ADR 0024); 0 records none.
+	TelemetryRetentionDays int
+	// MetricsAddr is where Prometheus metrics are served on their own
+	// listener (PRIVO_METRICS_ADDR); empty, the default, serves none.
+	MetricsAddr string
 }
 
 // Defaults applied when a variable is unset or empty.
@@ -103,6 +114,10 @@ const (
 	DefaultBackupKeep = 7
 	MinBackupInterval = time.Second
 	MaxBackupKeep     = 1000
+
+	// Call statistics and the diagnostic log (ADR 0024).
+	DefaultTelemetryRetentionDays = 30
+	MaxTelemetryRetentionDays     = 400
 )
 
 // Load reads configuration using getenv (usually os.Getenv). All problems are
@@ -149,6 +164,17 @@ func Load(getenv func(string) string) (Config, error) {
 			"it is for development only. Set PRIVO_INSECURE_LOCAL_RUNNER=i-understand to use it"))
 	}
 	cfg.EgressAllow = getenv("PRIVO_EGRESS_ALLOW_CIDRS")
+	for _, part := range strings.Split(getenv("PRIVO_TRUSTED_PROXIES"), ",") {
+		if part = strings.TrimSpace(part); part == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(part)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("PRIVO_TRUSTED_PROXIES %q: each entry must be a CIDR such as 10.0.0.0/8", part))
+			continue
+		}
+		cfg.TrustedProxies = append(cfg.TrustedProxies, p.Masked())
+	}
 	for _, d := range []struct {
 		name string
 		dst  *time.Duration
@@ -200,6 +226,25 @@ func Load(getenv func(string) string) (Config, error) {
 		}
 	}
 	cfg.BackupDir = orDefault(getenv("PRIVO_BACKUP_DIR"), filepath.Join(cfg.DataDir, "backups"))
+
+	cfg.TelemetryRetentionDays = DefaultTelemetryRetentionDays
+	if v := getenv("PRIVO_TELEMETRY_RETENTION_DAYS"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 || n > MaxTelemetryRetentionDays {
+			errs = append(errs, fmt.Errorf("PRIVO_TELEMETRY_RETENTION_DAYS %q: must be a number of days from 0 (off) to %d", v, MaxTelemetryRetentionDays))
+		} else {
+			cfg.TelemetryRetentionDays = n
+		}
+	}
+	if v := strings.TrimSpace(getenv("PRIVO_METRICS_ADDR")); v != "" {
+		if _, port, err := net.SplitHostPort(v); err != nil || port == "" {
+			errs = append(errs, fmt.Errorf("PRIVO_METRICS_ADDR %q: must be host:port, such as 127.0.0.1:9464", v))
+		} else if v == cfg.ListenAddr {
+			errs = append(errs, fmt.Errorf("PRIVO_METRICS_ADDR %q: must differ from PRIVO_LISTEN; metrics have no sign-in and must not share the public port", v))
+		} else {
+			cfg.MetricsAddr = v
+		}
+	}
 
 	if v := getenv("PRIVO_PUBLIC_URL"); v != "" {
 		u, err := parsePublicURL(v)

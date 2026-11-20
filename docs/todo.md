@@ -14,7 +14,7 @@ Status: Done
 - [x] Revise ADRs 0001 to 0003 (revision 2, target MCP 2026-07-28)
 - [x] Write ADRs 0004 to 0011 for the gaps
 - [x] Owner sign-off; ADRs accepted 2026-10-28
-- [x] Spike: OAuth server library, desk review; ory/fosite chosen, see ADR 0012 (accept after F06 prototype)
+- [x] Spike: OAuth server library, desk review; ory/fosite chosen, see ADR 0012 (superseded 2026-11-12 by the working test: ADR 0022 point 16)
 
 ## F01. Project foundation
 Status: Done
@@ -250,9 +250,9 @@ verifier are stored in the clear for the life of a session and ten minutes.
 
 ### Review findings, open (independent review 2026-11-03; fixes parked by the owner)
 
-- [ ] R-01 (Medium): anyone can fill the 500-state cap with `POST /auth/github/start` and lock every sign-in, setup link and invite for ten minutes at a time. Rate-limit the start, or count only `signin` states against the open cap so setup and invite states keep a reserved share. Test: 500 anonymous starts do not block a setup claim
-- [ ] R-02 (Low): any GitHub account can write unlimited `signin.denied` audit rows; collapse or rate-limit per GitHub id
-- [ ] R-03 (Low): a cross-site link to the callback clears the state cookie of a sign-in in progress; clear it only after the state was found
+- [x] R-01 (Medium): anyone can fill the 500-state cap with `POST /auth/github/start` and lock every sign-in, setup link and invite for ten minutes at a time. Rate-limit the start, or count only `signin` states against the open cap so setup and invite states keep a reserved share. Test: 500 anonymous starts do not block a setup claim **Fixed in 0.7.1 at the root (F06 task 2, ADR 0016 amendment 1):** a sign-in in flight is not stored on the server at all, so there is no cap and nothing to fill. Tests: `internal/web` `TestSignInStartWritesNothing`, `TestAnonymousStartsCannotBlockSetupInvitesOrSignIn`
+- [x] R-02 (Low): any GitHub account can write unlimited `signin.denied` audit rows. **Fixed in 0.7.2:** one row per account in ten minutes and at most 60 rows in ten minutes over all accounts; what is left out is counted and logged. In memory, per process. Test: `internal/web` `TestRefusedSignInsCannotFloodTheAudit` **Independent review of 2026-11-15, S-06 (Low), fixed:** a disabled member is always recorded (once per account per window), so sixty throwaway accounts cannot hide them; the left-out count is written to the audit as `signin.denied.skipped:<n>` when the window ends, by the next refusal or by the periodic prune, not only to the log. Test: `TestRefusedMembersAreAlwaysAudited`
+- [x] R-03 (Low): a cross-site link to the callback clears the state cookie of a sign-in in progress; clear it only after the state was found **Fixed in 0.7.1:** the cookie is cleared only when it opened for the state the callback brought (`TestSignInCookieIsBoundExpiresAndWorksOnce`)
 - [ ] R-04 (Low): self-approval compares `person` exactly while the owner's default person is lower-cased, so `Alice` (tokens) and `alice` (session) are two people; normalise person names everywhere and make the index case-insensitive
 - [ ] R-05, R-06 (Info): the GitHub token is dropped, not revoked, at GitHub; a second `admin setup-link` makes another owner without saying so; `PRIVO_GITHUB_CLIENT_SECRET` as a plain variable gets no warning; timestamps compare as strings of uneven width (sub-second error at expiry edges)
 
@@ -266,19 +266,129 @@ verifier are stored in the clear for the life of a session and ten minutes.
 - [ ] Approvals page: page through more than 50 pending approvals; show decided ones
 
 ## F06. Client authentication (OAuth server and personal tokens)
-Status: In progress
-ADRs: 0003
+Status: In progress (personal tokens done; OAuth sign-in for AI clients: ADR 0022 accepted 2026-11-12; library decided 2026-11-12: `authelia.com/provider/oauth2` v0.3.3; no refresh grace; task 2 done in 0.7.1: a sign-in in flight lives in a sealed cookie; tasks 3 to 9 built in 0.8.0, off unless `PRIVO_OAUTH_SERVER=on`; next: the independent review, task 10)
+ADRs: 0003 (section 2), 0014, 0021, 0022
 
-- [ ] Protected resource and authorization server metadata
-- [ ] Client registration, PKCE, audience-bound tokens, refresh rotation
-- [x] Gateway and control tokens, each refused on the other surface; tokens belong to a person (ADR 0014)
+### Done: personal tokens
+
+- [x] Gateway and control tokens, each refused on the other surface; a `person` label on every token (ADR 0014); a gateway token belongs to a member by user id (ADR 0021, F27)
 - [x] Personal token format `privo_pat_<id>_<secret><crc32>`, SHA-256 secret hash, constant-time verify, checksum rejection without lookup (`internal/token`)
 - [x] Token storage, roles (owner, admin, auditor, approver, member), mandatory expiry (default 90 days), revocation effective within 2 s (verification cache), owner tokens only issuable by owners
-- [ ] Tests with real clients: Claude Code, Cursor, Amp, Codex
+
+### Next: AI clients sign in with OAuth (ADR 0022)
+
+#### Goal
+A person adds `https://<privo>/mcp` to Claude Code, Claude, VS Code or ChatGPT,
+signs in to Privo in the browser, presses Allow, and the client works as them:
+their teams' servers, their own upstream accounts. Nothing is pasted. Each
+client can be revoked by itself. Personal tokens keep working.
+
+#### Acceptance
+1. **Discovery.** A request to `/mcp` without a token is answered 401 with
+   `resource_metadata` and `scope="mcp"`. The protected resource metadata
+   names the public URL as its only authorization server.
+   `/.well-known/oauth-authorization-server` serves RFC 8414 metadata with
+   `code_challenge_methods_supported: ["S256"]`,
+   `client_id_metadata_document_supported: true`, `none` among
+   `token_endpoint_auth_methods_supported`, and a `registration_endpoint`
+   only when dynamic registration is on.
+2. **Authorize.** `/oauth/authorize` refuses, without redirecting, a client
+   that is not accepted or a redirect URI that does not match; refuses, by
+   redirecting with an error, a missing or non-S256 challenge, an unknown
+   scope and a `resource` that is not this gateway. Loopback redirect URIs
+   match with any port for `127.0.0.1`, `[::1]` and `localhost`; all others
+   match exactly.
+3. **Sign-in on the way.** Without a session the person is sent to sign in and
+   comes back to the consent page for the same request. No row is written
+   before a signed-in member presses Allow. A request cookie that is expired,
+   altered or from another browser is refused.
+4. **Consent.** The page names the client, the redirect host, the signed-in
+   person and what is granted; warns for a loopback-only client and for one
+   that registered itself. Allow and Deny need the CSRF token and the Origin
+   check. An approver or auditor cannot allow. Deny returns `access_denied`.
+5. **Code.** Lives 60 seconds, works once, only with the same client, redirect
+   URI, verifier and resource. A second use fails and revokes the grant.
+6. **Tokens.** The access token is opaque, lives one hour and works only on
+   `/mcp`, never on the admin API. A refresh token is always issued and
+   rotates on use. A refresh token that was already rotated is refused at
+   once, and that use revokes the grant: the tokens issued after it stop
+   working and the person signs in again (no grace window; owner,
+   2026-11-12). Idle 30 days, absolute 90 days. Errors are RFC 6749
+   codes (`invalid_grant` for a dead refresh token). The token endpoint takes
+   form-encoded bodies and answers well inside 10 seconds.
+7. **Who the caller is.** A call with an access token runs as the member who
+   consented: `gateway.Access` and `grantOwner` get their user id; the role is
+   read at verification. The audit names the client and the member.
+8. **Ending it.** The person revokes a client on "Connected clients"; an admin
+   sees and revokes everyone's; `/oauth/revoke` works for the client itself;
+   removing a member or changing them to a role without gateway use revokes
+   their grants. Each takes effect on `/mcp` within 2 seconds.
+9. **Clients.** The built-in known clients are accepted without setup; another
+   metadata document is refused with a page naming its host until an admin
+   approves it; with dynamic registration on, a client that registers is
+   limited, labelled and expires when unused. Metadata is fetched only from
+   public addresses, at most 64 KiB, in at most 5 seconds.
+10. **Fail closed.** With no public URL or with sign-in off, the metadata lists
+    no authorization server and the OAuth endpoints answer 503 naming what is
+    missing, as the admin site does today.
+
+#### Threat note
+- **Open to the internet without a session:** metadata, authorize, token,
+  register. None writes before consent except register (off by default,
+  limited). Every lookup is by a hashed secret or an indexed id.
+- **Client impersonation:** a loopback client cannot be told from another
+  program on the same computer; the consent page says so and PKCE binds the
+  code to whoever started. A hosted client is bound by its exact redirect URI.
+- **SSRF through the metadata URL:** the egress client refuses private,
+  loopback and link-local addresses, follows no redirect to them, and limits
+  size and time.
+- **Token theft:** tokens are stored hashed; refresh rotation with reuse
+  detection and no grace, so a copied refresh token is dead once the real
+  client has refreshed, and using it ends the grant; access tokens are bound to this gateway and never forwarded to an
+  upstream (ADR 0003).
+- **Confused deputy:** consent is shown every time and names the redirect
+  host; `state` is returned untouched; `iss` is in the response (RFC 9207).
+- **Locking people out:** the sign-in state cap (F05 R-01) is gone since
+  0.7.1 (task 2): a request without a session writes nothing when it starts a
+  sign-in. The audit rows a refused GitHub account can cause are bounded
+  since 0.7.2 (F05 R-02).
+- **An administrator acting as a member:** not possible through this flow; a
+  grant is made only by the member's own session (ADR 0021).
+
+#### Tasks, in the order of the pull requests
+- [x] 1. Spike (2026-11-12, `docs/reviews/2026-11-12-oauth-library-spike.md`): neither named library passes as named (`ory/fosite`: no release since 2024-12; `zitadel/oidc`: accepts `plain`, stores the request before login, always issues an ID token). The maintained fosite fork `authelia.com/provider/oauth2` v0.3.3 passes all checks in a working test, with the redirect rule and "resource must be present" done by Privo in front
+- [x] 1a. Owner's decisions (2026-11-12, recorded in ADR 0022 points 16 and 9): the library is `authelia.com/provider/oauth2`, pinned at v0.3.3; a refresh token that was already rotated is refused at once and its use revokes the grant, with no grace window (this replaces the 30-second grace of ADR 0003). The second decision removes work: the library does this by itself, so nothing is built in front of it for refresh
+- [x] 2. F05 R-01, at the root (0.7.1, ADR 0016 amendment 1): the state of a sign-in in flight (purpose, link id, PKCE verifier, return path, expiry) is sealed into the cookie `__Host-privo_signin` with the organisation's data key, bound to the `state` sent to GitHub, so `POST /auth/github/start` writes nothing and there is no cap to fill. `oauth_states` keeps only connect states, which need a session, at most one per member and server (F07 R-03). Also closed by it: F05 R-03 and F07 R-07. Tests: `internal/web` `TestSignInStartWritesNothing` (SQLite `data_version` and every table's row count do not move), `TestAnonymousStartsCannotBlockSetupInvitesOrSignIn`, `TestSignInCookieIsBoundExpiresAndWorksOnce`, `TestSignInCookieCarriesPurposeLinkAndReturn`, `TestSignInCookieSurvivesARestartAndHidesItsContent`, `TestSignInAndConnectFlowsDoNotEndEachOther`, `TestConnectStartReplacesTheMembersOlderState`, `TestFinishedRemembersBoundsAndForgets`, `TestDisabledWithoutTheSealingKey`; `internal/store` `TestConnectStateSingleUse`, `TestConnectStatesAreCappedPerMember`, `TestRowsOfOtherPurposesAreNotConnectStates`. Mutation check: 14 deliberate breakages (no replay memory, cookie not bound to its state, no expiry, a start that writes, no per-member replace, any purpose accepted, cookies swapped, and others), each made a test fail. Removed: `TestStartCapReturns503`, `TestOAuthStateCap`, `TestExpiredStatesArePrunedOnStart` (they tested the cap)
+  - [ ] The owner weighs point 5 of the amendment: Privo itself refuses a second use of a callback only within one process (a bounded memory of finished sign-ins); across a restart or on another replica a replay needs the HttpOnly cookie too and is refused by GitHub, which accepts a code once
+  - [ ] Independent security review of this change (auth, request pipeline), on the owner's word; it can run together with the review of the OAuth server (task 10)
+- [x] 3. Store and migration `00008` (0.8.0): `oauth_keys`, `oauth_clients`, `oauth_grants`, `oauth_tokens`, each with `org_id`; drops the three columns of `oauth_states` that task 2 stopped writing and adds a unique index on member and server; a member removed or given a role that cannot use the gateway loses their grants in the same transaction. Settings `PRIVO_OAUTH_SERVER` (off unless set; not in the ADR, see its "As built"), `PRIVO_OAUTH_CLIENTS`, `PRIVO_OAUTH_DYNAMIC_REGISTRATION` in the registry, README and example file. Tests (`internal/store`): `TestGrantBelongsToAMember`, `TestCodeWorksOnce`, `TestRefreshRotates`, `TestRotatedRefreshTokenIsRefusedAndRevokesTheGrant`, `TestRemovingAMemberRevokesTheirGrants`, `TestListAndRevokeClientGrants`, `TestOAuthTransactionCommitsRollsBackAndLetsGo`, `TestStoredClients`, `TestPruneOAuth`, `TestOAuthSigningKeyIsStoredOnce`; `internal/config` `TestOAuthServerSettings`
+- [x] 4. Client acceptance (`internal/oauthserver/clients.go`): metadata documents through the egress client (5 s, 64 KiB, no redirects, cached 5 minutes to 24 hours, a failure cached a minute), the known list, the redirect rule (loopback port ignored). Tests: `TestClientDocumentMustMatchItsURL`, `TestClientDocumentIsCachedAndAFailureIsNotRepeated`, `TestClientDocumentFetchRefusesPrivateAddresses`, `TestLoopbackRedirectIgnoresThePort`, `TestOtherRedirectsMatchExactly`, `TestUnknownClientIsRefusedUntilApproved`
+- [x] 5. Metadata, authorize, the sealed request cookie (`__Host-privo_authz`), consent page (`internal/web/oauth.go`). Tests: `internal/oauthserver` `TestAuthorizeWritesNothingBeforeConsent`, `TestAuthorizeErrorsRedirectOnlyToAnAcceptedURI`, `TestMetadata`; `internal/web` `TestAuthorizeRequestSurvivesSignInInASealedCookie` (planned as `TestRequestCookieIsBoundAndExpires`), `TestConsentNamesClientRedirectHostAndPerson`, `TestLoopbackClientGetsAWarning`, `TestConsentNeedsCSRFAndASession` (planned as `…AndOrigin`; it checks the Origin too), `TestApproverCannotAuthorizeAClient`, `TestAuthorizeRefusalsAreAPageOrARedirectToTheClient`, `TestOAuthEndpointsAnswer503WhenOff`
+- [x] 6. Token and revoke endpoints; verification by prefix in `internal/auth` (`VerifyGateway`; `Verify`, which the admin API uses, never takes an access token). Tests: `internal/oauthserver` `TestPKCERequired`, `TestTokenRequestNeedsTheSameResource`, `TestGrantBelongsToTheMemberWhoConsented`, `TestCodeWorksOnceAndASecondUseEndsTheGrant`, `TestRefreshRotates`, `TestRotatedRefreshTokenIsRefusedAndRevokesTheGrant`, `TestGrantRunsOutIdleAndAbsolute`, `TestRevocationEndsTheGrant`, `TestVerifyReadsTheMembersRoleLive`, `TestVerifyRefusesEverythingThatIsNotALiveAccessToken`, `TestTokensAreStoredBySignatureOnlyAndSurviveARestart`; `internal/auth` `TestOAuthCallerIsTheMemberWhoAllowedTheClient`, `TestAccessTokenWorksOnlyOnTheGateway`, `TestOAuthVerificationIsCachedForTwoSeconds`, `TestGatewayRoleMatchesThePermissions`. `TestReusedRefreshTokenStopsTheAccessTokenOnTheGateway` became step 5 of the acceptance test (task 9), on the real binary
+- [x] 7. Admin app: "AI clients that signed in" on Tokens for each person; a Clients page for administrators (the policy, the accepted clients, approve by document address, remove, everyone's connected clients); Activity shows the member a client acted as. API in `internal/control/oauth_clients.go`. Tests: `internal/control` `TestAMemberSeesAndRevokesOnlyTheirOwnClients`, `TestAnAdministratorSeesAndRevokesEveryonesClients`, `TestApprovingAndRemovingAClient`, `TestClientAPIWhenTheAuthorizationServerIsOff`; `web/src/pages.test.tsx` "AI clients that signed in with OAuth" and "activity"
+- [x] 8. Dynamic registration behind the setting (ten per address per hour, 200 in total, unused ones removed). Tests: `TestRegistrationIsOffByDefault`, `TestRegistrationLimitsAndExpiry`
+- [x] 9. Acceptance with the real binary: `TestClientSignsInWithOAuthAndCallsAsTheMember` (discovery from the gateway's address alone, registration, sign-in redirect, consent, a call that uses the member's own upstream account, the admin API refusing the access token, refresh, a rotated refresh token reused ending the access on `/mcp` with the audit naming client and member, a second sign-in revoked in the app, nothing on disk or in the log) and `TestOAuthServerIsOffByDefault`. The client registers itself: a metadata document client needs an https address the binary trusts (see ADR 0022 "As built")
+- [ ] 10. Independent review (required by CLAUDE.md), then switch on for app.privo.club
+- [ ] 11. Real clients, by the owner with Claude: Claude Code, Claude (hosted; the gateway must be reachable from Anthropic), VS Code; Cursor with dynamic registration on
+- [x] Docs (0.8.0): README "AI clients sign in with OAuth", `docs/deploy-coolify.md` (upgrade, switching on, going back), `docs/manual-test.md` step 10, ADR 0022 "As built"; version 0.8.0 (MINOR)
+- [x] Mutation check (2026-11-14): 33 deliberate breakages of the server, the web endpoint, the store and the authenticator, one at a time; 31 made a test fail. The other 2 are covered by a second check: "verification does not look at the token's time" (the library's own validation refuses it) and "an extra redirect address handed to the library" (Privo's rule runs before the library sees the request)
+
+#### Independent review of 2026-11-15 (`docs/reviews/2026-11-15-f05-f06-signin-oauth-server-independent-review.md`)
+Approve with changes; 0 Critical, 0 High, 1 Medium, 5 Low, 5 Info. Fixed on this branch, each with a test that fails without it:
+- [x] S-01 (Medium): self-registration limits counted the proxy, not the client. New setting `PRIVO_TRUSTED_PROXIES` (`internal/clientip`: X-Forwarded-For read from the right, a forged left part never used; IPv6 counted per /64), and at the total the oldest registration nobody allowed makes room instead of refusing. Tests: `TestRegistrationLimitsCountTheClientBehindProxies`, `TestRegistrationsNobodyAllowedMakeRoom`, `internal/clientip`, `internal/config` `TestTrustedProxies`, `internal/store` `TestStoredClients`. Left: a churn of 200 registrations from 200 /64s within the minutes between a real registration and its consent can still evict it; stateless registration (a signed client id, nothing written before consent) is the complete answer
+- [x] S-02: `grant_type` taken exactly as written (`TestPaddedGrantTypeIsRefused`)
+- [x] S-03: a used code past its expiry is unknown and no longer ends the grant (`TestAUsedCodeCannotEndTheGrantAfterItExpired`)
+- [x] S-04: a registered client is accepted only while registration is on and never under `approved` (`TestRegisteredClientNeedsRegistrationOn`)
+- [x] S-05: client documents are fetched with no private range allowed; every fetch failure reads the same; at most 30 uncached fetches a minute (`TestDocumentFetchFailuresReadTheSameAndAreBounded`)
+- [x] S-07: the consent page for a hosted client says to allow only a request one started oneself (`TestConsentNamesClientRedirectHostAndPerson`)
+- [x] S-08: `response_mode` is refused as a page (`TestResponseModesAreRefusedAsAPage`)
+- [x] S-09: redirect hosts must be DNS names or IP literals; the CSP replacement is literal (`TestRedirectHostsAreNamesOrAddresses`)
+- [x] S-10: tests for the four checks no test noticed (`TestVerifyChecksTheStoredSubjectAndResource`, `TestClientIDWithUserInfoIsRefused`, the consent POST role check in `TestApproverCannotAuthorizeAClient`)
+- [ ] S-11 (Info): the memory of finished sign-ins can be emptied by an anonymous script; weigh with point 5 of ADR 0016 amendment 1
 
 ## F07. Upstream OAuth broker
-Status: In progress (first slice deployed, app.privo.club runs 0.6.0; independent review done 2026-11-03; its High finding R-01 fixed 2026-11-18 (ADR 0022); connecting a real provider account on app.privo.club is still to do, see F26)
-ADRs: 0003, 0017, 0022
+Status: In progress (first slice deployed, app.privo.club runs 0.6.0; independent review done 2026-11-03 with one High finding, open below; connecting a real provider account on app.privo.club is still to do, see F26)
+ADRs: 0003, 0017
 
 ### First slice: goal
 
@@ -372,13 +482,13 @@ until URL elicitation lands.
 
 ### Review findings, open (independent review 2026-11-03; fixes parked by the owner)
 
-- [x] R-01 (High; the same hole as F14 R-02): an owner or admin can issue a gateway token with any member's `person` (`POST /api/v1/tokens`; an omitted person defaults to the token name) and call upstream servers with that member's grant; the audit names the token, not whose account was used. Fixed 2026-11-18 (ADR 0022): migration `00007_token_user.sql` adds `api_tokens.user_id`, set only by `POST /api/v1/me/tokens` for the signed-in person, and binds existing tokens only where the person's own `token.create` event proves they made it; the principal carries it as `UserID`; grants, teams and `/me/tools` read the user id and never a name (`UserByPerson` is gone from the gateway); `POST /api/v1/tokens` and `privo token create` refuse a person (or defaulted name) that names a member; the `/me/tokens` routes answer 403 to a control token; removing a member revokes bound tokens and older ones carrying their person; per-person calls record `account` on their audit row (API and Activity page). Threat note: an admin, a stolen admin session or a control token can no longer act as a member upstream or join their teams; an upgrade can leave a token an admin made for someone without that person's accounts, and the person makes their own. Tests: `internal/store` `TestTokenCarriesUserID`, `TestUserByID`, `TestMigrationBindsOnlyAPersonsOwnTokens`, `TestAuditRecordsAccount`; `internal/auth` `TestPrincipalCarriesTokenUser`; `internal/gateway` `TestAccessResolvesTheCallersMember`, `TestAccessFailsClosed`; `internal/control` `TestAdminCannotIssueTokenForAMember`, `TestMyTokenIsBoundToTheSignedInUser`, `TestControlTokenHasNoOwnTokens` (both failed before the fix), `TestRemoveMemberRevokesBoundAndNamedTokens`; acceptance `TestUpstreamOAuthTwoPeople` (the owner is refused a token as Ada by person and by name; Ada and the boss make their own; each call's audit names its account), fixtures now use `person.myToken`; Vitest: the Tokens page labels own and service tokens and asks API tokens for a service, the Activity page shows the account. Security review 2026-11-18 (`docs/reviews/2026-11-18-r01-token-binding-security-review.md`): no High or Medium findings
-- [ ] R-02 (Medium): after a re-registration (`Grants.Reregister` from the connect callback) the running upstream manager keeps the old client id until a restart or an admin edit, so grants issued to the new client are refreshed as the old one, answered with `invalid_grant` and deleted. Call `Upstream.Sync` after the registration changes, or read the client from the store at refresh time; store the client id on the grant
-- [ ] R-03 (Medium): any signed-in member can fill the org-wide state cap through `POST /connect/<alias>/start` and lock out sign-in and connecting for everyone (see F05 R-01); cap connect states per user and replace that user's older one
+- [x] R-01 (High; the same hole as F14 R-02): an owner or admin can issue a gateway token with any member's `person` (`POST /api/v1/tokens`; an omitted person defaults to the token name) and call upstream servers with that member's grant; the audit names the token, not whose account was used. Bind tokens to a user id (`api_tokens.user_id`, set by `/api/v1/me/tokens`), resolve grants and team membership by user id and never by name, and record the grant's owner in the call's audit event. The acceptance fixture `g.issue("ada")` relies on the hole and has to change with it. F26's team membership follows the same string **Fixed in 0.7.0 (F27, ADR 0021), deployed 2026-11-11.**
+- [x] R-02 (Medium): after a re-registration (`Grants.Reregister` from the connect callback) the running upstream manager keeps the old client id until a restart or an admin edit, so grants issued to the new client are refreshed as the old one, answered with `invalid_grant` and deleted. Call `Upstream.Sync` after the registration changes, or read the client from the store at refresh time; store the client id on the grant **Fixed in 0.8.1:** the grants service reads the server as it is stored now before a refresh or a revocation, so a process holding the old copy uses the current client id. Test: `internal/grants` `TestRefreshUsesTheClientStoredNow` (fails without the fix: the old client id was sent and the grant deleted). Grants issued to the old client still depend on the authorization server honouring them, as `Reregister` says. Review of 2026-11-15, U-06: the revocation half was untested; the test now checks the client id the revocation is sent with (and fails without `current()` in `Disconnect`)
+- [x] R-03 (Medium): any signed-in member can fill the org-wide state cap through `POST /connect/<alias>/start` and lock out sign-in and connecting for everyone (see F05 R-01); cap connect states per user and replace that user's older one **Fixed in 0.7.1 (F06 task 2):** `oauth_states` holds only connect states, one per member and server; a new start replaces the member's older one; no cap. Tests: `internal/store` `TestConnectStatesAreCappedPerMember`, `internal/web` `TestConnectStartReplacesTheMembersOlderState`
 - [ ] R-04 (Low): removing a member, deleting a server and reconnecting delete grants locally without revoking them at the provider; backups keep them
 - [ ] R-05 (Low): require `oauth.issuer` when a client secret is supplied, so the secret cannot go to an authorization server the MCP server names
 - [ ] R-06 (Low): a failed save after a rotated refresh token loses the grant; retry the save with the token already obtained
-- [ ] R-07 (Low): the GitHub callback uses up a state of any purpose before checking it; look the state up with its purpose and use one cookie per flow
+- [x] R-07 (Low): the GitHub callback uses up a state of any purpose before checking it; look the state up with its purpose and use one cookie per flow **Fixed in 0.7.1:** the sign-in callback reads no table; sign-in and connect have a cookie each; the connect lookup takes only connect rows. Tests: `internal/web` `TestSignInAndConnectFlowsDoNotEndEachOther`, `internal/store` `TestRowsOfOtherPurposesAreNotConnectStates`
 - [ ] R-08 (Low): every upstream HTTP request reads, decrypts and touches the grant on the single writer connection; cache the opened token until its expiry and flush `last_used_at` periodically
 - [ ] R-09 (Info, ten notes): among them no backoff when a server rejects every token, discovery of up to a minute inside one admin request, an orphaned dynamic registration when the create fails afterwards
 
@@ -542,8 +652,8 @@ Tasks and the tests that name them:
 
 ### Review findings, open (independent review 2026-11-03, `docs/reviews/2026-11-03-f14-admin-app-independent-review.md`: approve with changes; 0 Critical, 0 High, 2 Medium, 4 Low, 2 Info; fixes parked by the owner)
 
-- [ ] R-01 (Medium): the tool review shows only the first line (at most 300 characters) of a description, while the hash that is accepted covers all of it, the input schema and the annotations. Show the whole description as text, the schema, and a diff for a changed definition
-- [x] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fixed with F07 R-01 (2026-11-18): the API refuses a member's name; the field is now "Service", and the token list marks each token "own token" or "service"
+- [x] R-01 (Medium): the tool review shows only the first line (at most 300 characters) of a description, while the hash that is accepted covers all of it, the input schema and the annotations. Show the whole description as text, the schema, and a diff for a changed definition **Fixed in 0.8.1:** the review shows the whole description as text, the full definition (schema and annotations) behind "Full definition (what is accepted)", and for a changed tool a line diff against the accepted version (`web/src/review.tsx`). Tests: `web/src/review.test.ts`, "the tool review (F14 R-01)" in `web/src/pages.test.tsx`. **Independent review of 2026-11-15, U-02 (Medium), fixed:** the browser drew invisible characters (Unicode tag characters, zero-width, bidi overrides, private use, unassigned, separators, variation selectors) as nothing, though the hash covers them, so a hidden instruction could pass review. Every one is now shown as `⟦U+XXXX⟧` in the description, the diff and the full definition, with a warning that names how many there are. Tests: `review.test.ts` "reveal", "shows hidden characters and warns about them" in `pages.test.tsx`
+- [x] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fix with F07 R-01 **Fixed in 0.7.0 (F27).** The field stays as a label and says so.
 - [ ] R-03 (Low): a refused or cross-site request still slides the session's idle timeout; touch the session only after every check passed
 - [ ] R-04 (Low): the review ticks everything by default, also items that arrive while the page polls; make ticking opt-in or mark new rows
 - [ ] R-05 (Low): the UI build has no audit step (`web/.npmrc` has `audit=false` and `legacy-peer-deps=true`; `npm ci` runs lifecycle scripts; actions are pinned by tag): `npm ci --ignore-scripts`, `npm audit --omit=dev`, `npm audit signatures` in the `ui` job, actions by SHA
@@ -581,7 +691,8 @@ Status: In progress (health endpoints and drain only)
 
 ADRs: 0010
 
-- [ ] OpenTelemetry span per stage; metrics without org labels in Cloud
+- [x] Prometheus metrics on their own listener (`PRIVO_METRICS_ADDR`, F28, ADR 0024)
+- [ ] OpenTelemetry span per stage (the statistic names of ADR 0024 map onto the MCP conventions); metrics without org labels in Cloud
 - [x] `/livez`, `/readyz`; 30-second drain on SIGTERM (`PRIVO_SHUTDOWN_TIMEOUT`; built in F01)
 
 ## F17. Context-cost report
@@ -605,8 +716,8 @@ ADRs: 0008
 - [x] Cap the size of upstream responses (tool results, resource reads, list pages): `PRIVO_UPSTREAM_MAX_RESPONSE_BYTES` and the list limits, see R-04 in F24
 
 ## F20. Enterprise identity and roles
-Status: In progress (first slice specified 2026-11-18, ADR 0021 proposed; no code yet)
-ADRs: 0011, 0021
+Status: In progress (first slice specified 2026-11-18, ADR 0025 accepted 2026-11-18; no code yet)
+ADRs: 0011, 0021, 0025
 
 ### First slice: goal
 
@@ -660,7 +771,7 @@ person's AI client still can never approve or administer anything.
   attempts more likely. The per-person check (ADR 0005) is unchanged, stays
   off by default, and is tested with a person who holds both roles.
 - **Person binding.** `role:` rules now follow the token's member. Since
-  the F07 R-01 fix (ADR 0022) that is the user a token is bound to by id,
+  the F07 R-01 fix (ADR 0021) that is the user a token is bound to by id,
   never a person name, so no token can borrow someone else's roles.
 - **Fail closed.** If reading roles fails, the request fails. No roles means
   no permission. An unknown role in the database is ignored, never treated
@@ -671,9 +782,9 @@ person's AI client still can never approve or administer anything.
 
 ### First slice: tasks and the tests that name them
 
-- [x] Spec (this section) and ADR 0021; ADRs 0011 and 0014 marked as amended
-- [x] Prerequisite: F07 R-01, tokens bound to a user id (ADR 0022, 2026-11-18)
-- [ ] Store: migration `00008_user_roles.sql` (`user_roles`, `invite_roles`, both with `org_id`; copy `users.role` and `invites.role`, then drop both columns; rewrite gateway tokens of signed-in people to `member`); `SetUserRoles`, `UserRoles`; catalog grants and `promoteCatalog` read `user_roles`
+- [x] Spec (this section) and ADR 0025 (numbered 0021 on its branch); ADRs 0011 and 0014 marked as amended
+- [x] Prerequisite: F07 R-01, tokens bound to a user id (ADR 0021, merged 2026-11-11)
+- [ ] Store: migration `00011_user_roles.sql` (`user_roles`, `invite_roles`, both with `org_id`; copy `users.role` and `invites.role`, then drop both columns; rewrite gateway tokens of signed-in people to `member`); `SetUserRoles`, `UserRoles`; catalog grants and `promoteCatalog` read `user_roles`
   - tests: `TestUserRolesMigration` (each person keeps their role; personal gateway tokens become `member`; automation tokens unchanged), `TestRoleSetRules` (owner alone, admin alone, subsets of member, approver and auditor; empty and mixed sets refused), `TestSetUserRolesAudited` (set before and after), `TestLosingAdminDropsCatalogGrants`, `TestPromoteCatalogReadsUserRoles`, `TestUserRolesAreIsolatedPerOrg`, `TestInviteCarriesRoleSet`
 - [ ] Auth: `Principal.Roles` (sorted set), `Has`, `Can` as the union; no roles means no permission; unknown roles ignored
   - tests: `TestCanIsUnionOfRoles`, `TestNoRolesNoPermissions`, `TestUnknownRoleGrantsNothing`, `TestApproverAloneCannotUseGateway`, `TestMemberApproverCanUseGatewayAndDecide`
@@ -694,7 +805,7 @@ person's AI client still can never approve or administer anything.
 ### Later in F20
 
 - [ ] The remaining roles of ADR 0011 (server admin, policy admin) as members of the combinable group
-- [ ] Approvers scoped to a team or a server (needs its own ADR; ADR 0021 leaves room)
+- [ ] Approvers scoped to a team or a server (needs its own ADR; ADR 0025 leaves room)
 - [ ] Generic OIDC and SAML SSO; identity provider groups mapped onto teams and roles (`user_roles.source = idp:<group>`)
 - [ ] SCIM 2.0 with immediate revocation on deprovisioning
 - [ ] Passkeys or TOTP for local accounts
@@ -838,8 +949,8 @@ Threat note:
 - The catalog is embedded data, not fetched at runtime, so it cannot be
   changed from outside; an entry only fills a form, and the egress check,
   discovery and tool review still run.
-- Membership follows the member a token is bound to by id (F07 R-01, fixed
-  2026-11-18, ADR 0022), never the person name it carries.
+- Membership follows the token's person (F07 R-01, parked): the fix that
+  binds tokens to a user id covers teams too.
 
 Tasks and the tests that name them:
 
@@ -874,3 +985,214 @@ Tasks and the tests that name them:
 - [ ] Adding a server whose provider is slow waits about 10 s on "Adding…" and ends in "context deadline exceeded"; say which step timed out at which host in plain words (Figma's authorization server metadata answered 503 or hung most of the time on 2026-11-04 while its status page was green)
 - [ ] Discovered: token names are unique in the whole org, so two people cannot both call their token `claude-code`; make them unique per person (with the person in the name shown to admins)
 - [ ] Later: tool-level toolsets inside a server (F08); a team's own rule presets; identity provider groups mapped onto teams (F20)
+
+## F27. A token belongs to a member by user id
+Status: Done, deployed as 0.7.0 on 2026-11-11 (independent review and the owner's new token are open below)
+ADRs: 0021 (amends 0014 point 3, 0017 and 0020)
+
+Closes the High finding of the independent reviews of 2026-11-03 (F07 R-01,
+which is F14 R-02 as seen from the app): an owner or admin could issue a
+gateway token that named a member and call upstream servers with that member's
+own account, and see the servers of their teams.
+
+### Goal
+Whose account and whose teams a call uses is decided by the member a token
+belongs to, set once when a signed-in member makes the token for themselves.
+The person a token names is a label and is never looked up.
+
+### Acceptance
+1. A token made on the Tokens page (`POST /api/v1/me/tokens`, signed in)
+   belongs to that member: `bound: true`, the member's teams, the member's own
+   accounts on OAuth servers.
+2. A token issued with `POST /api/v1/tokens` or `privo token create` belongs to
+   nobody, whatever `person` or name it carries: `bound: false`, team
+   "everyone" only, and on an own-account server the answer "this token does
+   not belong to a member" with the address of the Tokens page. No call with it
+   reaches the upstream as anyone.
+3. An API token that names a member cannot make "its own" gateway token
+   (`POST /api/v1/me/tokens` answers 403).
+4. Nothing in a request sets the owner; an unknown field is refused.
+5. The call audit names the member a call ran as (`user`, `user_id`) and names
+   nobody for a token of nobody.
+6. Tokens made before this version get no owner from the migration. Each
+   person sees them on the Tokens page as "not tied to your account" and can
+   revoke them.
+7. Removing a member revokes the tokens that belong to them and the tokens of
+   nobody that name them; a token that belongs to someone else stays.
+
+### Threat note
+- The attacker is an owner or admin (or anyone holding their control token)
+  who wants to act as another member at that member's provider. After this
+  change they cannot do it with a token. They can still remove the member,
+  disconnect an account or change teams, and the audit shows each.
+- Binding is by user id only. A user id of another org, of a removed member or
+  one that does not exist is refused in the same statement that inserts.
+- A token keeps the role its member had when it was made (not new; noted).
+- The self-approval check still compares person labels (ADR 0014; F05 R-04 is
+  the open item). An administrator can still issue a token of nobody with a
+  label of their choice; it gets nobody's accounts.
+
+### Tasks
+- [x] ADR 0021
+- [x] Migration `00007_token_owner.sql`: `api_tokens.user_id`, `audit_events.user_id`; no backfill, on purpose
+- [x] Store: `CreateToken` binds only to an active member of the org; `UserByID`. Tests: `TestTokenBelongsToAMember`, `TestTokenCannotBeBoundToSomeoneWhoIsNotAnActiveMember`, `TestMigrationLeavesExistingTokensWithoutAnOwner`, `TestUserByID`, `TestAuditRecordsWhoseAccountACallRanAs`
+- [x] Auth: the principal carries the token's member. Test: `TestVerifyCarriesTheTokensMember`
+- [x] Gateway: team access and the per-person session read the user id, never the person. Tests: `TestAccessUsesTheUserIDNeverThePersonName`, `TestAccessFailsClosed`, `TestGrantOwnerIsTheTokensMember`, `TestTokenOfNobodyIsToldToMakeItsOwn`
+- [x] Admin API: `/me/tokens` binds, lists and revokes by member; `/tokens` never binds; `bound` in the token views; `user` in the call audit; member removal. Tests: `TestMyTokenBelongsToTheSignedInMember`, `TestAnAdministratorCannotIssueATokenThatIsAMember`, `TestAnAPITokenCannotMakeAMembersToken`, `TestMyTokensAreFoundByMemberNotByName`, `TestRemovingAMemberRevokesTheirTokensAndTheOnesThatNameThem`, `TestAuditListNamesTheMemberACallRanAs`
+- [x] Acceptance, with the real binary: `TestUpstreamOAuthTwoPeople` (three tokens that name Ada and a control token that names her are refused, nothing reaches the upstream, the audit names Ada only for her own calls), `TestTeamsLimitWhatEachPersonSees` (a token that names Ada sees and calls only what everyone reaches). The fixtures that had relied on the hole (`g.issue("ada")`, the owner's `boss-agent`) now make their tokens signed in
+- [x] The new tests fail with the hole put back (name looked up at issue time): checked 2026-11-11, the upstream answered "you are ada@linear"
+- [x] Admin app: the Tokens page marks a token that is not tied to the account, and says that the person of an API token is a label. Test: "says which of my tokens is not tied to my account"
+- [x] Docs: README (Tokens, invites), `docs/deploy-coolify.md` ("Tokens belong to members (0.7.0)", breaking), version 0.7.0
+- [ ] Owner on app.privo.club after the deploy: make a new token on the Tokens page, put it in Claude Code, revoke the old one
+- [ ] Independent review of this change (auth, tenancy, the request pipeline: required by CLAUDE.md; run when the owner says go)
+- [x] F07 R-01 and F14 R-02 ticked in their sections
+- [ ] Follow-up: record the member (user id) on approvals so the self-approval check compares members, not labels (with F05 R-04)
+
+## F29. Each server as it presents itself (ADR 0023)
+
+Status: Built in 0.9.0 (2026-11-14). Issue 3, section 2.
+
+#### Goal
+An admin adding a server answers one question, whose account it sees, and
+Privo reaches it the way it presents itself: nobody's, one shared key, each
+person's own account by signing in (ADR 0017), or each person's own API key.
+OAuth servers that do not say where people sign in can be added too.
+
+#### Acceptance
+1. `personal_key` on `POST /api/v1/servers`: header (default Authorization,
+   "Bearer " before the key), optional prefix, help text and https link.
+   Refused: reserved headers and Cookie, a prefix with line breaks, shared
+   headers or oauth alongside, stdio, and no admin site.
+2. Each person enters their own key on `/connect/<alias>` (signed in, CSRF,
+   origin, password field, shape check only). It is stored like a grant,
+   sealed to the person and the server, never shown again; a new one replaces
+   it; Connections removes it.
+3. Every call uses the caller's own key in the named header and nothing else;
+   a person without a key gets the link; a key the server refuses (401, at
+   the handshake or later) gives "<server> refused your API key" with the link
+   and is kept.
+4. A server without protected resource metadata is reported as such; with
+   `oauth.issuer` the authorization server's metadata is used with every
+   check of ADR 0017; with `authorization_endpoint`, `token_endpoint` and
+   `client_id` nothing is discovered or registered. Endpoints are https and
+   pass the egress policy. No empty `resource` parameter is sent.
+5. The admin app asks "Whose account does this server see?"; the server,
+   Start and Connections pages say "enter your key" for such a server.
+
+#### Threat note
+In ADR 0023: keys only sealed, never logged or shown, sent only to the
+server's origin; header grammar and no line breaks; the member is chosen by
+the token's user id; hand-entered endpoints pass the egress policy.
+
+#### Tasks
+- [x] `store.ServerConfig.Key`, `AuthKey`, `PurposeKeyGrant`, `PerPerson()`; a grant's credential is an OAuth grant or a key, read with its stored purpose. Test: `internal/store` `TestGrantCredentialMustBeAGrant`
+- [x] `grants.SaveKey`, `ValidKey`, `ErrKeyRefused` (a key is never refreshed or deleted on a 401). Test: `internal/grants` `TestPersonalKey`
+- [x] Upstream: the per-person header and prefix; a refused key is an error of its own. The gateway answers with the link. Covered by the acceptance test
+- [x] Admin API: `personal_key`, the server views (`auth: "key"`, `key_header` for admins), audit `server.personal_key:<alias>:<header>`. Test: `internal/control` `TestAddingAServerThatTakesEachPersonsKey`
+- [x] OAuth by hand: `upstreamauth.ErrNoResourceMetadata`, `ServerMetadataFor`, `CheckEndpoint`; registration `manual`; `resource` only when known; `iss` check only with a known issuer. Tests: `internal/upstreamauth` `TestNoResourceMetadataIsNamed`, `TestEmptyResourceIsNotSent`; `internal/control` `TestOAuthSettingsEnteredByHand`
+- [x] Website: the key page and `POST /connect/{alias}/key`; Connections lists key servers. Tests: `internal/web` `TestKeyPageSavesThePersonsOwnKey`, `TestKeyAndSignInPathsDoNotCross`
+- [x] Admin app: the question, the key and hand-entered OAuth fields, server, Start and Connections pages. Tests in `web/src/pages.test.tsx` "servers where each person brings their own key"
+- [x] Acceptance on the real binary: `TestPersonalKeysEachPersonUsesTheirOwn` (two people, their own key each in `X-Api-Key`, no Authorization header; no key, a wrong key, a key revoked upstream while connected; removal; keys not on disk or in the log)
+- [x] Docs: README, deploy guide, manual test step 11, ADR 0023; version 0.9.0
+- [x] Mutation check (2026-11-14): 14 deliberate breakages of the new code, one at a time; all 14 made a test fail (the first run found a test that passed for the wrong reason, a DNS failure, and a check without a test; both fixed)
+- [ ] An acceptance test for OAuth settings by hand against a fake authorization server without metadata (covered at unit level today)
+- [ ] Editing an existing server's way of signing in (today: add it again)
+- [ ] Independent review (secrets and the request pipeline), on the owner's word
+
+#### Independent review of 2026-11-15 (`docs/reviews/2026-11-15-f07-f29-upstream-credentials-independent-review.md`)
+Approve with changes; 0 Critical, 0 High, 2 Medium, 2 Low, 4 Info. Fixed, each with a test that fails without it:
+- [x] U-01 (Medium): mix-up through settings entered by hand without an issuer. A callback that names any issuer is refused for a server with no issuer; an administrator whose authorization server sends `iss` enters its issuer. Tests: `internal/web` `TestHandEnteredSettingsRefuseAnAnswerNamingAnIssuer`, `TestConnectWithSettingsEnteredByHand` (the connect flow with hand-entered settings had no test). Left: per-server redirect addresses would close mix-up for authorization servers that send no `iss` at all (GitHub's), at the price of every pre-registered client's callback changing
+- [x] U-02 (Medium, #11): see F14 R-01
+- [x] U-03: when the upstream refuses the key the tool list is read with, the tool list moves to another administrator's key (`store.PassCatalog`); the refused key stays its owner's. Test: acceptance `TestRefusedCatalogKeyPassesToAnotherAdmin`
+- [x] U-04: a key server's 403 is a refused key too (API gateways answer 403 to an unknown key). Test: acceptance `TestForbiddenKeyIsARefusedKey`
+- [x] U-05: a person's key cannot go in a header that names the caller or the encoding (`Forwarded`, `X-Forwarded-*`, `X-Real-Ip`, `Remote-User`, `X-Auth-Request-*`, `Cf-*`, `Accept-Encoding`, `Content-Encoding` and others). Test: `TestKeyHeadersThatNameTheCallerAreRefused`
+- [x] U-06: tests for the issuer-only path and the R-02 revocation half (acceptance `TestOAuthSettingsByIssuerAndNotOverMetadata`, `internal/grants` `TestRefreshUsesTheClientStoredNow`). The PR text said member removal was tested end to end; it is covered by the store's grant deletion tests, not by the acceptance test
+- [x] U-07: a stored credential is used only for a server of its kind; a mismatch reads as not connected. Test: `TestCredentialKindMustMatchTheServer`
+- [x] U-08: endpoints by hand are refused for a server that publishes its resource metadata. Test: acceptance `TestOAuthSettingsByIssuerAndNotOverMetadata`
+
+## F28. Activity and telemetry (the audit, reworked)
+Status: Built in 0.10.0 (2026-11-14). Issue 3, section 3.
+ADRs: 0024 (call statistics, diagnostic log, metrics), 0006 (audit)
+
+Reference: Meridian (https://github.com/rynfar/meridian, `MONITORING.md`):
+one row per request with phase timings, a summary over a window, a time
+series, a diagnostic log with categories, bounded retention, a dashboard,
+Prometheus `/metrics`. Model tokens and cost have no counterpart in Privo
+(it does not see model tokens); the nearest is the size of arguments and
+results (F17).
+
+#### Goal
+An admin sees how calls went, not only who made them: which servers and tools
+are slow or failing, where the time goes, and what happened to connections and
+grants, for a bounded time and without anything leaving the server. The audit
+keeps its guarantees.
+
+#### Acceptance
+1. Every call that reaches the decision stage writes one statistic row with
+   member, token, client, server, method, item, outcome, error class, the time
+   of each phase (decide, audit, connect, upstream, total) and the sizes of
+   arguments and result; never arguments, results, credentials or error texts.
+   Refused calls are rows with outcome `refused` and their class.
+2. A full statistics queue drops and counts; a call never waits for or fails
+   because of a statistic. The audit is unchanged.
+3. `GET /api/v1/telemetry/summary?window=&by=` (server, tool, member, client,
+   method): counts, error rate, p50/p95/p99/min/max/average of the total over
+   calls that ran, p50/p95 of each phase, sizes; counts cover every call, times
+   come from the most recent 100,000 calls that ran (`sampled`).
+4. `GET /api/v1/telemetry/timeseries?window=&bucket=` with optional server and
+   tool: per bucket calls, errors, tool errors, refusals, p50 and p95; bucket
+   at least 1 minute, at most 1,000 buckets, window at most 31 days, else 400.
+5. `GET /api/v1/telemetry/calls` (filters, newest first, at most 500) and
+   `GET /api/v1/telemetry/logs` (category, level, newest first, at most 500).
+6. `GET /api/v1/telemetry/storage`: retention, rows and the oldest of each
+   table, rows dropped since start. All five need `audit.read`; another org's
+   rows are never read.
+7. Diagnostic log: upstream connect failure, disconnection and recovery; a
+   grant refused by the authorization server and failed refreshes; a person's
+   key refused; audit events lost; process start. Repeats within a minute
+   collapse into one row with a count. Messages are fixed texts, or a fixed
+   text and the upstream's answer with every URL reduced to scheme, host and
+   path, cut at 512 bytes; what an upstream echoes of its own is its text.
+8. `PRIVO_TELEMETRY_RETENTION_DAYS` (default 30, 1 to 400, 0 is off); hourly
+   clean-up in batches.
+9. `PRIVO_METRICS_ADDR` (off by default) serves Prometheus `/metrics` on its
+   own listener: calls, a duration histogram, upstream state, audit lost,
+   statistics dropped, build info; labels server, method, outcome only.
+10. Activity page: Overview (window, totals, chart, breakdown), Tool calls,
+    Admin changes, Log.
+
+#### Threat note
+Statistics show who called what and when, like the audit: same permission
+(`audit.read`), same org scoping. They hold no arguments or results. The
+diagnostic messages are fixed texts or redacted upstream errors (the
+redaction used for the server status). `/metrics` has no authentication and
+therefore listens on its own address, never the public one; its labels are
+server aliases, methods and outcomes, no members or tools. A flood of calls
+cannot grow memory: the queue and the deduplication map are bounded.
+
+#### Tasks
+- [x] Spec, ADR 0024 (this section)
+- [x] Store: migration 00009, `CallStat`, `Diagnostic`, insert, query, storage, prune. Tests: `TestCallStatsRoundTripAndScope`, `TestPruneTelemetry`, `TestDiagnosticsQuery`
+- [x] `internal/telemetry`: recorder (bounded queue, drop and count, diagnostics dedupe), summaries and series, Prometheus text. Tests: `TestRecorderDropsWhenFull`, `TestRecorderCountsRowsItCannotWrite`, `TestDiagnosticsRepeatCollapse`, `TestDiagnosticsHeldRepeatsAreWrittenOnClose`, `TestSummarize`, `TestSeries`, `TestMetricsText`
+- [x] Gateway: phase timings, sizes, outcome and error class on every path. Tests: `TestCallStatisticsRecordPhases`, `TestRefusedCallsAreCounted`, `TestAuditFailureIsCountedAndLogged`, `TestErrorClasses`, `TestEncodedSizeIsTheRelayedJSON`
+- [x] Diagnostics from upstream, grants, gateway, audit, lifecycle. Tests: `TestUpstreamDiagnostics`, `TestGrantLostIsLogged`, `internal/audit` `TestLostEventsAreReported`
+- [x] Admin API: the five endpoints. Tests: `TestTelemetryAPI`, `TestTelemetryAPINeedsAuditRead`, `TestTelemetryWindowLimits`
+- [x] Settings `PRIVO_TELEMETRY_RETENTION_DAYS`, `PRIVO_METRICS_ADDR`; clean-up job; metrics listener. Test: `TestTelemetrySettings`
+- [x] Activity page: Overview (default tab), Tool calls, Admin changes, Log; labelled cells on phones. App tests: "activity overview and log", `overview.test.ts`; looked at in light and dark, desktop and phone
+- [x] Acceptance on the real binary: `TestActivityTelemetry` (calls show up with phases and sizes, share the audit's call id; /metrics answers on its own address only), `TestTelemetryOff`
+- [x] Docs: README "Activity: how calls went", deploy guide 0.10.0, manual test step 12, ADR index; version 0.10.0
+- [x] Mutation check (2026-11-14): 23 deliberate breakages of the new code (org scoping, pruning, a blocking queue, repeat collapse, refusals timed, label escaping, error classes, permissions, window limits, diagnostics, the metrics port), one at a time; all 23 made a test fail
+- [ ] Independent security review (on the owner's word)
+
+#### Independent review of 2026-11-15 (`docs/reviews/2026-11-15-f28-telemetry-independent-review.md`)
+Approve with changes; 0 Critical, 1 High, 1 Medium, 5 Low, 3 Info. Fixed, each with a test that fails without it:
+- [x] T-01 (High): every diagnostic message is cut at 512 bytes on a rune boundary in `Recorder.Diagnose`, whatever its source; server and member at 64. Test: `TestDiagnosticsAreClipped`
+- [x] T-02 (Medium): counts and chart buckets come from `GROUP BY` in SQL (`store.CountCallStats`) and cover every call; times from the newest 100,000 calls that ran (`store.SampleCallStats`), flagged `sampled` with `sample_from`, and the Overview says so. Tests: `internal/store` `TestCountAndSampleCallStats`, `internal/telemetry` `TestSummarize`, `TestSeries`
+- [x] T-03: compact sample rows; at most two aggregations at once; an answer reused for five seconds. Test: the cache in `TestTelemetryAPI`
+- [x] T-04: retention 0 deletes what an earlier run kept. Test: acceptance `TestSwitchingStatisticsOffDeletesThem`
+- [x] T-05: every URL in upstream text loses its query and user info (`RedactText`); the threat note no longer promises that upstream text carries nothing. Test: `TestUpstreamDiagnosticsRedactTheURL` (a closed port, so the error names the URL)
+- [x] T-06: the result size is a sum of content lengths (text; binary as base64), no second encoding. Test: `TestResultSizeFromContentLengths`
+- [x] T-07: the redaction test can fail now; the key-refused diagnostic is checked in acceptance `TestForbiddenKeyIsARefusedKey`; pruning leaves another org's diagnostics (`TestPruneTelemetry`)
+- [x] T-08: the deploy guide says what `0.0.0.0:9464` exposes to the Docker network. Open: an optional bearer token for `/metrics`
+- [x] T-09: exactly 1,000 buckets allowed; the chart counts the same window as the totals; `limit` over the bound reads the bound; a huge day count is refused before multiplying
+- [x] T-10: the time held for a person's approval is its own phase (`wait_us`) and is left out of latency and the duration histogram (`TestMetricsText`, `TestCountAndSampleCallStats`)

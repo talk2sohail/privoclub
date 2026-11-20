@@ -23,6 +23,20 @@ func sessionCookieName(e *env) string { return e.srv.sessionCookie }
 
 // ---- not configured
 
+// The site does not run without the key that seals the sign-in cookie.
+func TestDisabledWithoutTheSealingKey(t *testing.T) {
+	e := newEnv(t, func(o *Options) { o.Keys = nil })
+	for _, tc := range []struct{ method, path string }{{"GET", "/admin/signin"}, {"POST", "/auth/github/start"}, {"GET", "/auth/github/callback?code=a&state=b"}} {
+		var form url.Values
+		if tc.method == "POST" {
+			form = url.Values{}
+		}
+		if res := e.browser().do(tc.method, tc.path, form, nil); res.StatusCode != http.StatusServiceUnavailable {
+			t.Errorf("%s %s: status %d, want 503", tc.method, tc.path, res.StatusCode)
+		}
+	}
+}
+
 func TestDisabledWithoutConfiguration(t *testing.T) {
 	srv := New(Options{Missing: []string{"PRIVO_GITHUB_CLIENT_ID", "PRIVO_PUBLIC_URL"}})
 	mux := http.NewServeMux()
@@ -173,8 +187,8 @@ func TestStartWithBadSetupToken(t *testing.T) {
 			t.Errorf("%s: status %d, want 404", name, res.StatusCode)
 		}
 	}
-	if b.cookie(e.srv.stateCookie) != nil {
-		t.Error("a state cookie was set for a bad setup token")
+	if b.cookie(e.srv.signInCookie) != nil {
+		t.Error("a sign-in cookie was set for a bad setup token")
 	}
 }
 
@@ -262,16 +276,16 @@ func TestStateReplayRefused(t *testing.T) {
 	start := b.post("/auth/github/start", nil)
 	code, state := e.gh.authorize(location(start), octo)
 	cb := "/auth/github/callback?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(state)
-	stateCookie := b.cookie(e.srv.stateCookie)
+	stateCookie := b.cookie(e.srv.signInCookie)
 
 	if res := b.get(cb); res.StatusCode != http.StatusSeeOther {
 		t.Fatalf("first use: %d\n%s", res.StatusCode, res.Body)
 	}
-	if b.cookie(e.srv.stateCookie) != nil {
-		t.Error("the state cookie is still set after use")
+	if b.cookie(e.srv.signInCookie) != nil {
+		t.Error("the sign-in cookie is still set after use")
 	}
 	// Replay with the cookie put back (a captured callback URL and cookie).
-	b.cookies[e.srv.stateCookie] = stateCookie
+	b.cookies[e.srv.signInCookie] = stateCookie
 	if res := b.get(cb); res.StatusCode != http.StatusBadRequest {
 		t.Errorf("replay: status %d, want 400", res.StatusCode)
 	}
@@ -379,23 +393,6 @@ func TestExchangeFailureAndGitHubDown(t *testing.T) {
 	}
 }
 
-func TestStartCapReturns503(t *testing.T) {
-	e := newEnv(t, func(o *Options) { o.StateCap = 3 })
-	b := e.browser()
-	for i := 0; i < 3; i++ {
-		if res := b.post("/auth/github/start", nil); res.StatusCode != http.StatusSeeOther {
-			t.Fatalf("start %d: %d", i, res.StatusCode)
-		}
-	}
-	if res := b.post("/auth/github/start", nil); res.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("start over the cap: %d, want 503", res.StatusCode)
-	}
-	e.clock.advance(11 * time.Minute)
-	if res := b.post("/auth/github/start", nil); res.StatusCode != http.StatusSeeOther {
-		t.Errorf("start after they expired: %d", res.StatusCode)
-	}
-}
-
 // ---- cookies and sessions
 
 func TestCookieFlagsHTTPS(t *testing.T) {
@@ -407,7 +404,7 @@ func TestCookieFlagsHTTPS(t *testing.T) {
 	for _, c := range start.Cookies() {
 		stateC = c
 	}
-	if stateC == nil || stateC.Name != "__Host-privo_oauth" {
+	if stateC == nil || stateC.Name != "__Host-privo_signin" {
 		t.Fatalf("state cookie %+v", stateC)
 	}
 	code, state := e.gh.authorize(location(start), octo)
@@ -418,7 +415,7 @@ func TestCookieFlagsHTTPS(t *testing.T) {
 		switch c.Name {
 		case "__Host-privo_session":
 			sess = c
-		case "__Host-privo_oauth":
+		case "__Host-privo_signin":
 			cleared = c
 		}
 	}
@@ -664,8 +661,8 @@ func TestSignInStartNeedsASameOriginPost(t *testing.T) {
 	if res := b.do("POST", "/auth/github/start", url.Values{}, map[string]string{"Origin": ""}); res.StatusCode != http.StatusForbidden {
 		t.Errorf("start without origin: %d, want 403", res.StatusCode)
 	}
-	if b.cookie(e.srv.stateCookie) != nil {
-		t.Error("a refused start still set a state cookie")
+	if b.cookie(e.srv.signInCookie) != nil {
+		t.Error("a refused start still set a sign-in cookie")
 	}
 	if res := b.get("/auth/github/start"); res.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("GET start: %d, want 405", res.StatusCode)
@@ -731,8 +728,12 @@ func TestPruneRemovesWhatCannotBeUsed(t *testing.T) {
 	e.member(octo, "octocat", store.RoleOwner)
 	b := e.browser()
 	e.signIn(b, octo)
-	e.browser().post("/auth/github/start", nil)
 	e.setupLink("")
+	u, _ := e.st.UserByIdentity(context.Background(), e.org, store.ProviderGitHub, "1001")
+	if err := e.st.CreateConnectState(context.Background(), e.org, store.ConnectState{Hash: "h", Verifier: "v", UserID: u.ID, SessionID: "s", ServerID: "srv",
+		ExpiresAt: e.clock.now().Add(StateTTL)}, e.clock.now()); err != nil {
+		t.Fatal(err)
+	}
 	count := func(table string) (n int) {
 		if err := e.db().QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
 			t.Fatal(err)
@@ -895,21 +896,6 @@ func TestNothingSecretInLogsOrAudit(t *testing.T) {
 	}
 	if len(evs) == 0 {
 		t.Fatal("nothing was audited: the check proves nothing")
-	}
-}
-
-func TestExpiredStatesArePrunedOnStart(t *testing.T) {
-	e := newEnv(t)
-	b := e.browser()
-	b.post("/auth/github/start", nil)
-	e.clock.advance(15 * time.Minute)
-	b.post("/auth/github/start", nil)
-	var n int
-	if err := e.db().QueryRow(`SELECT COUNT(*) FROM oauth_states`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Errorf("%d states stored, want only the unexpired one", n)
 	}
 }
 

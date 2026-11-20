@@ -9,7 +9,7 @@ per feature is in `docs/todo.md`.
 
 ## Build
 
-Requires Go 1.26 or later; `go.mod` pins the 1.27.3 toolchain.
+Requires Go 1.26 or later; `go.mod` pins the toolchain (1.27.4 or later: GO-2026-6859).
 
 ```sh
 make            # vet, lint, test, build
@@ -45,16 +45,22 @@ curl localhost:8080/livez
 | `PRIVO_BACKUP_INTERVAL` | unset (off) | Write a database snapshot this often (`24h`); see `docs/deploy-coolify.md`, Backups |
 | `PRIVO_BACKUP_KEEP` | `7` | Snapshots to keep (1 to 1000) |
 | `PRIVO_BACKUP_DIR` | `<data dir>/backups` | Where snapshots go |
+| `PRIVO_TELEMETRY_RETENTION_DAYS` | `30` | How long call statistics and the diagnostic log behind the Activity page are kept, 0 to 400 days; `0` records none (ADR 0024). Nothing leaves the server |
+| `PRIVO_METRICS_ADDR` | unset (off) | Serve Prometheus metrics at `/metrics` on this address, such as `127.0.0.1:9464`. No sign-in: keep it private (localhost or an internal network), never the public port |
 | `PRIVO_TOKEN_TTL` | `2160h` | Default personal token lifetime |
 | `PRIVO_UPSTREAM_RETRY_BASE` / `PRIVO_UPSTREAM_RETRY_MAX` | `2s` / `30s` | Backoff bounds when an upstream server drops and is reconnected |
 | `PRIVO_RUNNER` / `PRIVO_INSECURE_LOCAL_RUNNER` | unset | Stdio servers: empty refuses them; `local` runs them unisolated on this host and needs `PRIVO_INSECURE_LOCAL_RUNNER=i-understand` (development only, ADR 0007) |
 | `PRIVO_EGRESS_ALLOW_CIDRS` | unset | Internal networks remote servers may use (self-hosted only) |
+| `PRIVO_TRUSTED_PROXIES` | unset | Reverse proxies in front of Privo, as CIDRs (for example `10.0.0.0/8,172.16.0.0/12` for the Docker networks of Coolify's Traefik). Per-address limits then count the client named in `X-Forwarded-For` instead of the proxy. Never list an address a client can reach Privo from directly |
 | `PRIVO_BOOTSTRAP_TOKEN_FILE` / `PRIVO_BOOTSTRAP_TOKEN` | unset | First boot only: a token from `privo token generate`, installed once as the owner's control token (expires after 24h). Prefer the file form: the plain variable stays readable in `/proc/<pid>/environ` (a warning says so). Remove after first use |
 | `PRIVO_GITHUB_CLIENT_ID` | unset | Client ID of the GitHub OAuth App that signs people in to the admin site (ADR 0016). Web sign-in is on only when this, the client secret and `PRIVO_PUBLIC_URL` are all set; otherwise `/admin` and `/auth` answer 503 |
 | `PRIVO_GITHUB_CLIENT_SECRET_FILE` / `PRIVO_GITHUB_CLIENT_SECRET` | unset | The OAuth App's client secret. Prefer the file form (a Coolify file mount); the plain variable is never accepted in the config file |
 | `PRIVO_GITHUB_BASE_URL` / `PRIVO_GITHUB_API_URL` | `https://github.com` / `https://api.github.com` | Where people sign in and where the profile is read; set both for GitHub Enterprise Server (https unless loopback; a private address needs `PRIVO_EGRESS_ALLOW_CIDRS`) |
 | `PRIVO_SESSION_IDLE_TIMEOUT` | `2h` | A browser session ends after this long without a request (1m to 24h) |
 | `PRIVO_SESSION_MAX_AGE` | `12h` | A browser session ends this long after sign-in whatever happens (5m to 720h) |
+| `PRIVO_OAUTH_SERVER` | `off` | `on` lets AI clients sign in to the gateway with OAuth instead of a pasted token (ADR 0022): Privo becomes the authorization server for `/mcp`. Needs web sign-in. Off, `/oauth` answers 503 and personal tokens are the only way in |
+| `PRIVO_OAUTH_CLIENTS` | `known` | Which AI clients may ask a member for access: `known` (Privo's built-in list plus the ones an administrator approves on the Clients page), `approved` (only approved ones) or `any` (every client that publishes a metadata document) |
+| `PRIVO_OAUTH_DYNAMIC_REGISTRATION` | `off` | `on` lets a client register itself (RFC 7591), which some clients need because they publish no metadata document. Registrations are limited, labelled "not verified" on the consent page and deleted when unused |
 
 ### Configuration file
 
@@ -116,9 +122,9 @@ People approve calls in a browser, with their GitHub account and no token
    ```
 
    Open the link within an hour, sign in with the GitHub account that should own
-   this Privo, and you are in. The link works once. `--person` is your name in
-   Privo (default: your GitHub login in lowercase); self-approval is refused
-   between your tokens and your sessions.
+   this Privo, and you are in. The link works once. `--person` is the name your
+   tokens carry (default: your GitHub login in lowercase); self-approval is
+   refused between tokens and sessions of the same person.
 3. `/admin/approvals` lists the calls waiting for a decision, with their
    arguments. Owners, admins and approvers can approve or deny.
 
@@ -133,10 +139,8 @@ privo admin invite --person ada [--role member|approver|auditor|admin]
 
 prints a link that works once, for 72 hours (also `POST /api/v1/invites` with
 `{"person": "ada", "role": "member"}`). Ada opens it and signs in with GitHub;
-her account is bound by its numeric GitHub id. She makes the token for her AI
-client herself, on the Tokens page: only a token a person makes while signed in
-uses their own accounts and teams. Nobody else, owners included, can issue a
-token that acts as her.
+her account is bound by its numeric GitHub id. She then makes a token for each
+of her AI clients on the **Tokens** page.
 
 ## Servers where each person uses their own account
 
@@ -166,6 +170,47 @@ on the admin site, or follows the link their AI client shows on the first call.
 A person disconnects there; an admin lists and removes connections with
 `GET /api/v1/servers/<alias>/connections` and
 `DELETE /api/v1/servers/<alias>/connections/<person>`.
+
+**A server that does not say where its people sign in** (no protected
+resource metadata, common before the MCP authorization spec): give its
+authorization server, `"oauth": {"issuer": "https://login.example.com"}`. If
+that publishes no metadata either, give its endpoints and a client id:
+`"oauth": {"authorization_endpoint": "...", "token_endpoint": "...",
+"client_id": "...", "client_secret": "..."}` (ADR 0023). `"resource"` is sent
+only when the server names one or you give it.
+
+### Each person's own API key (0.9.0)
+
+For a server that takes an API key where each person has their own (ADR
+0023):
+
+```sh
+curl -X POST $PRIVO/api/v1/servers -H "Authorization: Bearer $OWNER" -d '{
+  "alias": "acme", "transport": "http", "url": "https://mcp.acme.example/mcp",
+  "personal_key": {"header": "X-Api-Key", "help": "Settings, then API keys.",
+                   "help_url": "https://acme.example/settings/api"}
+}'
+```
+
+`header` defaults to `Authorization`, with `Bearer ` before the key (change it
+with `"prefix"`). Each person enters their own key once at `/connect/<alias>`
+(Connections, or the link their AI client shows); Privo keeps it encrypted,
+never shows it again, and sends it only with that person's calls. The first
+owner or admin who enters a key provides the tool list. When the server
+refuses a key, the call says so with the link to enter a new one. In the
+admin app this is the question **Whose account does this server see?** on
+**Servers → Add another server**.
+
+
+A server that answers 401 or 403 to a key is treated as refusing it. When the
+key the tool list is read with is refused, another administrator's key takes
+over the tool list. The header cannot be one that names the caller to a server
+or a proxy (such as `X-Forwarded-User` or `Remote-User`), or `Cookie`.
+
+For OAuth settings entered by hand without an issuer, an answer that names an
+issuer is refused (a mix-up defence); if your authorization server sends `iss`,
+enter its issuer. Endpoints by hand are refused for a server that publishes its
+own sign-in metadata.
 
 ## Teams and the server catalog
 
@@ -198,6 +243,75 @@ the API without `"teams"`, are for everyone. API: `GET/POST /api/v1/teams`,
 `POST` and `PATCH /api/v1/servers`, `GET /api/v1/catalog`, and
 `GET /api/v1/me/tools` for one's own servers.
 
+## AI clients sign in with OAuth (0.8.0, off unless switched on)
+
+With `PRIVO_OAUTH_SERVER=on` an AI client needs no token at all (ADR 0022).
+Give it the gateway's address, `https://<privo>/mcp`; it finds Privo's
+authorization server by itself, opens a browser, the person signs in to Privo
+(with GitHub, as for the admin site), sees a page that names the client and
+where it will send them back, and presses **Allow**. The client then calls as
+that member: their teams' servers and their own accounts.
+
+- **Which clients may ask** (`PRIVO_OAUTH_CLIENTS`): `known` (default)
+  accepts Privo's built-in list (Claude Code, Claude on the web and desktop,
+  VS Code, ChatGPT, Codex, GitHub Copilot CLI, Zed, Antigravity) plus any
+  client an administrator approves on **Clients** by the address of its
+  metadata document; `approved` accepts only approved ones; `any` accepts
+  every client that publishes a metadata document. A member still allows
+  each client on a page that names it, every time.
+- **Clients that register themselves** (Cursor, Gemini CLI, Mistral) need
+  `PRIVO_OAUTH_DYNAMIC_REGISTRATION=on`. They are shown as "registered
+  itself, not verified", limited per address and in total, and removed when
+  unused.
+- **Tokens:** access tokens live an hour and work only on `/mcp`, never on
+  the admin API. A refresh token rotates on every use; a refresh token that
+  was already used, presented again, ends that client's access at once (no
+  grace window). A client that is not used for 30 days, or 90 days after the
+  person allowed it, has to ask again.
+- **Taking access away:** each person on **Tokens → AI clients that signed
+  in**; an administrator for everyone on **Clients**. Removing a member, or
+  giving them a role that cannot use the gateway, ends their clients' access.
+  Every case counts within 2 seconds.
+- The protected resource metadata names the authorization server only while
+  it is on. Off, `/oauth/authorize`, `/oauth/token`, `/oauth/revoke` and
+  `/oauth/register` answer 503, and personal tokens are the only way in.
+- The hosted Claude apps and ChatGPT must reach Privo from their own servers,
+  and Privo must be allowed to fetch their metadata documents (public
+  addresses only, through the egress policy).
+
+Personal tokens keep working for clients without OAuth and for scripts.
+
+## Activity: how calls went (0.10.0)
+
+**Activity → Overview** shows, for the last hour, day, week or month: how many
+calls there were, how many failed, were tool errors or were refused, the
+median and p95 time, a chart over the window, and a table by server, tool,
+member or client with p50/p95/p99, the time spent getting the server's session
+(including a sign-in refresh), the time the server itself took, and the
+average size of what it sent back (what the model reads). **Log** lists what
+happened to connections, sign-ins and keys, the audit and the process: a
+server that failed to connect and came back, a grant the provider refused, a
+person's key the server refused; the same event within a minute is one line
+with a count. **Tool calls** and **Admin changes** are the audit as before.
+
+These statistics are kept apart from the audit (ADR 0024): one row per call
+with its phases and sizes, never its arguments, result or error text. They are
+best effort (a full queue drops a row and counts it rather than slow a call;
+counts cover every call, and times come from the most recent 100,000 calls
+in a window; the time a person takes to approve is kept out of latency),
+kept `PRIVO_TELEMETRY_RETENTION_DAYS` days (30 by default; `0` turns them off),
+and nothing leaves the server. Owners, admins and auditors see them, like the
+audit. The same figures come from the admin API under `/api/v1/telemetry/`
+(`summary`, `timeseries`, `calls`, `logs`, `storage`).
+
+For Prometheus and Grafana, set `PRIVO_METRICS_ADDR=127.0.0.1:9464` (or an
+address on an internal network): `/metrics` there gives
+`privo_mcp_calls_total{server,method,outcome}`,
+`privo_mcp_call_duration_seconds` (a histogram by server and method),
+`privo_upstream_up{server}`, `privo_audit_events_lost_total`,
+`privo_telemetry_dropped_total` and `privo_build_info`. It has no sign-in, so
+it never shares the public port.
+
 ## Tokens
 
 Privo has two kinds of personal token (ADR 0014):
@@ -207,18 +321,20 @@ Privo has two kinds of personal token (ADR 0014):
 - **Control tokens** are for people administering Privo and work only on the
   admin API. Approvers only get control tokens.
 
+A gateway token **belongs to the member who made it** on the Tokens page,
+signed in (ADR 0021). Only such a token uses that member's teams and their own
+accounts on OAuth servers, and the audit names the member with every call
+(`user`). A token issued any other way (`POST /api/v1/tokens`,
+`privo token create`) belongs to nobody, whatever `person` it names: it
+reaches the servers everyone can use and never anyone's account. `person` is a
+label for approvals and the audit. The lists show which is which (`bound`).
+
 First setup, where you have a shell on the server:
 
 ```sh
 privo token create --name you --role owner --kind control       # admin API
-privo token create --name ci-agent --role member --kind gateway --person ci   # a service's AI client
+privo token create --name ci --role member --kind gateway        # a script: servers everyone can use
 ```
-
-`--person` (and `person` in `POST /api/v1/tokens`) names the service or script
-a token is for; it defaults to the token's name and may not be a member's name.
-Such a token reaches the `everyone` team and no one's own accounts. People who
-sign in make their own AI client tokens on the Tokens page; those are bound to
-them.
 
 Backups and restore (ADR 0010, `docs/deploy-coolify.md`):
 

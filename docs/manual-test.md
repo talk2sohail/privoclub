@@ -117,3 +117,63 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
    expect "Saved". Untick Everyone → **Save**.
 8. **Activity → Admin changes**: team.create, team.member.add, server.create,
    server.teams (one per Save) with you as actor.
+
+## 10. An AI client signs in with OAuth (needs 0.8.0+ and `PRIVO_OAUTH_SERVER=on`)
+
+1. In Claude Code: `claude mcp add --transport http privo https://app.privo.club/mcp`
+   (no token), then `/mcp` and **Authenticate**. Expect: a browser opens on
+   Privo; signed out, you go through GitHub first and land back on the page.
+2. Expect the page to say **Let Claude Code use Privo as you?**, name
+   `claude.ai` as the client, `localhost:<port>` as where you go back, you as
+   the person, and warn that it runs on your computer. Press **Deny**: Claude
+   Code reports the refusal. Authenticate again and press **Allow**: Claude
+   Code says it is connected.
+3. Ask Claude Code to call a tool of a server you connected your own account
+   to (8): it answers as you.
+4. **Tokens → AI clients that signed in**: Claude Code is listed. As the
+   owner, **Clients → Connected clients** shows it under your name.
+5. **Take access away**. Within seconds Claude Code's next call fails and it
+   asks to authenticate again.
+6. **Activity → Admin changes**: `oauth.grant.allow`, `oauth.token.exchange`,
+   `oauth.grant.revoke:…` with the client and "for <you>".
+7. Optional: Claude on the web (Settings → Connectors → add
+   `https://app.privo.club/mcp`) and VS Code, the same way. Cursor needs
+   `PRIVO_OAUTH_DYNAMIC_REGISTRATION=on` and is shown as "registered itself,
+   not verified".
+
+## 11. A server that takes each person's own key (needs 0.9.0+)
+
+Needs a server that takes an API key in a header; any MCP server behind a
+proxy that checks a header will do.
+
+1. **Servers → Add another server**: under **Whose account does this server
+   see?** choose **Each person's own account, by their own API key**. Header
+   `X-Api-Key` (or leave `Authorization`), a line on where to get a key, a
+   link. **Add server**. Expect: the server page says people enter their own
+   key at `/connect/<name>`, sent as that header.
+2. Open that link: a page with your server's name, the help text, the link
+   and a password field. Enter your key → **Save my key**. Expect: back on
+   Connections, the server marked connected; the server page comes up and
+   lists its tools for review.
+3. As the second account: the AI client's first call says to enter a key,
+   with the link. Enter a wrong one: the next call says the server refused
+   your API key, with the link. Enter the right one: the call works as that
+   account.
+4. **Activity → Admin changes**: `server.personal_key:<name>:<header>` and
+   `upstream.connect:<name>` for each person.
+
+## 12. Activity statistics and the log (needs 0.10.0+)
+
+1. Make a few calls from an AI client (one that works, and one to a tool a
+   rule denies, if you have one).
+2. **Activity**: the Overview is the first tab. Expect the calls counted,
+   the refused one under Refused, a bar in the chart, and the server in the
+   table with its median and p95. Switch **by tool** and **by member**: your
+   name appears, not an id.
+3. **Log**: expect "Privo 0.10.0 started" under Start and stop. Stop an
+   upstream server (or give it a wrong URL) and wait a minute: expect
+   "connection failed" with a count, and "connected again" once it is back.
+4. At the bottom of the Overview: "Kept for 30 days", and no "not recorded".
+5. Optional: with `PRIVO_METRICS_ADDR=127.0.0.1:9464`, `curl
+   127.0.0.1:9464/metrics` in the container shows `privo_mcp_calls_total`;
+   `https://<your domain>/metrics` does not.

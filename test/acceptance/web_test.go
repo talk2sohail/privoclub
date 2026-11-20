@@ -117,19 +117,19 @@ func randomHex(n int) string {
 }
 
 // webGateway starts the gateway with web sign-in configured against gh.
-func webGateway(t *testing.T, gh *acceptanceGitHub) *gateway {
+func webGateway(t *testing.T, gh *acceptanceGitHub, extraEnv ...string) *gateway {
 	t.Helper()
 	secretFile := filepath.Join(t.TempDir(), "github-client-secret")
 	if err := os.WriteFile(secretFile, []byte(webClientSecret+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return startGateway(t,
-		"PRIVO_GITHUB_CLIENT_ID="+webClientID,
-		"PRIVO_GITHUB_CLIENT_SECRET_FILE="+secretFile,
-		"PRIVO_GITHUB_BASE_URL="+gh.srv.URL,
-		"PRIVO_GITHUB_API_URL="+gh.srv.URL+"/api",
+	return startGateway(t, append([]string{
+		"PRIVO_GITHUB_CLIENT_ID=" + webClientID,
+		"PRIVO_GITHUB_CLIENT_SECRET_FILE=" + secretFile,
+		"PRIVO_GITHUB_BASE_URL=" + gh.srv.URL,
+		"PRIVO_GITHUB_API_URL=" + gh.srv.URL + "/api",
 		"PRIVO_EGRESS_ALLOW_CIDRS=127.0.0.0/8", // the fake GitHub is on loopback
-	)
+	}, extraEnv...)...)
 }
 
 // person is a browser: a cookie jar that does not follow redirects by itself.
@@ -189,18 +189,6 @@ func (p *person) csrf() string {
 		p.t.Fatalf("session: %d %s", res.StatusCode, body)
 	}
 	return s.CSRF
-}
-
-// myToken makes a gateway token of the person's own while signed in, as the
-// Tokens page does: the only way to get a token bound to a member (F07 R-01).
-func (p *person) myToken(name string) string {
-	p.t.Helper()
-	code, res := p.app(http.MethodPost, "/v1/me/tokens", map[string]any{"name": name}, nil)
-	tok, _ := res["token"].(string)
-	if code != http.StatusCreated || tok == "" || res["personal"] != true {
-		p.t.Fatalf("own token %q: %d %v", name, code, res)
-	}
-	return tok
 }
 
 // app calls /admin/api{path} as the admin app does: JSON, same origin, the

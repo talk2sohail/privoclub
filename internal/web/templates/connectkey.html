@@ -1,0 +1,15 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>Your {{.Server}} API key</h1>
+  <p><code>{{.Server}}</code> takes each person's own API key. Privo keeps <strong>yours</strong> encrypted and sends it only with calls you make through Privo to <code>{{.Server}}</code>, at <strong>{{.AuthHost}}</strong>.</p>
+{{if .KeyHelp}}  <p>{{.KeyHelp}}</p>
+{{end}}{{if .KeyHelpURL}}  <p><a href="{{.KeyHelpURL}}" rel="noopener noreferrer" target="_blank">Where to get your key</a></p>
+{{end}}{{if .Connected}}  <p class="meta">A key of yours is saved. A new one replaces it.</p>
+{{end}}  <form method="post" action="/connect/{{.Server}}/key" autocomplete="off">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <label>API key <input type="password" name="key" required maxlength="4096" autocomplete="off" spellcheck="false"></label>
+    <button type="submit" class="primary">Save my key</button>
+  </form>
+  <p class="meta">You can remove it at any time from your connections. Privo never shows it again, to you or to anyone.</p>
+</section>
+{{end}}

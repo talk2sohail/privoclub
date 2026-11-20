@@ -1,8 +1,10 @@
+import { Fragment } from "preact";
 import type { PageProps } from "../app";
 import { useData } from "../data";
 import { Link, query } from "../router";
 import type { AuditEvent } from "../types";
 import { Empty, ErrorLine, Loading, when } from "../ui";
+import { Log, Overview } from "./overview";
 
 /** shortDecision drops the approval id: "approved:<id>" reads as "approved". */
 export function shortDecision(d: string): string {
@@ -19,17 +21,40 @@ export function shortApprover(a: string | undefined): string {
 // Reading the activity writes nothing, so the page keeps itself current.
 const POLL_MS = 10_000;
 
+const VIEWS: [string, string][] = [
+  ["overview", "Overview"],
+  ["calls", "Tool calls"],
+  ["admin", "Admin changes"],
+  ["log", "Log"],
+];
+
 export function Activity({ loc }: PageProps) {
-  const admin = query(loc, "view") === "admin";
-  const res = useData<{ events: AuditEvent[] }>("/v1/audit/events?limit=100" + (admin ? "&kind=admin" : ""), POLL_MS);
-  const events = res.data?.events;
+  const v = query(loc, "view");
+  const view = VIEWS.some(([k]) => k === v) ? v : "overview";
   return (
     <>
       <h1>Activity</h1>
       <p class="tabs">
-        {admin ? <Link href="/admin/activity">Tool calls</Link> : <strong>Tool calls</strong>} ·{" "}
-        {admin ? <strong>Admin changes</strong> : <Link href="/admin/activity?view=admin">Admin changes</Link>}
+        {VIEWS.map(([k, label], i) => (
+          <Fragment key={k}>
+            {i > 0 && " · "}
+            {k === view ? <strong>{label}</strong> : <Link href={k === "overview" ? "/admin/activity" : `/admin/activity?view=${k}`}>{label}</Link>}
+          </Fragment>
+        ))}
       </p>
+      {view === "overview" && <Overview loc={loc} />}
+      {view === "log" && <Log loc={loc} />}
+      {(view === "calls" || view === "admin") && <AuditList admin={view === "admin"} />}
+    </>
+  );
+}
+
+/** AuditList is the audit (ADR 0006): who did what, newest first. */
+function AuditList({ admin }: { admin: boolean }) {
+  const res = useData<{ events: AuditEvent[] }>("/v1/audit/events?limit=100" + (admin ? "&kind=admin" : ""), POLL_MS);
+  const events = res.data?.events;
+  return (
+    <>
       <ErrorLine text={res.error} />
       {!events && res.loading && <Loading what="activity" />}
       {events && events.length === 0 && <Empty>Nothing yet.</Empty>}
@@ -53,7 +78,7 @@ export function Activity({ loc }: PageProps) {
                       <td>{when(e.time)}</td>
                       <td>
                         {e.actor}
-                        {e.account && <small class="meta"> as {shortApprover(e.account)}</small>}
+                        {e.user && e.user !== e.actor && <small class="meta"> for {e.user}</small>}
                       </td>
                       <td>
                         <code>{e.action}</code>
@@ -69,7 +94,7 @@ export function Activity({ loc }: PageProps) {
                 <thead>
                   <tr>
                     <th>Time</th>
-                    <th>Token</th>
+                    <th>Token or client</th>
                     <th>Server</th>
                     <th>Tool</th>
                     <th>Decision</th>
@@ -82,7 +107,7 @@ export function Activity({ loc }: PageProps) {
                       <td>{when(e.time)}</td>
                       <td>
                         {e.actor}
-                        {e.account && <small class="meta"> as {shortApprover(e.account)}</small>}
+                        {e.user && e.user !== e.actor && <small class="meta"> as {e.user}</small>}
                       </td>
                       <td>{e.server}</td>
                       <td>

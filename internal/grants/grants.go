@@ -20,6 +20,7 @@ import (
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstreamauth"
 	"privo.club/privo/internal/vault"
 )
@@ -35,16 +36,40 @@ const refreshTimeout = 20 * time.Second
 // connected, disconnected, or the authorization server refused the grant.
 var ErrNotConnected = errors.New("grants: no connected account")
 
+// ErrKeyRefused means the server refused the person's own API key (ADR
+// 0023). The key is kept: a 401 can be the server's mistake, and the person
+// replaces the key on the connect page.
+var ErrKeyRefused = errors.New("grants: the server refused the person's API key")
+
+// maxKeyLen bounds an API key.
+const maxKeyLen = 4096
+
+// ValidKey reports whether a pasted API key can be sent in a header: printable
+// ASCII without spaces, at most 4096 characters.
+func ValidKey(key string) bool {
+	if key == "" || len(key) > maxKeyLen {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		if key[i] < 0x21 || key[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
 // Store is the store subset the service uses.
 type Store interface {
 	Grant(ctx context.Context, org store.OrgID, serverID, userID string) (store.Grant, error)
 	CatalogGrant(ctx context.Context, org store.OrgID, serverID string) (store.Grant, error)
+	PassCatalog(ctx context.Context, org store.OrgID, serverID, userID string) (bool, error)
 	SaveGrant(ctx context.Context, org store.OrgID, g store.Grant, catalogOK bool, ev store.AuditEvent) (store.Grant, error)
 	UpdateGrantToken(ctx context.Context, org store.OrgID, serverID, userID string, from uint64, c store.Credential, now time.Time) error
 	DeleteGrant(ctx context.Context, org store.OrgID, serverID, userID string, ev store.AuditEvent) error
 	TouchGrant(ctx context.Context, org store.OrgID, serverID, userID string, now time.Time) error
 	ServerCredentials(ctx context.Context, org store.OrgID, serverID string) ([]store.Credential, error)
 	UpdateServerOAuth(ctx context.Context, org store.OrgID, serverID string, o store.ServerOAuth, secret *store.Credential) error
+	ServerByID(ctx context.Context, org store.OrgID, id string) (store.Server, error)
 }
 
 // Service is safe for concurrent use.
@@ -55,6 +80,9 @@ type Service struct {
 	PublicURL *url.URL
 	Now       func() time.Time
 	Logger    *slog.Logger
+	// Diagnostics receives grant events for the diagnostic log (ADR 0024);
+	// nil records none.
+	Diagnostics *telemetry.Recorder
 
 	mu      sync.Mutex
 	flights map[string]*flight
@@ -167,6 +195,28 @@ func (s *Service) Save(ctx context.Context, org store.OrgID, srv store.Server, u
 	return s.Store.SaveGrant(ctx, org, store.Grant{ServerID: srv.ID, UserID: user.ID, Scopes: tok.Scope, ConnectedAt: s.now(), Credential: c}, catalogOK, ev)
 }
 
+// SaveKey stores a person's own API key for a server (ADR 0023), sealed to
+// that person and server like an OAuth grant, replacing a key they saved
+// before. catalogOK says the user manages servers, so their key may list the
+// catalog.
+func (s *Service) SaveKey(ctx context.Context, org store.OrgID, srv store.Server, user store.User, key string, catalogOK bool, ev store.AuditEvent) (store.Grant, error) {
+	if srv.Config.Auth != store.AuthKey {
+		return store.Grant{}, errors.New("grants: the server does not take personal keys")
+	}
+	if !ValidKey(key) {
+		return store.Grant{}, errors.New("grants: an API key is printable characters without spaces, at most 4096")
+	}
+	b, err := json.Marshal(upstreamauth.Token{AccessToken: key}) //nolint:gosec // marshalled only to be sealed in the vault
+	if err != nil {
+		return store.Grant{}, err
+	}
+	c, err := s.seal(ctx, org, store.Credential{ID: ids.New(), ServerID: srv.ID, OwnerID: user.ID, Purpose: store.PurposeKeyGrant, RowVersion: 1}, b)
+	if err != nil {
+		return store.Grant{}, err
+	}
+	return s.Store.SaveGrant(ctx, org, store.Grant{ServerID: srv.ID, UserID: user.ID, ConnectedAt: s.now(), Credential: c}, catalogOK, ev)
+}
+
 // AccessToken returns a usable access token of the person's grant, refreshing
 // it when it is about to expire. ErrNotConnected when there is no grant.
 func (s *Service) AccessToken(ctx context.Context, org store.OrgID, srv store.Server, userID string) (string, error) {
@@ -195,6 +245,13 @@ func (s *Service) CatalogAccessToken(ctx context.Context, org store.OrgID, srv s
 }
 
 func (s *Service) usable(ctx context.Context, org store.OrgID, srv store.Server, g store.Grant) (string, error) {
+	// A key is used only for a server that takes keys, and an OAuth grant
+	// only for one that signs people in. Changing a server's sign-in method
+	// is planned; until the stored credentials follow, a mismatch reads as not
+	// connected (review of 2026-11-15, U-07).
+	if (srv.Config.Auth == store.AuthKey) != (g.Credential.Purpose == store.PurposeKeyGrant) {
+		return "", ErrNotConnected
+	}
 	tok, err := s.token(ctx, org, g)
 	if err != nil {
 		return "", err
@@ -207,6 +264,16 @@ func (s *Service) usable(ctx context.Context, org store.OrgID, srv store.Server,
 		return tok.AccessToken, nil
 	}
 	return s.refresh(ctx, org, srv, g.UserID, tok.AccessToken)
+}
+
+// PassCatalog hands a server's catalog to another manager's grant after the
+// upstream refused userID's key (store.PassCatalog).
+func (s *Service) PassCatalog(ctx context.Context, org store.OrgID, srv store.Server, userID string) (bool, error) {
+	moved, err := s.Store.PassCatalog(ctx, org, srv.ID, userID)
+	if moved {
+		s.logger().Warn("the server refused the key the tool list was read with; another administrator's key reads it now", "server", srv.Alias)
+	}
+	return moved, err
 }
 
 // RefreshAfterReject refreshes the person's grant after the server refused the
@@ -248,7 +315,23 @@ func (s *Service) refresh(ctx context.Context, org store.OrgID, srv store.Server
 	return f.tok, f.err
 }
 
+// current reads the server as it is stored now. A caller may hold it as it
+// was at startup (the upstream manager does), and a re-registration changes
+// the client id under it: a token request with the old id is answered
+// invalid_grant and the grant would be deleted (F07 R-02).
+func (s *Service) current(ctx context.Context, org store.OrgID, srv store.Server) (store.Server, error) {
+	cur, err := s.Store.ServerByID(ctx, org, srv.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.Server{}, ErrNotConnected
+	}
+	return cur, err
+}
+
 func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Server, userID, stale string) (string, error) {
+	srv, err := s.current(ctx, org, srv)
+	if err != nil {
+		return "", err
+	}
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrNotConnected
@@ -264,6 +347,11 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 	if tok.AccessToken != stale && !tok.Expired(now, Skew) {
 		return tok.AccessToken, nil // refreshed meanwhile
 	}
+	if srv.Config.Auth == store.AuthKey || g.Credential.Purpose == store.PurposeKeyGrant {
+		// A key cannot be refreshed. The person saved a new one meanwhile, or
+		// the server refused the one there is.
+		return "", ErrKeyRefused
+	}
 	e, err := s.Endpoint(ctx, org, srv)
 	if err != nil {
 		return "", err
@@ -275,9 +363,14 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 		if derr := s.Store.DeleteGrant(ctx, org, srv.ID, userID, ev); derr != nil && !errors.Is(derr, store.ErrNotFound) {
 			s.logger().Error("deleting a refused grant failed", "server", srv.Alias, "err", derr)
 		}
+		s.Diagnostics.Diagnose(org, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: srv.Alias, UserID: userID,
+			Message: "the authorization server refused a member's grant; they must connect again"})
 		return "", ErrNotConnected
 	}
 	if err != nil {
+		// The error can name the token endpoint; the log entry is a fixed text.
+		s.Diagnostics.Diagnose(org, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: srv.Alias, UserID: userID,
+			Message: "refreshing a member's grant failed"})
 		return "", fmt.Errorf("refreshing the %s grant: %w", srv.Alias, err)
 	}
 	if next.Scope == "" {
@@ -320,6 +413,9 @@ func (s *Service) Disconnect(ctx context.Context, org store.OrgID, srv store.Ser
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if err != nil {
 		return err
+	}
+	if cur, err := s.current(ctx, org, srv); err == nil {
+		srv = cur
 	}
 	if tok, err := s.token(ctx, org, g); err == nil {
 		if e, err := s.Endpoint(ctx, org, srv); err == nil {

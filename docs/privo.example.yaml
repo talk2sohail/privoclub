@@ -49,6 +49,10 @@
 # Internal networks that remote servers may use (self-hosted only).
 #egress_allow_cidrs: 10.0.0.0/8
 
+# Reverse proxies in front of Privo (CIDRs), so per-address limits count the
+# client named in X-Forwarded-For. Coolify's Traefik runs on Docker networks.
+#trusted_proxies: 10.0.0.0/8,172.16.0.0/12
+
 # Stdio servers. Empty refuses them; "local" runs them unisolated on this host,
 # for development only, and also needs insecure_local_runner.
 #runner: local
@@ -60,6 +64,13 @@
 #backup_interval: 24h
 #backup_keep: 7
 #backup_dir: ./data/backups
+
+# Call statistics and the diagnostic log behind the Activity page (ADR 0024),
+# kept this many days; 0 records none. Nothing leaves the server.
+#telemetry_retention_days: 30
+# Prometheus metrics at /metrics on their own listener. Off unless set. They
+# have no sign-in: use localhost or an internal network, never the public port.
+#metrics_addr: 127.0.0.1:9464
 
 # Signing in to the admin site with GitHub (ADR 0016). Create an OAuth App in
 # GitHub (callback URL: <public_url>/auth/github/callback), put its client ID
@@ -73,3 +84,12 @@
 # How long a browser session lasts: idle, and in total.
 #session_idle_timeout: 2h
 #session_max_age: 12h
+
+# AI clients sign in to the gateway with OAuth (ADR 0022). Off unless set to
+# on; needs the GitHub sign-in above and public_url.
+#oauth_server: off
+# Which clients may ask a member for access: known (the built-in list plus
+# what an administrator approves), approved, or any.
+#oauth_clients: known
+# Let clients register themselves (RFC 7591). Off unless set to on.
+#oauth_dynamic_registration: off

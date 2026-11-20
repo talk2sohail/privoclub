@@ -373,64 +373,128 @@ func TestCreateAndDeleteSession(t *testing.T) {
 	}
 }
 
-func TestOAuthStateSingleUse(t *testing.T) {
-	ctx := context.Background()
-	s, org := signinOrg(t)
-	st := OAuthState{Hash: "state-hash", Purpose: PurposeSetup, SetupLinkID: "link-1", Verifier: "verifier-1", ExpiresAt: t0.Add(10 * time.Minute)}
-	if err := s.CreateOAuthState(ctx, org, st, t0, 500); err != nil {
+// connectState is a valid state for member u and server srv.
+func connectState(hash, u, srv string, expires time.Time) ConnectState {
+	return ConnectState{Hash: hash, Verifier: "verifier-" + hash, UserID: u, SessionID: "sess-" + u, ServerID: srv, Issuer: "https://as.example", ExpiresAt: expires}
+}
+
+func countStates(t *testing.T, s *Store, org OrgID) int {
+	t.Helper()
+	var n int
+	if err := s.r.QueryRow(`SELECT COUNT(*) FROM oauth_states WHERE org_id = ?`, org).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.UseOAuthState(ctx, org, "state-hash", t0.Add(time.Minute))
-	if err != nil || got.Purpose != PurposeSetup || got.SetupLinkID != "link-1" || got.Verifier != "verifier-1" {
-		t.Fatalf("UseOAuthState = %+v, %v", got, err)
+	return n
+}
+
+func TestConnectStateSingleUse(t *testing.T) {
+	ctx := context.Background()
+	s, org := signinOrg(t)
+	if err := s.CreateConnectState(ctx, org, connectState("state-hash", "u1", "srv1", t0.Add(10*time.Minute)), t0); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := s.UseOAuthState(ctx, org, "state-hash", t0.Add(time.Minute)); !errors.Is(err, ErrNotFound) {
+	got, err := s.UseConnectState(ctx, org, "state-hash", t0.Add(time.Minute))
+	if err != nil || got.Verifier != "verifier-state-hash" || got.UserID != "u1" || got.SessionID != "sess-u1" || got.ServerID != "srv1" || got.Issuer != "https://as.example" {
+		t.Fatalf("UseConnectState = %+v, %v", got, err)
+	}
+	if _, err := s.UseConnectState(ctx, org, "state-hash", t0.Add(time.Minute)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("replay: %v, want ErrNotFound", err)
 	}
 	// Expired.
-	_ = s.CreateOAuthState(ctx, org, OAuthState{Hash: "old", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(10 * time.Minute)}, t0, 500)
-	if _, err := s.UseOAuthState(ctx, org, "old", t0.Add(10*time.Minute)); !errors.Is(err, ErrNotFound) {
+	_ = s.CreateConnectState(ctx, org, connectState("old", "u1", "srv1", t0.Add(10*time.Minute)), t0)
+	if _, err := s.UseConnectState(ctx, org, "old", t0.Add(10*time.Minute)); !errors.Is(err, ErrNotFound) {
 		t.Errorf("expired state: %v, want ErrNotFound", err)
 	}
 	// Unknown and other-org states.
-	if _, err := s.UseOAuthState(ctx, org, "never-issued", t0); !errors.Is(err, ErrNotFound) {
+	if _, err := s.UseConnectState(ctx, org, "never-issued", t0); !errors.Is(err, ErrNotFound) {
 		t.Errorf("unknown: %v", err)
 	}
-	_ = s.CreateOAuthState(ctx, org, OAuthState{Hash: "mine", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(time.Hour)}, t0, 500)
+	_ = s.CreateConnectState(ctx, org, connectState("mine", "u1", "srv1", t0.Add(time.Hour)), t0)
 	other, _ := s.EnsureOrg(ctx, "other", "Other")
-	if _, err := s.UseOAuthState(ctx, other.ID, "mine", t0); !errors.Is(err, ErrNotFound) {
+	if _, err := s.UseConnectState(ctx, other.ID, "mine", t0); !errors.Is(err, ErrNotFound) {
 		t.Errorf("other org: %v", err)
 	}
-	if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "mine", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(time.Hour)}, t0, 500); !errors.Is(err, ErrConflict) {
+	if err := s.CreateConnectState(ctx, org, connectState("mine", "u2", "srv1", t0.Add(time.Hour)), t0); !errors.Is(err, ErrConflict) {
 		t.Errorf("duplicate hash: %v, want ErrConflict", err)
+	}
+	// A state without a member, a session or a server is not a connect state.
+	for name, st := range map[string]ConnectState{
+		"no member":   {Hash: "x1", Verifier: "v", SessionID: "s", ServerID: "srv1", ExpiresAt: t0.Add(time.Hour)},
+		"no session":  {Hash: "x2", Verifier: "v", UserID: "u1", ServerID: "srv1", ExpiresAt: t0.Add(time.Hour)},
+		"no server":   {Hash: "x3", Verifier: "v", UserID: "u1", SessionID: "s", ExpiresAt: t0.Add(time.Hour)},
+		"no verifier": {Hash: "x4", UserID: "u1", SessionID: "s", ServerID: "srv1", ExpiresAt: t0.Add(time.Hour)},
+		"no hash":     {Verifier: "v", UserID: "u1", SessionID: "s", ServerID: "srv1", ExpiresAt: t0.Add(time.Hour)},
+	} {
+		if err := s.CreateConnectState(ctx, org, st, t0); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
 	}
 }
 
-func TestOAuthStateCap(t *testing.T) {
+// F07 R-03: a member holds at most one state per server, a new one replaces
+// the old, and nothing one member does takes room from another.
+func TestConnectStatesAreCappedPerMember(t *testing.T) {
 	ctx := context.Background()
 	s, org := signinOrg(t)
-	for i := 0; i < 5; i++ {
-		if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: fmt.Sprint("s", i), Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(10 * time.Minute)}, t0, 5); err != nil {
-			t.Fatal(err)
+	for i := 0; i < 600; i++ { // more than the old org-wide cap of 500
+		if err := s.CreateConnectState(ctx, org, connectState(fmt.Sprint("ada-", i), "ada", "srv1", t0.Add(10*time.Minute)), t0); err != nil {
+			t.Fatalf("start %d: %v", i, err)
 		}
 	}
-	err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "s5", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(10 * time.Minute)}, t0, 5)
-	if !errors.Is(err, ErrTooManyStates) {
-		t.Fatalf("sixth state: %v, want ErrTooManyStates", err)
+	if n := countStates(t, s, org); n != 1 {
+		t.Fatalf("%d rows after 600 starts by one member for one server, want 1", n)
 	}
-	// Used states do not count against the cap, and neither do expired ones.
-	if _, err := s.UseOAuthState(ctx, org, "s0", t0); err != nil {
+	// Only the newest works.
+	if _, err := s.UseConnectState(ctx, org, "ada-0", t0); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a replaced state still works: %v", err)
+	}
+	// Another server of the same member and another member each get their own row.
+	if err := s.CreateConnectState(ctx, org, connectState("ada-srv2", "ada", "srv2", t0.Add(10*time.Minute)), t0); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "s6", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(20 * time.Minute)}, t0, 5); err != nil {
-		t.Errorf("after one was used: %v", err)
+	if err := s.CreateConnectState(ctx, org, connectState("bob-srv1", "bob", "srv1", t0.Add(10*time.Minute)), t0); err != nil {
+		t.Fatalf("another member was refused: %v", err)
 	}
-	if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "s7", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(40 * time.Minute)}, t0.Add(11*time.Minute), 5); err != nil {
-		t.Errorf("after the others expired: %v", err)
+	if n := countStates(t, s, org); n != 3 {
+		t.Fatalf("%d rows, want 3 (ada/srv1, ada/srv2, bob/srv1)", n)
 	}
-	// An invalid purpose is refused.
-	if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "s8", Purpose: "mystery", Verifier: "v", ExpiresAt: t0.Add(time.Hour)}, t0, 50); err == nil {
-		t.Error("an unknown purpose was accepted")
+	for _, h := range []string{"ada-599", "ada-srv2", "bob-srv1"} {
+		if _, err := s.UseConnectState(ctx, org, h, t0); err != nil {
+			t.Errorf("%s: %v", h, err)
+		}
+	}
+	// Another org's member with the same id is not touched.
+	other, _ := s.EnsureOrg(ctx, "other", "Other")
+	_ = s.CreateConnectState(ctx, other.ID, connectState("other-ada", "ada", "srv1", t0.Add(10*time.Minute)), t0)
+	_ = s.CreateConnectState(ctx, org, connectState("ada-again", "ada", "srv1", t0.Add(10*time.Minute)), t0)
+	if _, err := s.UseConnectState(ctx, other.ID, "other-ada", t0); err != nil {
+		t.Errorf("a start in one org deleted another org's state: %v", err)
+	}
+}
+
+// Rows written before the upgrade (sign-in, setup and invite states lived in
+// this table until ADR 0016 amendment 1) are never handed out as a connection.
+func TestRowsOfOtherPurposesAreNotConnectStates(t *testing.T) {
+	ctx := context.Background()
+	s, org := signinOrg(t)
+	for _, purpose := range []string{"signin", "setup", "invite"} {
+		if _, err := s.w.Exec(`INSERT INTO oauth_states (org_id, state_hash, purpose, verifier, server_id, created_at, expires_at) VALUES (?, ?, ?, 'v', ?, ?, ?)`,
+			org, "legacy-"+purpose, purpose, "legacy-"+purpose, ts(t0), ts(t0.Add(10*time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.UseConnectState(ctx, org, "legacy-"+purpose, t0); !errors.Is(err, ErrNotFound) {
+			t.Errorf("a %s row was returned as a connect state: %v", purpose, err)
+		}
+	}
+	if n := countStates(t, s, org); n != 3 {
+		t.Fatalf("%d rows, want the 3 legacy rows untouched", n)
+	}
+	// They go with the next start once expired, and with the prune.
+	if err := s.CreateConnectState(ctx, org, connectState("new", "u1", "srv1", t0.Add(30*time.Minute)), t0.Add(11*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if n := countStates(t, s, org); n != 1 {
+		t.Errorf("%d rows after the legacy rows expired, want 1", n)
 	}
 }
 
@@ -447,8 +511,8 @@ func TestPruneSignIn(t *testing.T) {
 	if err := s.CreateSession(ctx, org, idle, adminEv("signin-idle")); err != nil {
 		t.Fatal(err)
 	}
-	_ = s.CreateOAuthState(ctx, org, OAuthState{Hash: "state-old", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(10 * time.Minute)}, t0, 500)
-	_ = s.CreateOAuthState(ctx, org, OAuthState{Hash: "state-live", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(40 * time.Hour)}, t0, 500)
+	_ = s.CreateConnectState(ctx, org, connectState("state-old", "u-old", "srv1", t0.Add(10*time.Minute)), t0)
+	_ = s.CreateConnectState(ctx, org, connectState("state-live", "u-live", "srv1", t0.Add(40*time.Hour)), t0)
 	newLink(t, s, org, "link-old", "hash-old", t0)
 
 	now := t0.Add(31 * time.Hour)

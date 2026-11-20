@@ -27,6 +27,82 @@ type oauthReq struct {
 	ClientSecret string   `json:"client_secret"` // write-only
 	Scopes       []string `json:"scopes"`
 	Issuer       string   `json:"issuer"`
+	// Entered by hand, for a server that does not say where people sign in
+	// (ADR 0023): its authorization server's endpoints, when that server
+	// publishes no metadata either. They need a client id.
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	RevocationEndpoint    string `json:"revocation_endpoint"`
+	// Resource is sent as the resource parameter when the server does not
+	// name one; empty sends none.
+	Resource string `json:"resource"`
+}
+
+// personalKeyReq is how each person's own key is sent to a server (ADR 0023).
+type personalKeyReq struct {
+	Header  string  `json:"header"`   // default Authorization
+	Prefix  *string `json:"prefix"`   // default "Bearer " for Authorization, "" otherwise
+	Help    string  `json:"help"`     // where a person gets their key, shown on the connect page
+	HelpURL string  `json:"help_url"` // a link there
+}
+
+// Limits on what an admin writes for a personal-key server.
+const (
+	maxKeyPrefix = 32
+	maxKeyHelp   = 500
+)
+
+func (k *personalKeyReq) check(static map[string]string) (store.ServerKey, error) {
+	out := store.ServerKey{Header: "Authorization", Prefix: "Bearer "}
+	if k.Header != "" {
+		if !validHeaderName(k.Header) || keyReservedHeader(http.CanonicalHeaderKey(k.Header)) {
+			return out, errorf(http.StatusUnprocessableEntity, "personal_key.header %q is invalid or reserved", k.Header)
+		}
+		out.Header = http.CanonicalHeaderKey(k.Header)
+		if out.Header != "Authorization" {
+			out.Prefix = ""
+		}
+	}
+	if k.Prefix != nil {
+		p := *k.Prefix
+		if len(p) > maxKeyPrefix || strings.ContainsFunc(p, func(r rune) bool { return r < 0x20 || r > 0x7e }) {
+			return out, errorf(http.StatusUnprocessableEntity, "personal_key.prefix is at most %d printable characters", maxKeyPrefix)
+		}
+		out.Prefix = p
+	}
+	if len(static) > 0 {
+		// Per-person connections carry the person's credential and nothing
+		// shared, as for oauth servers.
+		return out, errorf(http.StatusUnprocessableEntity, "a server that takes each person's own key takes no shared headers")
+	}
+	help := strings.TrimSpace(k.Help)
+	if len(help) > maxKeyHelp || strings.ContainsFunc(help, func(r rune) bool { return unicode.IsControl(r) || unicode.Is(unicode.Cf, r) }) {
+		return out, errorf(http.StatusUnprocessableEntity, "personal_key.help is at most %d characters without control characters", maxKeyHelp)
+	}
+	out.Help = help
+	if k.HelpURL != "" {
+		u, err := url.Parse(k.HelpURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || len(k.HelpURL) > 2048 {
+			return out, errorf(http.StatusUnprocessableEntity, "personal_key.help_url must be an https address")
+		}
+		out.HelpURL = u.String()
+	}
+	return out, nil
+}
+
+// keyReservedHeader names the headers a person's own key may not go in:
+// cookies, and headers a server or a proxy in front of it may read as a
+// statement of who the caller is or how the body is encoded, so the value a
+// member types would become a claim about their identity (review of
+// 2026-11-15, U-05).
+func keyReservedHeader(canon string) bool {
+	switch canon {
+	case "Cookie", "Forwarded", "X-Real-Ip", "Remote-User", "X-Remote-User", "X-User", "X-Auth-User", "X-Authenticated-User",
+		"X-Forwarded-User", "X-Forwarded-Email", "X-Forwarded-Preferred-Username", "X-Webauth-User",
+		"Accept-Encoding", "Content-Encoding", "Origin", "Referer", "User-Agent":
+		return true
+	}
+	return strings.HasPrefix(canon, "X-Forwarded-") || strings.HasPrefix(canon, "X-Auth-Request-") || strings.HasPrefix(canon, "Cf-")
 }
 
 func printableASCII(s string, limit int) bool {
@@ -55,12 +131,43 @@ func (a *API) configureOAuth(ctx context.Context, srv store.Server, req *oauthRe
 	if len(scopes) != len(req.Scopes) {
 		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "oauth.scopes holds an invalid or repeated scope")
 	}
+	manual := req.AuthorizationEndpoint != "" || req.TokenEndpoint != ""
 	d, err := a.OAuth.Discover(ctx, srv.Config.URL, srv.Transport, req.Issuer)
-	if errors.Is(err, upstreamauth.ErrNoAuthNeeded) {
-		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "the server answered without asking for authorization; add it without oauth")
+	if manual {
+		// Endpoints by hand only for a server that does not say where its
+		// people sign in: one that does is checked against what it names,
+		// and hand-entered settings would skip that check (review of
+		// 2026-11-15, U-08).
+		if err == nil {
+			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity,
+				"the server says where its people sign in; leave oauth.authorization_endpoint and oauth.token_endpoint out")
+		}
+		return a.manualOAuth(ctx, req, scopes)
 	}
-	if err != nil {
+	switch {
+	case errors.Is(err, upstreamauth.ErrNoAuthNeeded):
+		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "the server answered without asking for authorization; add it without oauth")
+	case errors.Is(err, upstreamauth.ErrNoResourceMetadata) && req.Issuer != "":
+		// The server does not say where its people sign in; the admin did.
+		sm, merr := a.OAuth.ServerMetadataFor(ctx, req.Issuer)
+		if merr != nil {
+			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "the server names no authorization server, and %s could not be used: %v", req.Issuer, merr)
+		}
+		d = upstreamauth.Discovery{Server: sm}
+	case errors.Is(err, upstreamauth.ErrNoResourceMetadata):
+		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity,
+			"the server does not say where its people sign in (no protected resource metadata); give oauth.issuer, or oauth.authorization_endpoint and oauth.token_endpoint with oauth.client_id")
+	case err != nil:
 		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "finding the server's sign-in failed: %v", err)
+	}
+	if req.Resource != "" {
+		if d.Resource != "" {
+			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "the server names its own resource (%s); leave oauth.resource out", d.Resource)
+		}
+		if err := upstreamauth.CheckEndpoint(req.Resource); err != nil {
+			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "oauth.resource: %v", err)
+		}
+		d.Resource = req.Resource
 	}
 	callback := upstreamauth.CallbackURL(a.PublicURL)
 	method, err := upstreamauth.ChooseRegistration(req.ClientID, d.Server, callback)
@@ -87,6 +194,41 @@ func (a *API) configureOAuth(ctx context.Context, srv store.Server, req *oauthRe
 	}
 	o.HasClientSecret = secret != ""
 	return o, secret, nil
+}
+
+// manualOAuth takes OAuth settings an administrator entered by hand for a
+// server whose authorization server publishes no metadata (ADR 0023). Nothing
+// is discovered, so there is nothing to register with: the admin gives the
+// client id. The endpoints must pass the egress policy now, as every request
+// to them will later.
+func (a *API) manualOAuth(ctx context.Context, req *oauthReq, scopes []string) (store.ServerOAuth, string, error) {
+	if req.AuthorizationEndpoint == "" || req.TokenEndpoint == "" || req.ClientID == "" {
+		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity,
+			"OAuth settings entered by hand need oauth.authorization_endpoint, oauth.token_endpoint and oauth.client_id")
+	}
+	for name, raw := range map[string]string{"authorization_endpoint": req.AuthorizationEndpoint, "token_endpoint": req.TokenEndpoint,
+		"revocation_endpoint": req.RevocationEndpoint, "issuer": req.Issuer, "resource": req.Resource} {
+		if raw == "" {
+			continue
+		}
+		if err := upstreamauth.CheckEndpoint(raw); err != nil {
+			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "oauth.%s: %v", name, err)
+		}
+		if name == "resource" {
+			continue // sent as a parameter, never requested
+		}
+		if _, err := a.Egress.CheckURL(ctx, raw, nil); err != nil {
+			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "egress policy refused oauth.%s: %v", name, err)
+		}
+	}
+	method := "none"
+	if req.ClientSecret != "" {
+		method = "client_secret_basic"
+	}
+	o := store.ServerOAuth{Issuer: req.Issuer, AuthorizationEndpoint: req.AuthorizationEndpoint, TokenEndpoint: req.TokenEndpoint,
+		RevocationEndpoint: req.RevocationEndpoint, Resource: req.Resource, Scopes: scopes, ClientID: req.ClientID,
+		Registration: store.RegistrationManual, TokenAuthMethod: method, HasClientSecret: req.ClientSecret != "", DiscoveredAt: time.Now().UTC()}
+	return o, req.ClientSecret, nil
 }
 
 // connectURL is where people connect their account to an oauth server.

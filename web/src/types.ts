@@ -10,9 +10,10 @@ export type ServerView = {
   target: string;
   items: Record<string, number>;
   pending_review: number;
-  auth?: string;
+  auth?: string; // "" | oauth | key
   registration?: string;
   connect_url?: string;
+  key_header?: string;
   teams?: string[];
 };
 
@@ -21,7 +22,7 @@ export type Pin = {
   name: string;
   hash: string;
   status: string;
-  definition: { description?: string; title?: string } | null;
+  definition: { description?: string; title?: string; [key: string]: unknown } | null;
 };
 
 export type ServerConnection = {
@@ -59,9 +60,8 @@ export type Token = {
   role: string;
   kind: string;
   person: string;
-  // A member's own token, bound to them (F07 R-01); every other token acts
-  // as no member, whatever person it names.
-  personal?: boolean;
+  /** The token belongs to a member, who made it signed in (ADR 0021). */
+  bound?: boolean;
   created_at?: string;
   expires_at: string;
 };
@@ -75,7 +75,8 @@ export type AuditEvent = {
   decision: string;
   outcome: string;
   approved_by: string;
-  account?: string; // whose upstream account the call used: "<person> (user <id>)"
+  user?: string; // the member the event is about or the call ran as (ADR 0021)
+  client?: string; // the AI client, when it signed in with OAuth (ADR 0022)
 };
 
 export type Approval = {
@@ -94,6 +95,7 @@ export type Approval = {
 
 export type MyConnection = {
   alias: string;
+  kind?: string; // oauth | key
   issuer: string;
   connected: boolean;
   scopes?: string;
@@ -151,4 +153,85 @@ export type MyServer = {
 export type MyTools = {
   teams: { slug: string; name: string }[];
   servers: MyServer[];
+};
+
+// An AI client that signed in with OAuth and acts as a member (ADR 0022).
+export type ConnectedClient = {
+  id: string;
+  client: string;
+  client_id: string;
+  kind: string; // known | approved | document | registered
+  person?: string;
+  name?: string;
+  allowed_at: string;
+  last_used_at: string;
+  expires_at: string;
+};
+
+// A client that may ask a member for access.
+export type OAuthClient = {
+  client_id: string;
+  name: string;
+  kind: string; // known | approved | registered
+  redirect_uris?: string[];
+  created_at?: string;
+  authorized_at?: string;
+  grants: number;
+};
+
+/** Durations in milliseconds, or sizes in bytes (ADR 0024). */
+export type Stats = { p50: number; p95: number; p99: number; min: number; max: number; avg: number };
+
+export type StatGroup = {
+  key: string;
+  calls: number;
+  ok: number;
+  tool_errors: number;
+  errors: number;
+  refused: number;
+  error_rate: number;
+  total_ms: Stats;
+  decide_ms: Stats;
+  audit_ms: Stats;
+  connect_ms: Stats;
+  upstream_ms: Stats;
+  args_bytes: Stats;
+  result_bytes: Stats;
+};
+
+export type StatSummary = {
+  window: string;
+  by: string;
+  total: StatGroup;
+  groups: StatGroup[];
+  labels?: Record<string, string>;
+  /** More calls ran in the window than the time sample holds; counts still cover all. */
+  sampled: boolean;
+  sample_from?: string;
+  recording: boolean;
+};
+
+export type StatBucket = { start: string; calls: number; errors: number; tool_errors: number; refused: number; p50_ms: number; p95_ms: number };
+
+export type StatSeries = { bucket: string; buckets: StatBucket[]; sampled: boolean; sample_from?: string };
+
+export type TelemetryStorage = {
+  recording: boolean;
+  retention_days: number;
+  calls: number;
+  oldest_call: string | null;
+  logs: number;
+  oldest_log: string | null;
+  dropped: number;
+};
+
+export type LogEntry = {
+  id: string;
+  time: string;
+  level: string;
+  category: string;
+  server?: string;
+  member?: string;
+  message: string;
+  repeats: number;
 };

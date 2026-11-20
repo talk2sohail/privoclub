@@ -10,6 +10,7 @@ import (
 
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/githubauth"
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/upstreamauth"
@@ -23,6 +24,7 @@ type Grants interface {
 	Save(ctx context.Context, org store.OrgID, srv store.Server, user store.User, tok upstreamauth.Token, catalogOK bool, ev store.AuditEvent) (store.Grant, error)
 	Disconnect(ctx context.Context, org store.OrgID, srv store.Server, userID string, ev store.AuditEvent) error
 	Reregister(ctx context.Context, org store.OrgID, srv store.Server) error
+	SaveKey(ctx context.Context, org store.OrgID, srv store.Server, user store.User, key string, catalogOK bool, ev store.AuditEvent) (store.Grant, error)
 }
 
 // Upstreams is what the website tells the upstream manager.
@@ -86,7 +88,7 @@ func (s *Server) invitePage(w http.ResponseWriter, r *http.Request) {
 		Expires: in.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC")})
 }
 
-func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, st store.OAuthState, p githubauth.Profile) {
+func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, in signIn, p githubauth.Profile) {
 	secret, sess, err := s.newSession("")
 	if err != nil {
 		s.log.Error("web: start session", "err", err)
@@ -96,7 +98,7 @@ func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, st store.O
 	userID := ids.New()
 	sess.UserID = userID
 	u, err := s.o.Store.ClaimInvite(r.Context(), s.o.Org, store.Claim{
-		LinkID: st.InviteID, UserID: userID, Subject: p.Subject(), Login: p.Login,
+		LinkID: in.Link, UserID: userID, Subject: p.Subject(), Login: p.Login,
 		DisplayName: displayName(p), Session: sess, Now: s.now(),
 	}, s.event("invite.claim", strings.ToLower(p.Login), "github:"+p.Subject(), "allow", "ok"))
 	switch {
@@ -122,14 +124,27 @@ func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, st store.O
 
 // ---- connections
 
-func (s *Server) oauthServers(ctx context.Context, u store.User) ([]store.Server, error) {
+// connectable reports whether a server takes each person's own credential
+// and has what connecting needs: OAuth settings, or how a key is sent.
+func connectable(srv store.Server) bool {
+	switch srv.Config.Auth {
+	case store.AuthOAuth:
+		return srv.Config.OAuth != nil
+	case store.AuthKey:
+		return srv.Config.Key != nil
+	}
+	return false
+}
+
+// personalServers lists the servers u may bring their own credential to.
+func (s *Server) personalServers(ctx context.Context, u store.User) ([]store.Server, error) {
 	all, err := s.o.Store.ListServers(ctx, s.o.Org)
 	if err != nil {
 		return nil, err
 	}
 	var out []store.Server
 	for _, srv := range all {
-		if srv.Config.Auth != store.AuthOAuth || srv.Config.OAuth == nil {
+		if !connectable(srv) {
 			continue
 		}
 		ok, err := s.mayConnect(ctx, u, srv)
@@ -186,7 +201,7 @@ func (s *Server) connectTarget(w http.ResponseWriter, r *http.Request, sess stor
 		return store.Server{}, false
 	}
 	srv, err := s.o.Store.ServerByAlias(r.Context(), s.o.Org, alias)
-	if err == nil && (srv.Config.Auth != store.AuthOAuth || srv.Config.OAuth == nil) {
+	if err == nil && !connectable(srv) {
 		err = store.ErrNotFound
 	}
 	if err == nil {
@@ -218,12 +233,57 @@ func (s *Server) connectPage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if srv.Config.Auth == store.AuthKey {
+		_, err := s.o.Store.Grant(r.Context(), s.o.Org, srv.ID, u.ID)
+		k := srv.Config.Key
+		s.render(w, http.StatusOK, "connectkey", pageData{Title: srv.Alias + " API key", User: view(u), CSRF: sess.CSRF,
+			Server: srv.Alias, AuthHost: hostOf(srv.Config.URL), KeyHelp: k.Help, KeyHelpURL: k.HelpURL, Connected: err == nil})
+		return
+	}
 	o := srv.Config.OAuth
 	if au, err := url.Parse(o.AuthorizationEndpoint); err == nil && au.Host != "" {
 		w.Header().Set("Content-Security-Policy", formActionRe.ReplaceAllString(s.csp, "form-action 'self' "+originOf(au)+";"))
 	}
 	s.render(w, http.StatusOK, "connect", pageData{Title: "Connect " + srv.Alias, User: view(u), CSRF: sess.CSRF,
 		Server: srv.Alias, AuthHost: hostOf(o.AuthorizationEndpoint), Scopes: strings.Join(o.Scopes, " ")})
+}
+
+// connectKey saves a person's own API key for a server that takes one (ADR
+// 0023). The key is checked for shape only: Privo does not call the server
+// to try it, so a mistyped key shows up on the first call, with the address
+// to enter a new one.
+func (s *Server) connectKey(w http.ResponseWriter, r *http.Request) {
+	sess, u, ok := s.guarded(w, r)
+	if !ok {
+		return
+	}
+	srv, ok := s.connectTarget(w, r, sess, u)
+	if !ok {
+		return
+	}
+	if srv.Config.Auth != store.AuthKey {
+		s.pageFor(w, http.StatusNotFound, sess, u, "No such server", "There is no server with that name that takes your own key.")
+		return
+	}
+	key := strings.TrimSpace(r.PostForm.Get("key"))
+	if !grants.ValidKey(key) {
+		s.pageFor(w, http.StatusBadRequest, sess, u, "That key cannot be used",
+			"An API key is printable characters without spaces, at most 4096. Nothing was saved.")
+		return
+	}
+	ev := s.event("upstream.connect:"+srv.Alias, u.Person, "user:"+u.ID, "allow", "ok")
+	ev.Server = srv.Alias
+	g, err := s.o.Grants.SaveKey(r.Context(), s.o.Org, srv, u, key, s.principal(u).Can(auth.PermManageServers), ev)
+	if err != nil {
+		s.log.Error("web: save key", "server", srv.Alias, "err", err)
+		s.connectFailed(w, http.StatusInternalServerError, "Something went wrong on the server. Nothing was saved.")
+		return
+	}
+	s.o.Upstream.ClosePerson(srv.ID, u.ID)
+	if g.Catalog {
+		s.o.Upstream.Kick(srv.ID)
+	}
+	redirect(w, "/admin/connections?result=connected")
 }
 
 func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
@@ -233,6 +293,10 @@ func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
 	}
 	srv, ok := s.connectTarget(w, r, sess, u)
 	if !ok {
+		return
+	}
+	if srv.Config.Auth != store.AuthOAuth {
+		s.pageFor(w, http.StatusNotFound, sess, u, "No such server", "There is no server with that name that uses sign-in with your own account.")
 		return
 	}
 	e, err := s.o.Grants.Endpoint(r.Context(), s.o.Org, srv)
@@ -250,19 +314,17 @@ func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
 		s.connectFailed(w, http.StatusInternalServerError, "The server's sign-in address is not usable. An administrator has to add it again.")
 		return
 	}
+	// The one row a member has for this server: a new start replaces the old
+	// (F07 R-03). Only a signed-in member gets here.
 	now := s.now()
-	st := store.OAuthState{Hash: stateHash(state, nonce), Purpose: store.PurposeConnect, Verifier: verifier, UserID: u.ID,
+	st := store.ConnectState{Hash: stateHash(state, nonce), Verifier: verifier, UserID: u.ID,
 		SessionID: sess.ID, ServerID: srv.ID, Issuer: srv.Config.OAuth.Issuer, ExpiresAt: now.Add(StateTTL)}
-	switch err := s.o.Store.CreateOAuthState(r.Context(), s.o.Org, st, now, s.o.StateCap); {
-	case errors.Is(err, store.ErrTooManyStates):
-		s.pageFor(w, http.StatusServiceUnavailable, sess, u, "Too many sign-ins in progress", "Wait a few minutes and try again.")
-		return
-	case err != nil:
+	if err := s.o.Store.CreateConnectState(r.Context(), s.o.Org, st, now); err != nil {
 		s.log.Error("web: store connect state", "err", err)
 		s.connectFailed(w, http.StatusInternalServerError, "Something went wrong on the server.")
 		return
 	}
-	s.setCookie(w, s.stateCookie, nonce, int(StateTTL.Seconds()))
+	s.setCookie(w, s.connectCookie, nonce, int(StateTTL.Seconds()))
 	redirect(w, authURL)
 }
 
@@ -272,20 +334,22 @@ func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
 func (s *Server) connectCallbackHandler(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state, code := q.Get("state"), q.Get("code")
-	c, err := r.Cookie(s.stateCookie)
-	s.clearCookie(w, s.stateCookie)
+	c, err := r.Cookie(s.connectCookie)
 	if err != nil || !validSecret(c.Value) || !validSecret(state) {
 		s.connectFailed(w, http.StatusBadRequest, "This connection was not started in this browser, or it has expired.")
 		return
 	}
-	st, err := s.o.Store.UseOAuthState(r.Context(), s.o.Org, stateHash(state, c.Value), s.now())
-	if err != nil || st.Purpose != store.PurposeConnect {
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
+	st, err := s.o.Store.UseConnectState(r.Context(), s.o.Org, stateHash(state, c.Value), s.now())
+	if err != nil {
+		// The cookie is left as it is, so a request that is not this
+		// browser's connection cannot cancel the one in progress.
+		if !errors.Is(err, store.ErrNotFound) {
 			s.log.Error("web: use connect state", "err", err)
 		}
 		s.connectFailed(w, http.StatusBadRequest, "This connection was not started in this browser, or it has expired.")
 		return
 	}
+	s.clearCookie(w, s.connectCookie)
 	sess, u, ok := s.session(r)
 	if !ok || sess.ID != st.SessionID || u.ID != st.UserID {
 		s.connectFailed(w, http.StatusForbidden, "This connection was started by another sign-in. Sign in and start it again.")
@@ -302,8 +366,18 @@ func (s *Server) connectCallbackHandler(w http.ResponseWriter, r *http.Request) 
 	}
 	// Mix-up defence (RFC 9207): an iss that differs is always refused; a
 	// missing one only when the authorization server promised to send it.
+	// Settings entered by hand without an issuer (ADR 0023) have nothing to
+	// compare with, so an answer that names any issuer is refused there: it
+	// came from an authorization server that is not this server's, which is
+	// how a code for another server would arrive (review of 2026-11-15, U-01).
+	// An administrator whose server sends iss enters its issuer.
 	iss, hasIss := q["iss"]
-	if (hasIss && (len(iss) != 1 || iss[0] != st.Issuer)) || (!hasIss && srv.Config.OAuth.IssParameter) {
+	if st.Issuer == "" && hasIss {
+		s.log.Warn("web: connect callback names an issuer, but none is set for this server", "server", srv.Alias)
+		s.connectFailed(w, http.StatusBadRequest, "The answer came from a sign-in server that names itself, but no issuer is set for this server. An administrator can add the server's issuer.")
+		return
+	}
+	if st.Issuer != "" && ((hasIss && (len(iss) != 1 || iss[0] != st.Issuer)) || (!hasIss && srv.Config.OAuth.IssParameter)) {
 		s.log.Warn("web: connect callback from an unexpected issuer", "server", srv.Alias)
 		s.connectFailed(w, http.StatusBadRequest, "The answer did not come from the server's own sign-in.")
 		return

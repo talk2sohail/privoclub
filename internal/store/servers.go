@@ -34,23 +34,46 @@ type ServerConfig struct {
 	// Names of secret env vars and headers (values live in credentials).
 	EnvNames    []string `json:"env_names,omitempty"`
 	HeaderNames []string `json:"header_names,omitempty"`
-	// Auth is "" (none: no auth or the static secrets above) or AuthOAuth
-	// (each person's own grant, ADR 0017).
+	// Auth is "" (none: no auth or the static secrets above), AuthOAuth
+	// (each person's own grant, ADR 0017) or AuthKey (each person's own API
+	// key, ADR 0023).
 	Auth  string       `json:"auth,omitempty"`
 	OAuth *ServerOAuth `json:"oauth,omitempty"`
+	Key   *ServerKey   `json:"key,omitempty"`
+}
+
+// PerPerson reports whether each person brings their own credential to the
+// server, so a call runs with the caller's own and never anyone else's.
+func (c ServerConfig) PerPerson() bool {
+	return c.Auth == AuthOAuth || c.Auth == AuthKey
+}
+
+// ServerKey says how each person's own API key is sent to the server (ADR
+// 0023). It holds no key: keys are credentials, one per person.
+type ServerKey struct {
+	// Header is the request header the key goes in, canonical form.
+	Header string `json:"header"`
+	// Prefix goes before the key in the header ("Bearer " for most servers).
+	Prefix string `json:"prefix,omitempty"`
+	// Help tells a person where to get their key; HelpURL links there.
+	Help    string `json:"help,omitempty"`
+	HelpURL string `json:"help_url,omitempty"`
 }
 
 // Auth modes and client registration methods (ADR 0017).
 const (
 	AuthOAuth = "oauth"
+	AuthKey   = "key"
 
 	RegistrationAdmin   = "admin"   // a client id the admin entered
 	RegistrationCIMD    = "cimd"    // Privo's client ID metadata document
 	RegistrationDynamic = "dynamic" // RFC 7591 dynamic registration
+	RegistrationManual  = "manual"  // settings and client id entered by hand (ADR 0023)
 
 	// Credential purposes for upstream OAuth.
 	PurposeOAuthGrant  = "oauth"        // a person's tokens (owner_id = user id)
 	PurposeOAuthClient = "oauth:client" // the client secret, when there is one
+	PurposeKeyGrant    = "key"          // a person's own API key (owner_id = user id, ADR 0023)
 )
 
 // ServerOAuth is what discovery and registration found for an oauth server.

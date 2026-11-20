@@ -1,11 +1,12 @@
-# 0021. A person holds several roles; their gateway token only uses the gateway
+# 0025. A person holds several roles; their gateway token only uses the gateway
 
-- Status: Proposed, 2026-11-18 (accept after the F20 first-slice review)
+- Status: Accepted, 2026-11-18 (by the owner; numbered 0021 on its branch, renumbered when main had taken 0021 to 0024)
 - Date: 2026-11-18
 - Amends: 0011 (roles combine, now for people), 0014 (point 2: a person who
   approves may also use the gateway)
 - Related: 0005 (approvals, self-approval), 0016 (sessions), 0017 (catalog
-  grants), 0020 (teams, `role:` and `team:` rules)
+  grants), 0020 (teams, `role:` and `team:` rules), 0021 (tokens belong to
+  members by user id)
 
 ## Context
 
@@ -102,10 +103,10 @@ We considered three ways to let people do more than one kind of thing:
 - 0014's protection holds through token kinds and sessions instead of the
   approver role: no single credential both calls tools and decides
   approvals.
-- The binding of a gateway token to its person matters more. A `role:` rule
-  now follows the person's roles, and a token whose person could be spoofed
-  could borrow them. ADR 0022 (the F07 R-01 fix) binds tokens to a user id
-  and lands first.
+- The binding of a gateway token to its person matters more: a `role:`
+  rule follows the member found by it. ADR 0021 binds tokens to their member
+  by user id (merged 2026-11-11), so no token can borrow someone else's
+  roles.
 - Teams still decide which servers a person reaches. Roles decide what a
   person may administer. Neither one grants the other.
 - Approvers limited to a team or a server ("the designers' lead approves
