@@ -45,14 +45,17 @@ import (
 
 // API is the admin API.
 type API struct {
-	Store    *store.Store
-	Keys     *keyring.Keyring
-	Auth     *auth.Authenticator
-	Upstream *upstream.Manager
-	Audit    *audit.Writer
-	Approval *approval.Service
-	Egress   egress.Policy
-	Logger   *slog.Logger
+	Store *store.Store
+	Keys  *keyring.Keyring
+	// AuditKeys holds the master key the audit signing keys derive from
+	// (ADR 0028); nil turns the integrity endpoints off.
+	AuditKeys vault.KeyProvider
+	Auth      *auth.Authenticator
+	Upstream  *upstream.Manager
+	Audit     *audit.Writer
+	Approval  *approval.Service
+	Egress    egress.Policy
+	Logger    *slog.Logger
 	// TokenTTL is the default personal token lifetime.
 	TokenTTL time.Duration
 
@@ -116,6 +119,11 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("POST /api/v1/approvals/{id}/deny", wrap(auth.PermDecide, a.decide(false)))
 	mux.Handle("PATCH /api/v1/settings/approvals", wrap(auth.PermManagePolicy, a.patchApprovalSettings))
 	mux.Handle("GET /api/v1/audit/events", wrap(auth.PermReadAudit, a.listAudit))
+	mux.Handle("GET /api/v1/audit/export", wrap(auth.PermReadAudit, a.exportAudit))
+	mux.Handle("GET /api/v1/audit/integrity", wrap(auth.PermReadAudit, a.auditIntegrity))
+	mux.Handle("GET /api/v1/audit/checkpoints", wrap(auth.PermReadAudit, a.auditCheckpoints))
+	mux.Handle("GET /api/v1/audit/keys", wrap(auth.PermReadAudit, a.auditKeys))
+	mux.Handle("POST /api/v1/audit/erase", wrap(auth.PermManageAudit, a.eraseAudit))
 	mux.Handle("PATCH /api/v1/settings/audit", wrap(auth.PermManageAudit, a.patchAuditSettings))
 	a.telemetryRoutes(mux, wrap)
 }
@@ -898,99 +906,6 @@ func (a *API) revokeToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 // (?kind=calls), or with ?kind=admin what the control API did and the
 // bootstrap install, which are separate rows (R-09, independent review
 // 2026-10-29).
-func (a *API) listAudit(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	switch kind := r.URL.Query().Get("kind"); kind {
-	case "", "calls":
-	case "admin":
-		return a.listAdminAudit(w, r, p, limit)
-	default:
-		return errorf(http.StatusBadRequest, "kind must be calls or admin")
-	}
-	calls, err := a.Store.RecentCalls(r.Context(), p.OrgID, limit)
-	if err != nil {
-		return err
-	}
-	// Whose account and teams each call ran as (F27): the member's person, by
-	// the user id recorded with the call.
-	persons := map[string]string{}
-	if slices.ContainsFunc(calls, func(c store.CallRecord) bool { return c.Intent.UserID != "" }) {
-		users, err := a.Store.ListUsers(r.Context(), p.OrgID)
-		if err != nil {
-			return err
-		}
-		for _, u := range users {
-			persons[u.ID] = u.Person
-		}
-	}
-	out := make([]map[string]any, 0, len(calls))
-	for _, c := range calls {
-		e := map[string]any{
-			"id": c.Intent.CallID, "time": c.Intent.Time, "actor": c.Intent.Actor, "actor_id": c.Intent.ActorID, "server": c.Intent.Server,
-			"item": c.Intent.Item, "action": c.Intent.Action, "decision": c.Intent.Decision, "outcome": "pending",
-		}
-		if c.Intent.Action == "tools/call" {
-			e["tool"] = c.Intent.Item
-		}
-		if c.Intent.ApprovedBy != "" {
-			e["approved_by"] = c.Intent.ApprovedBy
-		}
-		if c.Intent.UserID != "" {
-			e["user_id"], e["user"] = c.Intent.UserID, persons[c.Intent.UserID]
-		}
-		if c.Intent.Client != "" {
-			e["client"] = c.Intent.Client // the AI client, when it signed in with OAuth (ADR 0022)
-		}
-		if c.Completion != nil {
-			e["outcome"], e["latency_ms"] = c.Completion.Outcome, c.Completion.LatencyMS
-		}
-		if len(c.Intent.Payload) > 4 {
-			if args, err := a.openPayload(r.Context(), p.OrgID, c.Intent.CallID, c.Intent.Payload); err == nil {
-				e["arguments"] = args
-			} else {
-				e["arguments_error"] = "cannot decrypt"
-			}
-		}
-		out = append(out, e)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": out})
-	return nil
-}
-
-func (a *API) listAdminAudit(w http.ResponseWriter, r *http.Request, p auth.Principal, limit int) error {
-	events, err := a.Store.RecentAdminEvents(r.Context(), p.OrgID, limit)
-	if err != nil {
-		return err
-	}
-	// Whom an event is about, when it names a member (an AI client allowed,
-	// revoked or ended by reuse, ADR 0022): their person, by user id.
-	persons := map[string]string{}
-	if slices.ContainsFunc(events, func(ev store.AuditEvent) bool { return ev.UserID != "" }) {
-		users, err := a.Store.ListUsers(r.Context(), p.OrgID)
-		if err != nil {
-			return err
-		}
-		for _, u := range users {
-			persons[u.ID] = u.Person
-		}
-	}
-	out := make([]map[string]any, 0, len(events))
-	for _, ev := range events {
-		e := map[string]any{"id": ev.ID, "time": ev.Time, "actor": ev.Actor, "actor_id": ev.ActorID, "action": ev.Action, "decision": ev.Decision, "outcome": ev.Outcome}
-		if ev.Server != "" {
-			e["server"] = ev.Server
-		}
-		if ev.Client != "" {
-			e["client"] = ev.Client
-		}
-		if ev.UserID != "" {
-			e["user_id"], e["user"] = ev.UserID, persons[ev.UserID]
-		}
-		out = append(out, e)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": out})
-	return nil
-}
 
 func (a *API) openPayload(ctx context.Context, org store.OrgID, callID string, payload []byte) (json.RawMessage, error) {
 	version := binary.BigEndian.Uint32(payload[:4])
@@ -1009,6 +924,7 @@ func (a *API) patchAuditSettings(w http.ResponseWriter, r *http.Request, p auth.
 	var req struct {
 		RecordArguments *bool `json:"record_arguments"`
 		RecordResults   *bool `json:"record_results"`
+		RetentionDays   *int  `json:"retention_days"` // 0 keeps events for ever (F12)
 	}
 	if err := decode(r, &req); err != nil {
 		return err
@@ -1027,9 +943,20 @@ func (a *API) patchAuditSettings(w http.ResponseWriter, r *http.Request, p auth.
 	if err := set(gateway.SettingRecordResults, req.RecordResults); err != nil {
 		return err
 	}
+	if d := req.RetentionDays; d != nil {
+		if *d < 0 || *d > audit.MaxRetentionDays {
+			return errorf(http.StatusUnprocessableEntity, "retention_days must be 0 (keep for ever) to %d", audit.MaxRetentionDays)
+		}
+		a.adminEvent(ctx, p, audit.SettingRetentionDays+"="+strconv.Itoa(*d), "")
+		if err := a.Store.SetSetting(ctx, p.OrgID, audit.SettingRetentionDays, strconv.Itoa(*d)); err != nil {
+			return err
+		}
+	}
 	args, _ := a.Store.Setting(ctx, p.OrgID, gateway.SettingRecordArguments, "false")
 	res, _ := a.Store.Setting(ctx, p.OrgID, gateway.SettingRecordResults, "false")
-	writeJSON(w, http.StatusOK, map[string]any{"record_arguments": args == "true", "record_results": res == "true"})
+	days, _ := a.Store.Setting(ctx, p.OrgID, audit.SettingRetentionDays, "0")
+	n, _ := strconv.Atoi(days)
+	writeJSON(w, http.StatusOK, map[string]any{"record_arguments": args == "true", "record_results": res == "true", "retention_days": n})
 	return nil
 }
 
