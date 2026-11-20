@@ -263,7 +263,56 @@ verifier are stored in the clear for the life of a session and ten minutes.
 - [ ] Restrict sign-in by GitHub organisation membership (`read:org`)
 - [ ] Step-up re-authentication for high-risk actions
 - [x] Sessions accepted by the admin API for the UI (F14): through `/admin/api/v1`, never on `/api/v1` (ADR 0019)
-- [ ] Approvals page: page through more than 50 pending approvals; show decided ones
+- [x] Approvals page: page through more than 50 pending approvals; show decided ones (done with F10's second slice: `ListApprovalsPage`, pending and history with a cursor)
+
+### Next slices (spec 2026-11-21)
+
+**A. Sign-in limited to a GitHub organisation.** Goal: a company lets in
+only its own GitHub organisation's people, even with an invite link that
+leaked.
+
+Acceptance:
+1. `PRIVO_GITHUB_ORGS=acme,acme-labs` (unset: anyone with an invite, as
+   today). Sign-in asks for `read:org` only when it is set.
+2. Signing in (setup, invite, every later sign-in) is refused, audited as
+   `signin.refused:not_in_org`, when the person is in none of them. The
+   check uses the numeric org ids, which survive renames.
+3. A person who leaves the organisation cannot sign in again. Their
+   sessions end when the next sign-in check fails, or within the idle
+   timeout.
+
+Tasks and tests:
+- [ ] Config `PRIVO_GITHUB_ORGS` (ADR 0015 registry); githubauth `Orgs` call
+  (`TestOrgsUsesTheNumericID`)
+- [ ] web: the check in the sign-in callback
+  (`TestSignInRefusedOutsideTheOrgs`, `TestNoReadOrgScopeWhenUnset`)
+- [ ] Acceptance: `TestSignInLimitedToAGitHubOrg`; docs; walkthrough
+
+**B. Step-up re-authentication.** Goal: actions that hand out power ask
+for a fresh sign-in, not just a session. Those actions are: an owner or
+admin control token, a role change to owner or admin, editing or deleting
+a server, and deciding approvals the org marks high-risk (F10 C). ADR
+needed first (0030): what counts as fresh (default 10 minutes), how
+GitHub is asked to re-prompt (`prompt=login` is not offered, so: a new
+OAuth round trip with `max_age`-like checking of `auth_time` we record),
+and how the app resumes the action.
+
+Acceptance:
+1. The API refuses those actions from a session whose last sign-in is
+   older than the window, with 401 `step_up_required`. Tokens are not
+   asked (they are made with step-up already).
+2. The app sends the person through sign-in and back to the same page, and
+   the action is repeated only by the person's own click.
+3. Audit records carry `stepped_up_at`.
+
+Tasks and tests:
+- [ ] ADR 0030; sessions record `authenticated_at`
+- [ ] API: `RequireFresh` around the listed handlers (`TestStepUpRequiredForElevatedTokens`, `TestFreshSessionPasses`)
+- [ ] web: `/admin/signin?step_up=1&next=` (`TestStepUpReturnsToThePage`)
+- [ ] App: the step-up prompt; Vitest; acceptance `TestStepUpEndToEnd`
+
+**C. Google and Microsoft sign-in** moves to F20 A (generic OIDC), which
+covers them.
 
 ## F06. Client authentication (OAuth server and personal tokens)
 Status: In progress (personal tokens done; OAuth sign-in for AI clients: ADR 0022 accepted 2026-11-12; library decided 2026-11-12: `authelia.com/provider/oauth2` v0.3.3; no refresh grace; task 2 done in 0.7.1: a sign-in in flight lives in a sealed cookie; tasks 3 to 9 built in 0.8.0, off unless `PRIVO_OAUTH_SERVER=on`; next: the independent review, task 10)
@@ -485,7 +534,7 @@ until URL elicitation lands.
 - [x] R-01 (High; the same hole as F14 R-02): an owner or admin can issue a gateway token with any member's `person` (`POST /api/v1/tokens`; an omitted person defaults to the token name) and call upstream servers with that member's grant; the audit names the token, not whose account was used. Bind tokens to a user id (`api_tokens.user_id`, set by `/api/v1/me/tokens`), resolve grants and team membership by user id and never by name, and record the grant's owner in the call's audit event. The acceptance fixture `g.issue("ada")` relies on the hole and has to change with it. F26's team membership follows the same string **Fixed in 0.7.0 (F27, ADR 0021), deployed 2026-11-11.**
 - [x] R-02 (Medium): after a re-registration (`Grants.Reregister` from the connect callback) the running upstream manager keeps the old client id until a restart or an admin edit, so grants issued to the new client are refreshed as the old one, answered with `invalid_grant` and deleted. Call `Upstream.Sync` after the registration changes, or read the client from the store at refresh time; store the client id on the grant **Fixed in 0.8.1:** the grants service reads the server as it is stored now before a refresh or a revocation, so a process holding the old copy uses the current client id. Test: `internal/grants` `TestRefreshUsesTheClientStoredNow` (fails without the fix: the old client id was sent and the grant deleted). Grants issued to the old client still depend on the authorization server honouring them, as `Reregister` says. Review of 2026-11-15, U-06: the revocation half was untested; the test now checks the client id the revocation is sent with (and fails without `current()` in `Disconnect`)
 - [x] R-03 (Medium): any signed-in member can fill the org-wide state cap through `POST /connect/<alias>/start` and lock out sign-in and connecting for everyone (see F05 R-01); cap connect states per user and replace that user's older one **Fixed in 0.7.1 (F06 task 2):** `oauth_states` holds only connect states, one per member and server; a new start replaces the member's older one; no cap. Tests: `internal/store` `TestConnectStatesAreCappedPerMember`, `internal/web` `TestConnectStartReplacesTheMembersOlderState`
-- [ ] R-04 (Low): removing a member, deleting a server and reconnecting delete grants locally without revoking them at the provider; backups keep them
+- [x] R-04 (Low): removing a member, deleting a server and reconnecting delete grants locally without revoking them at the provider; backups keep them **Fixed in 0.18.1:** removing a member, deleting a server and an edit that ends connections (ADR 0029) read the grants' tokens first and revoke them at the provider once the deletion is done (best effort, in the background, all at once within 10 seconds, with the client they were issued to); a person's own API key cannot be revoked by Privo and is not sent (`TestRevocationsAreReadBeforeAndSentAfter`, `TestRevocationsSkipKeys`, `TestGrantsDeletedAreRevokedAtTheProvider`). Connecting again does not revoke the replaced grant: same client and person, and providers that revoke the whole authorization (Google) or return the same refresh token would end the new grant (`TestReconnectDoesNotRevoke`; security review of the fix, Medium, 2026-11-21). A refresh between reading and deleting can leave one rotated refresh token valid at the provider until it expires. A backup taken before keeps the sealed tokens, but the provider no longer honours them; a provider without a revocation endpoint is told nothing and its tokens run out on their own
 - [x] R-05 (Low): require `oauth.issuer` when a client secret is supplied, so the secret cannot go to an authorization server the MCP server names **Fixed in 0.18.0:** a discovered server with a client secret needs `oauth.issuer` (`TestClientSecretNeedsANamedIssuer`); the catalog's own-app entries name theirs (GitHub, Asana, HubSpot, Slack, read from their protected resource metadata on 2026-11-21; `TestOwnAppEntriesNameTheirIssuer`)
 - [x] R-06 (Low): a failed save after a rotated refresh token loses the grant; retry the save with the token already obtained **Fixed in 0.18.0:** the save is retried with the token already obtained; when it keeps failing the new pair is kept in memory, used, and saved on the next refresh, never over a newer connection (`TestRotatedTokenIsNotLostWhenSavingFails`, `TestUnsavedTokenDoesNotOutliveAReconnection`)
 - [x] R-07 (Low): the GitHub callback uses up a state of any purpose before checking it; look the state up with its purpose and use one cookie per flow **Fixed in 0.7.1:** the sign-in callback reads no table; sign-in and connect have a cookie each; the connect lookup takes only connect rows. Tests: `internal/web` `TestSignInAndConnectFlowsDoNotEndEachOther`, `internal/store` `TestRowsOfOtherPurposesAreNotConnectStates`
@@ -499,6 +548,62 @@ until URL elicitation lands.
 - [ ] Scope step-up on `insufficient_scope`
 - [ ] Admin page of everyone's connections (a server's page lists its connected people since F14; a page across servers is still to do)
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
+
+### Next slices (spec 2026-11-21)
+
+**A. Everyone's connections, on one page.** Goal: an admin sees, across
+servers, who has connected what, and ends a connection without visiting
+each server.
+
+Acceptance:
+1. `GET /api/v1/connections` (managers of servers) lists every grant and
+   personal key. Each row has the person, server, kind (OAuth or key),
+   scopes, connected, last used and last refreshed. It is filterable by
+   person and server, paged. It never holds a token.
+2. **Connections → Everyone** in the app (admins): the list, and **End**,
+   which revokes at the provider (R-04) and deletes, audited
+   `upstream.disconnect:<alias>:<person>` with the admin as actor.
+3. Unused for 90 days is marked; a person's own Connections page is
+   unchanged.
+
+Tasks and tests:
+- [ ] Store: `ListAllGrants` (paged, org-scoped) (`TestListAllGrantsIsOrgScopedAndPaged`)
+- [ ] API (`TestConnectionsAcrossServers`, `TestEndingAConnectionRevokes`)
+- [ ] App page; Vitest; walkthrough
+
+**B. Scope step-up on `insufficient_scope`.** Goal: a call refused for a
+missing scope tells the person what to grant and lets them do it, instead
+of a generic failure.
+
+Acceptance:
+1. A 403 with `WWW-Authenticate: Bearer error="insufficient_scope",
+   scope="…"` gets an answer to the model naming the scope and the connect
+   link with `?scope=`.
+2. The connect flow asks for the union of the granted and the requested
+   scopes, never one the server did not name; the admin's scope list for
+   the server still bounds it.
+3. Audited as `upstream.scope_needed:<alias>:<scope>`.
+
+Tasks and tests:
+- [ ] upstream: parse the challenge (`TestInsufficientScopeNamesTheScope`, already planned)
+- [ ] connect page with `scope` (`TestConnectAsksForTheUnionOfScopes`, `TestScopeOutsideTheServersListIsRefused`)
+- [ ] Acceptance `TestScopeStepUpEndToEnd`
+
+**C. Shared org-wide credentials** (by explicit admin choice). ADR needed
+first (0031). It decides who may create one (owners), which tools it may
+serve (a required toolset, ADR 0026), how calls through it are audited
+(`account=org`), and why per-person stays the default (ADR 0017).
+
+Tasks and tests: after the ADR.
+
+**D. URL-mode elicitation and input-required** for the connect link
+(MCP 2025-11-25 / 2026-07-28). The goal is that a client that supports it
+opens the connect page itself. This needs the protocol package
+(`internal/protocol`, ADR 0004): spec with F02.
+
+**E. Refresh coordination across replicas** comes with the Postgres store
+(F03): `SELECT … FOR UPDATE SKIP LOCKED` on the grant row. Nothing to do
+on SQLite (one writer).
 
 ## F08. Toolsets
 Status: In progress (first slice built and reviewed 2026-11-20, ported onto main as 0.14.0 on 2026-11-21; ADR 0026 proposed; the owner's walkthrough, `docs/manual-test.md` section 16, open)
@@ -548,6 +653,26 @@ Tasks and the tests that name them:
 - [x] Docs: README, `docs/manual-test.md` section 16, version 0.14.0
 - [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f08-toolsets-security-review.md`): no findings at 0.8 or above. Acted on: the server list counts for members only the tools they see; a grant needs the requester to still see the tool; the server page says prompts and resources are not narrowed
 - [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
+
+### Next slice (spec 2026-11-21): prompts and resources
+
+Goal: a toolset can leave out a server's prompts and resources too, not
+only its tools.
+
+Acceptance:
+1. `server_team_tools` gains `kind` (tool, prompt, resource). A narrowed
+   team sees only what is listed, kind by kind. A kind with no entries
+   means all of it, as today for tools, so existing lists keep their
+   meaning.
+2. A hidden prompt or resource is answered like an unknown name and
+   audited `denied:not_in_toolset` (F26 R-03).
+3. The server page's "Which tools each team sees" becomes "What each team
+   sees", grouped by kind.
+
+Tasks and tests:
+- [ ] Migration; `SetTeamTools` takes a kind (`TestToolsetsPerKind`, `TestExistingListsKeepMeaningAll`)
+- [ ] Gateway lists and reads (`TestHiddenPromptIsUnknown`, `TestHiddenResourceIsUnknown`)
+- [ ] App; Vitest; acceptance `TestToolsetsForPromptsAndResources`
 
 ## F09. Policies
 Status: In progress (core done, reviewed; second slice built 2026-11-20, ported onto main as 0.15.0 on 2026-11-21, ADR 0027 proposed)
@@ -612,6 +737,45 @@ Tasks and the tests that name them:
 - [x] Acceptance: `TestRulesOnArguments` (a deny on `text = secret` refuses that call while others ask; a grant lets the others through and not that one; the rules survive a YAML round trip)
 - [x] Docs: README, `docs/manual-test.md` section 17, version 0.15.0
 - [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f09-policies-security-review.md`): two Medium findings, both fixed. Long numbers were compared as text (`42.000…0` missed "42"): numbers now compare by exact value at any length and arguments refuse exponents beyond 9 digits (`TestConditions`, `TestCanonicalRefusesHugeExponents`). Servers coerce types and ignore case: an argument of another type is unsure and fails closed, and "any case" tests exist (`TestUnsureFailsClosed`). Also acted on: a grant lifts asks up to the rank it was made over, never a higher one (`TestGrantCoversItsRankOnly`); condition values keep exact numbers from JSON (`TestConditionNumbersStayExact`); grants made before migration 11 are marked (`TestMigrationMarksOldGrants`); the dry run checks members; an export leaves out rules for removed members
+
+### Next slices (spec 2026-11-21)
+
+**A. Rules cached per org.** Goal: a call no longer reads every rule from
+the database; a change still applies at once.
+
+Acceptance:
+1. Rules are kept per org with a version number. Every policy write bumps
+   the version in the same transaction, and the next call sees the new
+   rules (no time-based staleness).
+2. A failed read never falls back to an empty rule set: the call is
+   refused (fails closed).
+
+Tasks and tests:
+- [ ] Store: `policy_version` per org (`TestEveryPolicyWriteBumpsTheVersion`)
+- [ ] Gateway cache (`TestRuleChangeAppliesToTheNextCall`, `TestCacheReadFailureRefuses`); benchmark before and after
+
+**B. Annotation overrides.** Goal: an admin corrects what a server says
+about a tool (`readOnlyHint`, `destructiveHint`, `openWorldHint`) for
+clients and for rules.
+
+Acceptance:
+1. Per server and tool, an override of each hint. It is kept with the pin
+   (it follows the accepted definition), audited, and shown in the review.
+2. Clients get the overridden annotations. Rules on annotations
+   (presets) read them. The upstream's own values stay visible to admins.
+
+Tasks and tests: `TestOverrideShownToClients`, `TestRulesReadOverrides`,
+`TestOverrideFollowsTheAcceptedDefinition`; app; acceptance.
+
+**C. Cross-server flow rules** (source and sink tags), e.g. nothing read
+from `crm` may be sent to `web`. ADR needed first (0032). It decides:
+
+- how a session's reads are remembered (per client session, bounded, not
+  stored);
+- what "sent to" means (a later call on a sink tag in the same session);
+- why this is a tripwire that asks or denies, not data-flow proof.
+
+Tasks and tests: after the ADR.
 
 ## F10. Approvals
 Status: In progress (core done, reviewed)
@@ -688,6 +852,53 @@ Tasks and the tests that name them:
 - [x] Docs: README, `docs/manual-test.md` section 18, version 0.16.0
 - [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f10-approvals-security-review.md`): two Medium findings, both fixed. No grant for one's own request (`TestNoGrantForOneself`); a grant is checked against the current rules, requester and accepted definition before anything is decided, and pinned to that definition (`TestGrantRefusedWhenRulesChanged`, `TestGrantNeedsTheAcceptedDefinition`)
 
+### Next slices (spec 2026-11-21)
+
+**A. Slack.** Goal: approvers decide in Slack without opening Privo, and
+their decision is theirs.
+
+Acceptance:
+1. An org connects a Slack app: `PRIVO_SLACK_SIGNING_SECRET` and a bot
+   token in the vault, plus a channel per org.
+2. A new approval posts its server, tool, requester, reason and a digest of
+   the arguments. The arguments themselves are posted only if the org opts
+   in.
+3. The post has Approve and Deny buttons. Every request from Slack is
+   checked with the signing secret (timestamp within 5 minutes). The
+   Slack user must be linked to a Privo member who may decide: linked once
+   from Privo's People page by a signed-in person, never by Slack email
+   matching. Self-approval rules apply.
+4. The post is updated with the outcome, whoever decided and wherever.
+   Audited like a decision in the app, with `client=slack`.
+
+Tasks and tests:
+- [ ] ADR 0033 (identity linking, what is posted)
+- [ ] `internal/notify/slack` (`TestSlackSignatureChecked`, `TestOldTimestampRefused`,
+  `TestUnlinkedSlackUserCannotDecide`, `TestSelfApprovalRefusedFromSlack`)
+- [ ] Acceptance with a fake Slack API
+
+**B. Email.** Goal: approvers are told by email. Deciding still happens
+in Privo: links in mail only open the approval, never decide by a click.
+
+Acceptance: SMTP settings (`PRIVO_SMTP_*`); one mail per new approval to
+those who may decide, batched within a minute; no arguments in the mail.
+Tests: `TestApprovalMailHasNoArguments`, `TestMailBatchedPerMinute`.
+
+**C. Step-up before high-risk approvals.** A rule can mark its asks
+`high_risk`; deciding one needs a fresh sign-in (F05 B).
+Tests: `TestHighRiskApprovalNeedsStepUp`.
+
+**D. Approver dashboard and batching.**
+- Similar pending requests (same requester, server, tool and arguments
+  digest) are shown as one row with a count, decided together.
+- The dashboard shows who decides what and how fast, and flags an
+  approver who approves everything.
+
+Tests: `TestSimilarRequestsGrouped`, `TestBatchDecisionAuditsEach`.
+
+**E. Input-required (2026-07-28 clients)** comes with the protocol package
+(F02, ADR 0004).
+
 ## F11. Manifest pinning and scanning
 Status: In progress (pins built with F02; the whole definition and its diff with F14 R-01 in 0.8.1; block, scan and opt-in choosing 2026-11-20, ported onto main 2026-11-21)
 
@@ -708,6 +919,29 @@ text, with characters a person cannot see made visible (⟦U+200B⟧).
 - [ ] Phrases in other languages; a scan of resource contents and tool results (F02 result checks)
 - [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-control-plane-1-security-review.md`, with F05 R-01, F07 R-02, R-03 and F24 R-01, R-02): no findings at 0.8 or above. Acted on: pin decisions are audited with each `kind/name@hash`
 - [x] From that review: `previous` and "Available to AI clients" should follow the definition the gateway serves now, not the newest accepted one by time; route token events through `audit.Writer`; refuse refreshing a disabled server's grant **Done in 0.18.0:** pins carry `serving` (accepted and presented by the server now); `previous` is the one served now, else the newest accepted; the app lists only served ones (`TestPinViewsFollowWhatIsServedNow`, Vitest). A disabled server's grants are not refreshed (`ErrServerOff`, `TestNoRefreshForAServerTurnedOff`). Token events stay in the token's own transaction (F24 R-02 needs it); since F12 every audit row is sealed into the chain whatever wrote it, so the chain, not `audit.Writer`, is the complete record a future sink reads
+
+### Next slices (spec 2026-11-21)
+
+**A. Scan of what servers send back.** Goal: hidden instructions in tool
+results and resource contents are flagged like those in definitions.
+
+Acceptance:
+1. The F11 scanner runs on text in results and contents up to a size cap.
+   On a warning, the call goes through but is audited
+   `result.flagged:<rule>`, and the org may choose to withhold the result
+   (`result_scan=block`, default off).
+2. It never logs the text; the record has the rule and position only.
+
+Tests: `TestResultWithHiddenInstructionIsFlagged`,
+`TestResultTextNeverLogged`, `TestBlockModeWithholds`.
+
+**B. Phrases in other languages.** The scanner's phrase lists gain German,
+French, Spanish, Portuguese, Japanese and Chinese, with tests per
+language, plus a corpus of harmless descriptions that must stay
+unflagged.
+
+**C. Pins scoped to a team or person.** Comes after F08's prompts and
+resources. Spec with ADR 0026's follow-up.
 
 ## F12. Audit log
 Status: In progress (second slice built 2026-11-21, ported onto main as 0.16.0; ADR 0028 proposed)
@@ -768,6 +1002,13 @@ Tasks and the tests that name them:
   - Backdated events were sealed as if old: a block's seal time is signed, and an event dated more than 5 minutes before the previous seal fails (`TestBackdatedEventIsCaught`, `TestSealTimeIsSigned`)
   - Notes fixed: an erased unsealed payload keeps its digest (`TestErasedUnsealedPayloadKeepsItsDigest`); the new key endorses the old one during a rotation (`TestOldBlocksVerifyAfterKeyRotation`); retention keeps at least 30 days (`TestRetentionKeepsAtLeastThirtyDays`, API refuses 1 to 29); ADR 0028 says what only outside checkpoints show
 - [ ] Owner's walkthrough: `docs/manual-test.md` section 18
+
+### Next slice (spec 2026-11-21)
+
+**Fairness in the audit queue.** One busy org must not delay another's
+completions. Comes with the Postgres store (F03): a queue per org with
+round-robin flushing. Test: `TestBusyOrgDoesNotStarveAnother`. On SQLite
+(one org per install) nothing to do.
 
 ## F13. Stdio runner
 Status: Not started
@@ -1059,6 +1300,72 @@ person's AI client still can never approve or administer anything.
 - [ ] SCIM 2.0 with immediate revocation on deprovisioning
 - [ ] Passkeys or TOTP for local accounts
 
+### Next slices (spec 2026-11-21)
+
+**A. Generic OIDC sign-in (also Google and Microsoft).** Goal: a company
+signs in with its own identity provider, and GitHub becomes one provider
+among several.
+
+Decide first: ADR 0034. It settles how identities are keyed (issuer and
+subject, as ADR 0011 planned) and how an existing GitHub member links a
+second provider: only while signed in, never by matching email. It also
+fixes discovery with an issuer check, PKCE, nonce and `at_hash`, and
+whether an org may turn GitHub off.
+
+Acceptance:
+1. `PRIVO_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET(_FILE)`, plus an
+   optional allowed-domain list. The sign-in page offers each configured
+   provider.
+2. Invites and setup links work with any provider. A person signs in with
+   the identity the invite was claimed with, or a linked one.
+3. Tokens are checked: signature by the issuer's keys, `iss`, `aud`, `exp`,
+   `nonce`. `email_verified` is required when domains are restricted.
+
+Tasks and tests:
+- [ ] ADR 0034; `internal/oidcauth` (`TestIDTokenChecks`, `TestNonceBound`, `TestWrongAudienceRefused`)
+- [ ] web: provider choice, linking (`TestLinkOnlyWhileSignedIn`, `TestNoEmailMatching`)
+- [ ] Acceptance with a fake OIDC provider
+
+**B. SAML 2.0 and group mapping.**
+- SAML sign-in, with signed assertions required, the audience checked,
+  and replay refused.
+- Identity provider groups map onto teams and onto member, approver or
+  auditor (`user_roles.source = idp:<group>`). Owner and admin are never
+  mapped.
+- Mapped roles and teams follow each sign-in; hand-given ones stay.
+
+Tests: `TestUnsignedAssertionRefused`, `TestReplayRefused`,
+`TestGroupsMapToTeamsAndRoles`, `TestOwnerNeverMapped`.
+
+**C. SCIM 2.0.**
+- `/scim/v2/Users` and `/Groups` with a SCIM bearer token per org
+  (hashed, like API tokens).
+- Deprovisioning removes the member at once (F14's removal, with R-04's
+  provider revocation).
+- Groups map as in B.
+
+Tests: `TestSCIMDeprovisionEndsEverything`, `TestSCIMTokenScopedToOrg`.
+
+**D. Approvers scoped to a team or a server.** Decide first: ADR 0035.
+ADR 0025 leaves room for it. The ADR decides whether a scope is attached
+to the role grant or to a separate table, and what an unscoped approver
+sees.
+
+Acceptance:
+1. An approver's grant can name teams or servers. They see and decide only
+   requests from those teams or on those servers.
+2. Owners and admins stay unscoped.
+
+Tests: `TestScopedApproverSeesOnlyTheirs`,
+`TestScopedApproverCannotDecideOthers`.
+
+**E. The remaining roles of ADR 0011 (server admin, policy admin)** become
+members of the combinable set, after D. They come from the same table.
+
+**F. Passkeys or TOTP for local accounts**, for self-hosted installs without
+an identity provider. Spec once a local-account sign-in exists; today
+every sign-in goes through a provider.
+
 ## F21. Client compatibility suite
 Status: In progress (first real client tried 2026-10-29)
 ADRs: 0004, 0010
@@ -1234,6 +1541,19 @@ Tasks and the tests that name them:
 - [x] Adding a server whose provider is slow waits about 10 s on "Adding…" and ends in "context deadline exceeded"; say which step timed out at which host in plain words (Figma's authorization server metadata answered 503 or hung most of the time on 2026-11-04 while its status page was green) **Fixed in 0.17.0 (F14 third slice).**
 - [x] Discovered: token names are unique in the whole org, so two people cannot both call their token `claude-code`; make them unique per person (with the person in the name shown to admins) **Fixed in 0.17.0 (F14 third slice).**
 - [ ] Later: tool-level toolsets inside a server (F08); a team's own rule presets; identity provider groups mapped onto teams (F20)
+
+### Next slice (spec 2026-11-21)
+
+**A team's own rule presets.** Goal: an admin applies a preset (read-only,
+ask before writes, …) to one team instead of the whole org.
+
+Acceptance:
+1. `POST /api/v1/servers/{alias}/policy:preset` takes `team`. The rules it
+   writes carry the team as subject.
+2. Rules for a team are evaluated only for its members. They rank as team
+   rules do today.
+
+Tests: `TestPresetForOneTeam`, `TestTeamPresetDoesNotTouchOthers`.
 
 ## F27. A token belongs to a member by user id
 Status: Done, deployed as 0.7.0 on 2026-11-11 (independent review and the owner's new token are open below)
