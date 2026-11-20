@@ -12,6 +12,7 @@
 //	privo config show   print every setting with its effective value and where it came from
 //	privo admin setup-link  print a one-time URL that makes the first person to sign in with GitHub the owner
 //	privo admin invite      print a one-time URL that adds a person with a role (ADR 0017)
+//	privo audit verify      check the audit chain: links, hashes and signatures (ADR 0025)
 //
 // Settings come from the environment and, optionally, a configuration file
 // named by --config FILE (before the command) or PRIVO_CONFIG_FILE (ADR 0015).
@@ -37,11 +38,11 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr, os.Getenv))
 }
 
-const usage = "usage: privo [--config FILE] [serve|version|healthcheck|token create|token generate|backup|restore|config show|admin setup-link|admin invite]"
+const usage = "usage: privo [--config FILE] [serve|version|healthcheck|token create|token generate|backup|restore|config show|admin setup-link|admin invite|audit verify]"
 
 // configCommands are the commands that read settings, and so the configuration
 // file. version, help and token generate touch nothing and never read it.
-var configCommands = map[string]bool{"serve": true, "healthcheck": true, "token": true, "backup": true, "restore": true, "config": true, "admin": true}
+var configCommands = map[string]bool{"serve": true, "healthcheck": true, "token": true, "backup": true, "restore": true, "config": true, "admin": true, "audit": true}
 
 func run(args []string, stdout, stderr io.Writer, getenv func(string) string) int {
 	path, args, err := configFlag(args)
@@ -96,6 +97,8 @@ func run(args []string, stdout, stderr io.Writer, getenv func(string) string) in
 		return restoreCmd(args[1:], stdout, stderr, getenv)
 	case "admin":
 		return adminCmd(args[1:], stdout, stderr, getenv)
+	case "audit":
+		return auditCmd(args[1:], stdout, stderr, getenv)
 	default: // config
 		return configCmd(args[1:], stdout, stderr, src)
 	}

@@ -97,7 +97,9 @@ func TestUnsureFailsClosed(t *testing.T) {
 	deny.Conditions = cond(t, Condition{Arg: "account_id", Op: OpIn, Value: []any{42, 77}})
 	allow := rule("a", "*", "transfer", "*", "allow", 0)
 	allow.Conditions = cond(t, Condition{Arg: "account_id", Op: OpEquals, Value: 1})
-	req := func(args string) Request { return Request{Server: "bank", Tool: "transfer", Args: json.RawMessage(args)} }
+	req := func(args string) Request {
+		return Request{Server: "bank", Tool: "transfer", Args: json.RawMessage(args)}
+	}
 	for _, args := range []string{`{"account_id":"42"}`, `{"account_id":42.` + strings.Repeat("0", 70) + `}`, `{"account_id":42}`} {
 		if d := Evaluate([]store.Policy{deny}, req(args), "allow", now); d.Action != "deny" {
 			t.Errorf("deny on %.60s: %+v", args, d)

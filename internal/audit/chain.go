@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"privo.club/privo/internal/store"
@@ -22,6 +23,13 @@ import (
 // derived from the master key, which never touches the database.
 
 const signingSalt = "privo audit signing v1"
+
+// SettingRetentionDays is how many days sealed events are kept; "0" or
+// unset keeps them for ever.
+const SettingRetentionDays = "audit.retention_days"
+
+// MaxRetentionDays bounds the setting (ten years).
+const MaxRetentionDays = 3650
 
 // SigningKey derives an org's Ed25519 signing key from a master key, and
 // returns it with its id (the first 16 hex characters of the SHA-256 of the
@@ -163,8 +171,24 @@ func (s *Sealer) SealOnce(ctx context.Context) (int, error) {
 	}
 }
 
+// Prune applies the org's retention: the events of blocks sealed more than
+// that many days ago are deleted (whole blocks, so the rest still verifies).
+// It returns how many events went.
+func (s *Sealer) Prune(ctx context.Context) (int, error) {
+	v, err := s.Store.Setting(ctx, s.Org, SettingRetentionDays, "0")
+	if err != nil {
+		return 0, err
+	}
+	days, err := strconv.Atoi(v)
+	if err != nil || days <= 0 {
+		return 0, nil
+	}
+	return s.Store.PruneAudit(ctx, s.Org, s.now().AddDate(0, 0, -min(days, MaxRetentionDays)))
+}
+
 // Run seals every Interval until ctx ends, and once more on the way out so a
-// clean shutdown leaves nothing unsealed.
+// clean shutdown leaves nothing unsealed. It applies retention at start and
+// every hour.
 func (s *Sealer) Run(ctx context.Context) {
 	every := s.Interval
 	if every <= 0 {
@@ -176,8 +200,20 @@ func (s *Sealer) Run(ctx context.Context) {
 	}
 	t := time.NewTicker(every)
 	defer t.Stop()
+	prune := func() {
+		if n, err := s.Prune(ctx); err != nil && ctx.Err() == nil {
+			log.Error("audit: retention", "err", err)
+		} else if n > 0 {
+			log.Info("audit: retention deleted old events", "events", n)
+		}
+	}
+	prune()
+	hourly := time.NewTicker(time.Hour)
+	defer hourly.Stop()
 	for {
 		select {
+		case <-hourly.C:
+			prune()
 		case <-ctx.Done():
 			if _, err := s.SealOnce(context.WithoutCancel(ctx)); err != nil {
 				log.Error("audit: sealing on shutdown", "err", err)

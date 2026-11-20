@@ -172,3 +172,22 @@ func (s *Store) RevokeToken(ctx context.Context, org OrgID, id string) error {
 	}
 	return nil
 }
+
+// ListAllTokens lists an org's tokens, revoked ones included, without
+// secrets: who a past call's token belonged to (F12 erasure).
+func (s *Store) ListAllTokens(ctx context.Context, org OrgID) ([]APIToken, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT id, name, role, kind, person, user_id FROM api_tokens WHERE org_id = ?`, org)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []APIToken
+	for rows.Next() {
+		t := APIToken{OrgID: org}
+		if err := rows.Scan(&t.ID, &t.Name, &t.Role, &t.Kind, &t.Person, &t.UserID); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
