@@ -222,7 +222,8 @@ func (a *API) removeMember(w http.ResponseWriter, r *http.Request, p auth.Princi
 	}
 	revoked := 0
 	for _, t := range toks {
-		if t.Person == u.Person {
+		// Bound tokens, and tokens made before F07 R-01 that carry the person.
+		if t.UserID == u.ID || t.Person == u.Person {
 			if err := a.Store.RevokeToken(r.Context(), p.OrgID, t.ID); err == nil {
 				revoked++
 				a.adminEvent(r.Context(), p, "token.revoke:"+t.ID, "")
@@ -234,26 +235,33 @@ func (a *API) removeMember(w http.ResponseWriter, r *http.Request, p auth.Princi
 	return nil
 }
 
+// errNotSignedIn answers the "own token" routes for a principal with no member
+// behind it: a control token, whatever person it names (F07 R-01).
+var errNotSignedIn = errorf(http.StatusForbidden, "your own tokens are made on the Tokens page while signed in; this token belongs to no member")
+
 func (a *API) listMyTokens(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	if p.UserID == "" {
+		return errNotSignedIn
+	}
 	toks, err := a.Store.ListTokens(r.Context(), p.OrgID)
 	if err != nil {
 		return err
 	}
 	out := []tokenView{}
 	for _, t := range toks {
-		if t.Person == p.Person && t.Kind == store.KindGateway {
-			out = append(out, tokenView{ID: t.ID, Name: t.Name, Role: t.Role, Kind: t.Kind, Person: t.Person, CreatedAt: t.CreatedAt, ExpiresAt: t.ExpiresAt})
+		if t.UserID == p.UserID && t.Kind == store.KindGateway {
+			out = append(out, viewToken(t))
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"tokens": out})
 	return nil
 }
 
-// createMyToken gives a person a gateway token of their own for an AI client:
-// their person, their role.
+// createMyToken gives a signed-in person a gateway token of their own for an
+// AI client: bound to them (F07 R-01), with their person and role.
 func (a *API) createMyToken(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-	if p.Person == "" {
-		return errorf(http.StatusForbidden, "this principal has no person")
+	if p.UserID == "" || p.Person == "" {
+		return errNotSignedIn
 	}
 	var req struct {
 		Name string `json:"name"`
@@ -262,20 +270,23 @@ func (a *API) createMyToken(w http.ResponseWriter, r *http.Request, p auth.Princ
 		return err
 	}
 	name := strings.TrimSpace(req.Name)
-	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: name, Role: p.Role, Kind: store.KindGateway, Person: p.Person, TTL: a.TokenTTL})
+	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: name, Role: p.Role, Kind: store.KindGateway, Person: p.Person, UserID: p.UserID, TTL: a.TokenTTL})
 	if err != nil {
 		return err
 	}
 	a.adminEvent(r.Context(), p, "token.create:gateway:"+rec.Role+":"+rec.Name, "")
 	writeJSON(w, http.StatusCreated, map[string]any{"id": rec.ID, "token": plain, "name": rec.Name, "role": rec.Role, "kind": rec.Kind,
-		"person": rec.Person, "expires_at": rec.ExpiresAt})
+		"person": rec.Person, "personal": true, "expires_at": rec.ExpiresAt})
 	return nil
 }
 
 func (a *API) revokeMyToken(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	if p.UserID == "" {
+		return errNotSignedIn
+	}
 	id := r.PathValue("id")
 	t, err := a.Store.TokenByID(r.Context(), id)
-	if err != nil || t.OrgID != p.OrgID || t.RevokedAt != nil || t.Person != p.Person || t.Kind != store.KindGateway {
+	if err != nil || t.OrgID != p.OrgID || t.RevokedAt != nil || t.UserID != p.UserID || t.Kind != store.KindGateway {
 		return errorf(http.StatusNotFound, "no active token %q of yours", id)
 	}
 	if err := a.Store.RevokeToken(r.Context(), p.OrgID, id); err != nil {

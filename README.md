@@ -116,9 +116,9 @@ People approve calls in a browser, with their GitHub account and no token
    ```
 
    Open the link within an hour, sign in with the GitHub account that should own
-   this Privo, and you are in. The link works once. `--person` is the name your
-   tokens carry (default: your GitHub login in lowercase); self-approval is
-   refused between tokens and sessions of the same person.
+   this Privo, and you are in. The link works once. `--person` is your name in
+   Privo (default: your GitHub login in lowercase); self-approval is refused
+   between your tokens and your sessions.
 3. `/admin/approvals` lists the calls waiting for a decision, with their
    arguments. Owners, admins and approvers can approve or deny.
 
@@ -133,8 +133,10 @@ privo admin invite --person ada [--role member|approver|auditor|admin]
 
 prints a link that works once, for 72 hours (also `POST /api/v1/invites` with
 `{"person": "ada", "role": "member"}`). Ada opens it and signs in with GitHub;
-her account is bound by its numeric GitHub id. Give her AI client a gateway
-token whose person is `ada`.
+her account is bound by its numeric GitHub id. She makes the token for her AI
+client herself, on the Tokens page: only a token a person makes while signed in
+uses their own accounts and teams. Nobody else, owners included, can issue a
+token that acts as her.
 
 ## Servers where each person uses their own account
 
@@ -209,8 +211,14 @@ First setup, where you have a shell on the server:
 
 ```sh
 privo token create --name you --role owner --kind control       # admin API
-privo token create --name you-agent --role owner --kind gateway --person you   # AI client
+privo token create --name ci-agent --role member --kind gateway --person ci   # a service's AI client
 ```
+
+`--person` (and `person` in `POST /api/v1/tokens`) names the service or script
+a token is for; it defaults to the token's name and may not be a member's name.
+Such a token reaches the `everyone` team and no one's own accounts. People who
+sign in make their own AI client tokens on the Tokens page; those are bound to
+them.
 
 Backups and restore (ADR 0010, `docs/deploy-coolify.md`):
 

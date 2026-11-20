@@ -114,3 +114,24 @@ func TestTokenKindsAreSeparated(t *testing.T) {
 		t.Fatal("control token accepted on /mcp")
 	}
 }
+
+// F07 review R-01: the member behind a token is the user it is bound to, never
+// the person name it carries.
+func TestPrincipalCarriesTokenUser(t *testing.T) {
+	f := &fakeStore{tokens: map[string]store.APIToken{}}
+	a := New(f)
+	ctx := context.Background()
+	own, _ := token.New()
+	f.tokens[own.ID] = store.APIToken{OrgID: "org", ID: own.ID, Name: "laptop", Role: store.RoleMember, Kind: store.KindGateway,
+		Person: "ada", UserID: "u-ada", SecretHash: own.SecretHash, ExpiresAt: time.Now().Add(time.Hour)}
+	named, _ := token.New()
+	f.tokens[named.ID] = store.APIToken{OrgID: "org", ID: named.ID, Name: "ada", Role: store.RoleMember, Kind: store.KindGateway,
+		Person: "ada", SecretHash: named.SecretHash, ExpiresAt: time.Now().Add(time.Hour)}
+
+	if p, _, err := a.Verify(ctx, own.Plain); err != nil || p.UserID != "u-ada" || p.ActorID() != own.ID {
+		t.Fatalf("own token: %+v %v", p, err)
+	}
+	if p, _, err := a.Verify(ctx, named.Plain); err != nil || p.UserID != "" || p.Person != "ada" {
+		t.Fatalf("a token that only names ada: %+v %v", p, err)
+	}
+}

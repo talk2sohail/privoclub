@@ -103,9 +103,9 @@ We considered three ways to let people do more than one kind of thing:
   approver role: no single credential both calls tools and decides
   approvals.
 - The binding of a gateway token to its person matters more. A `role:` rule
-  now follows the person's roles, and a token whose person can be spoofed
-  could borrow them. The F07 R-01 fix (bind tokens to a user id, parked) has
-  to land first or with this change.
+  now follows the person's roles, and a token whose person could be spoofed
+  could borrow them. ADR 0022 (the F07 R-01 fix) binds tokens to a user id
+  and lands first.
 - Teams still decide which servers a person reaches. Roles decide what a
   person may administer. Neither one grants the other.
 - Approvers limited to a team or a server ("the designers' lead approves

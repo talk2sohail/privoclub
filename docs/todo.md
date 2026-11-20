@@ -277,8 +277,8 @@ ADRs: 0003
 - [ ] Tests with real clients: Claude Code, Cursor, Amp, Codex
 
 ## F07. Upstream OAuth broker
-Status: In progress (first slice deployed, app.privo.club runs 0.6.0; independent review done 2026-11-03 with one High finding, open below; connecting a real provider account on app.privo.club is still to do, see F26)
-ADRs: 0003, 0017
+Status: In progress (first slice deployed, app.privo.club runs 0.6.0; independent review done 2026-11-03; its High finding R-01 fixed 2026-11-18 (ADR 0022); connecting a real provider account on app.privo.club is still to do, see F26)
+ADRs: 0003, 0017, 0022
 
 ### First slice: goal
 
@@ -372,7 +372,7 @@ until URL elicitation lands.
 
 ### Review findings, open (independent review 2026-11-03; fixes parked by the owner)
 
-- [ ] R-01 (High; the same hole as F14 R-02): an owner or admin can issue a gateway token with any member's `person` (`POST /api/v1/tokens`; an omitted person defaults to the token name) and call upstream servers with that member's grant; the audit names the token, not whose account was used. Bind tokens to a user id (`api_tokens.user_id`, set by `/api/v1/me/tokens`), resolve grants and team membership by user id and never by name, and record the grant's owner in the call's audit event. The acceptance fixture `g.issue("ada")` relies on the hole and has to change with it. F26's team membership follows the same string
+- [x] R-01 (High; the same hole as F14 R-02): an owner or admin can issue a gateway token with any member's `person` (`POST /api/v1/tokens`; an omitted person defaults to the token name) and call upstream servers with that member's grant; the audit names the token, not whose account was used. Fixed 2026-11-18 (ADR 0022): migration `00007_token_user.sql` adds `api_tokens.user_id`, set only by `POST /api/v1/me/tokens` for the signed-in person, and binds existing tokens only where the person's own `token.create` event proves they made it; the principal carries it as `UserID`; grants, teams and `/me/tools` read the user id and never a name (`UserByPerson` is gone from the gateway); `POST /api/v1/tokens` and `privo token create` refuse a person (or defaulted name) that names a member; the `/me/tokens` routes answer 403 to a control token; removing a member revokes bound tokens and older ones carrying their person; per-person calls record `account` on their audit row (API and Activity page). Threat note: an admin, a stolen admin session or a control token can no longer act as a member upstream or join their teams; an upgrade can leave a token an admin made for someone without that person's accounts, and the person makes their own. Tests: `internal/store` `TestTokenCarriesUserID`, `TestUserByID`, `TestMigrationBindsOnlyAPersonsOwnTokens`, `TestAuditRecordsAccount`; `internal/auth` `TestPrincipalCarriesTokenUser`; `internal/gateway` `TestAccessResolvesTheCallersMember`, `TestAccessFailsClosed`; `internal/control` `TestAdminCannotIssueTokenForAMember`, `TestMyTokenIsBoundToTheSignedInUser`, `TestControlTokenHasNoOwnTokens` (both failed before the fix), `TestRemoveMemberRevokesBoundAndNamedTokens`; acceptance `TestUpstreamOAuthTwoPeople` (the owner is refused a token as Ada by person and by name; Ada and the boss make their own; each call's audit names its account), fixtures now use `person.myToken`; Vitest: the Tokens page labels own and service tokens and asks API tokens for a service, the Activity page shows the account. Security review 2026-11-18 (`docs/reviews/2026-11-18-r01-token-binding-security-review.md`): no High or Medium findings
 - [ ] R-02 (Medium): after a re-registration (`Grants.Reregister` from the connect callback) the running upstream manager keeps the old client id until a restart or an admin edit, so grants issued to the new client are refreshed as the old one, answered with `invalid_grant` and deleted. Call `Upstream.Sync` after the registration changes, or read the client from the store at refresh time; store the client id on the grant
 - [ ] R-03 (Medium): any signed-in member can fill the org-wide state cap through `POST /connect/<alias>/start` and lock out sign-in and connecting for everyone (see F05 R-01); cap connect states per user and replace that user's older one
 - [ ] R-04 (Low): removing a member, deleting a server and reconnecting delete grants locally without revoking them at the provider; backups keep them
@@ -543,7 +543,7 @@ Tasks and the tests that name them:
 ### Review findings, open (independent review 2026-11-03, `docs/reviews/2026-11-03-f14-admin-app-independent-review.md`: approve with changes; 0 Critical, 0 High, 2 Medium, 4 Low, 2 Info; fixes parked by the owner)
 
 - [ ] R-01 (Medium): the tool review shows only the first line (at most 300 characters) of a description, while the hash that is accepted covers all of it, the input schema and the annotations. Show the whole description as text, the schema, and a diff for a changed definition
-- [ ] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fix with F07 R-01
+- [x] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fixed with F07 R-01 (2026-11-18): the API refuses a member's name; the field is now "Service", and the token list marks each token "own token" or "service"
 - [ ] R-03 (Low): a refused or cross-site request still slides the session's idle timeout; touch the session only after every check passed
 - [ ] R-04 (Low): the review ticks everything by default, also items that arrive while the page polls; make ticking opt-in or mark new rows
 - [ ] R-05 (Low): the UI build has no audit step (`web/.npmrc` has `audit=false` and `legacy-peer-deps=true`; `npm ci` runs lifecycle scripts; actions are pinned by tag): `npm ci --ignore-scripts`, `npm audit --omit=dev`, `npm audit signatures` in the `ui` job, actions by SHA
@@ -659,9 +659,9 @@ person's AI client still can never approve or administer anything.
 - **Self-approval.** Combining member and approver makes self-approval
   attempts more likely. The per-person check (ADR 0005) is unchanged, stays
   off by default, and is tested with a person who holds both roles.
-- **Person binding.** `role:` rules now follow the token's person. A loosely
-  bound person (F07 R-01, parked) could borrow someone else's roles in
-  policy. This slice depends on the R-01 fix (tokens bound to a user id).
+- **Person binding.** `role:` rules now follow the token's member. Since
+  the F07 R-01 fix (ADR 0022) that is the user a token is bound to by id,
+  never a person name, so no token can borrow someone else's roles.
 - **Fail closed.** If reading roles fails, the request fails. No roles means
   no permission. An unknown role in the database is ignored, never treated
   as owner.
@@ -672,8 +672,8 @@ person's AI client still can never approve or administer anything.
 ### First slice: tasks and the tests that name them
 
 - [x] Spec (this section) and ADR 0021; ADRs 0011 and 0014 marked as amended
-- [ ] Prerequisite: F07 R-01, tokens bound to a user id (see F07 review findings)
-- [ ] Store: migration `00007_user_roles.sql` (`user_roles`, `invite_roles`, both with `org_id`; copy `users.role` and `invites.role`, then drop both columns; rewrite gateway tokens of signed-in people to `member`); `SetUserRoles`, `UserRoles`; catalog grants and `promoteCatalog` read `user_roles`
+- [x] Prerequisite: F07 R-01, tokens bound to a user id (ADR 0022, 2026-11-18)
+- [ ] Store: migration `00008_user_roles.sql` (`user_roles`, `invite_roles`, both with `org_id`; copy `users.role` and `invites.role`, then drop both columns; rewrite gateway tokens of signed-in people to `member`); `SetUserRoles`, `UserRoles`; catalog grants and `promoteCatalog` read `user_roles`
   - tests: `TestUserRolesMigration` (each person keeps their role; personal gateway tokens become `member`; automation tokens unchanged), `TestRoleSetRules` (owner alone, admin alone, subsets of member, approver and auditor; empty and mixed sets refused), `TestSetUserRolesAudited` (set before and after), `TestLosingAdminDropsCatalogGrants`, `TestPromoteCatalogReadsUserRoles`, `TestUserRolesAreIsolatedPerOrg`, `TestInviteCarriesRoleSet`
 - [ ] Auth: `Principal.Roles` (sorted set), `Has`, `Can` as the union; no roles means no permission; unknown roles ignored
   - tests: `TestCanIsUnionOfRoles`, `TestNoRolesNoPermissions`, `TestUnknownRoleGrantsNothing`, `TestApproverAloneCannotUseGateway`, `TestMemberApproverCanUseGatewayAndDecide`
@@ -688,7 +688,7 @@ person's AI client still can never approve or administer anything.
 - [ ] App: Members page shows each person's roles as checkboxes, offering only the sets the editor may set; invite form takes a set; approvals page turns off decide on one's own requests with the reason; start page appears for anyone who holds member
   - tests (Vitest): role checkboxes follow the editor (owner, admin), an invalid set cannot be saved, the invite sends a set, own requests show the reason and no active buttons
 - [ ] Acceptance through the real binary: `TestMemberWhoApproves` (a person with member and approver calls a tool that needs approval from their client; their gateway token gets 401 on the admin API; they cannot approve their own call in the browser; they approve another member's call; an owner removes approver and their next request cannot decide; the audit names each actor)
-- [ ] Docs: README (roles), `docs/manual-test.md` (a new section for combined roles), version 0.7.0
+- [ ] Docs: README (roles), `docs/manual-test.md` (a new section for combined roles), version 0.8.0
 - [ ] Independent security review (auth and tenancy), findings recorded here
 
 ### Later in F20
@@ -838,8 +838,8 @@ Threat note:
 - The catalog is embedded data, not fetched at runtime, so it cannot be
   changed from outside; an entry only fills a form, and the egress check,
   discovery and tool review still run.
-- Membership follows the token's person (F07 R-01, parked): the fix that
-  binds tokens to a user id covers teams too.
+- Membership follows the member a token is bound to by id (F07 R-01, fixed
+  2026-11-18, ADR 0022), never the person name it carries.
 
 Tasks and the tests that name them:
 

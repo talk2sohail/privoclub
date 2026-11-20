@@ -21,6 +21,7 @@ type AuditEvent struct {
 	Action     string // tools/call, resources/read, prompts/get, or an admin action
 	Decision   string
 	ApprovedBy string
+	Account    string // whose upstream account the call used: "<person> (user <id>)", or ""
 	Outcome    string
 	LatencyMS  int64
 	Payload    []byte // encrypted arguments when recording was on
@@ -36,10 +37,10 @@ func (s *Store) InsertAudit(ctx context.Context, org OrgID, events ...AuditEvent
 func insertAudit(ctx context.Context, tx *sql.Tx, org OrgID, events []AuditEvent) error {
 	for _, e := range events {
 		_, err := tx.ExecContext(ctx, `
-			INSERT INTO audit_events (org_id, id, call_id, phase, ts, actor, actor_id, client, server, item, action, decision, approved_by, outcome, latency_ms, payload)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			INSERT INTO audit_events (org_id, id, call_id, phase, ts, actor, actor_id, client, server, item, action, decision, approved_by, account, outcome, latency_ms, payload)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			org, e.ID, e.CallID, e.Phase, ts(e.Time), e.Actor, e.ActorID, e.Client, e.Server, e.Item, e.Action,
-			e.Decision, e.ApprovedBy, e.Outcome, e.LatencyMS, e.Payload)
+			e.Decision, e.ApprovedBy, e.Account, e.Outcome, e.LatencyMS, e.Payload)
 		if err != nil {
 			return err
 		}
@@ -59,7 +60,7 @@ func (s *Store) RecentCalls(ctx context.Context, org OrgID, limit int) ([]CallRe
 		limit = 50
 	}
 	rows, err := s.r.QueryContext(ctx, `
-		SELECT i.id, i.call_id, i.ts, i.actor, i.actor_id, i.client, i.server, i.item, i.action, i.decision, i.approved_by, i.payload,
+		SELECT i.id, i.call_id, i.ts, i.actor, i.actor_id, i.client, i.server, i.item, i.action, i.decision, i.approved_by, i.account, i.payload,
 		       c.id, c.ts, c.outcome, c.latency_ms
 		FROM audit_events i
 		LEFT JOIN audit_events c ON c.org_id = i.org_id AND c.call_id = i.call_id AND c.phase = 'completion'
@@ -76,7 +77,7 @@ func (s *Store) RecentCalls(ctx context.Context, org OrgID, limit int) ([]CallRe
 		var cid, cts, cout sql.NullString
 		var clat sql.NullInt64
 		i := &r.Intent
-		if err := rows.Scan(&i.ID, &i.CallID, &its, &i.Actor, &i.ActorID, &i.Client, &i.Server, &i.Item, &i.Action, &i.Decision, &i.ApprovedBy, &i.Payload,
+		if err := rows.Scan(&i.ID, &i.CallID, &its, &i.Actor, &i.ActorID, &i.Client, &i.Server, &i.Item, &i.Action, &i.Decision, &i.ApprovedBy, &i.Account, &i.Payload,
 			&cid, &cts, &cout, &clat); err != nil {
 			return nil, err
 		}

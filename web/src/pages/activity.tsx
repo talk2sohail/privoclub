@@ -51,7 +51,10 @@ export function Activity({ loc }: PageProps) {
                   {events.map((e, i) => (
                     <tr key={i}>
                       <td>{when(e.time)}</td>
-                      <td>{e.actor}</td>
+                      <td>
+                        {e.actor}
+                        {e.account && <small class="meta"> as {shortApprover(e.account)}</small>}
+                      </td>
                       <td>
                         <code>{e.action}</code>
                       </td>
@@ -77,7 +80,10 @@ export function Activity({ loc }: PageProps) {
                   {events.map((e, i) => (
                     <tr key={i}>
                       <td>{when(e.time)}</td>
-                      <td>{e.actor}</td>
+                      <td>
+                        {e.actor}
+                        {e.account && <small class="meta"> as {shortApprover(e.account)}</small>}
+                      </td>
                       <td>{e.server}</td>
                       <td>
                         <code>{e.item}</code>

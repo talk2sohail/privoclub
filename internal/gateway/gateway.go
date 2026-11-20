@@ -56,7 +56,7 @@ type Store interface {
 	PinStatuses(ctx context.Context, org store.OrgID, serverID string) (map[store.PinKey]string, error)
 	Setting(ctx context.Context, org store.OrgID, key, def string) (string, error)
 	ListPolicies(ctx context.Context, org store.OrgID) ([]store.Policy, error)
-	UserByPerson(ctx context.Context, org store.OrgID, person string) (store.User, error)
+	UserByID(ctx context.Context, org store.OrgID, id string) (store.User, error)
 	AccessFor(ctx context.Context, org store.OrgID, userID string) (store.Access, error)
 }
 
@@ -150,22 +150,13 @@ func (g *Gateway) finish(req mcp.Request, res mcp.Result, err error) (mcp.Result
 }
 
 // Access returns what a caller reaches (ADR 0020): the servers of their
-// teams. A signed-in person is their user; a token is the member its person
-// names, and a token whose person is no member is in "everyone" only. A
-// removed member reaches nothing. Any error is returned, so callers fail
-// closed. The admin API uses it too, so both answer the same.
+// teams. The caller's member is the signed-in person, or the person whose own
+// token it is (F07 R-01); any other token is in "everyone" only, whatever
+// person name it carries. A removed member reaches nothing. Any error is
+// returned, so callers fail closed. The admin API uses it too, so both answer
+// the same.
 func Access(ctx context.Context, st Store, p auth.Principal) (store.Access, error) {
-	userID := p.UserID
-	if userID == "" && p.Person != "" {
-		u, err := st.UserByPerson(ctx, p.OrgID, p.Person)
-		switch {
-		case err == nil:
-			userID = u.ID // a removed member reaches nothing: AccessFor checks
-		case !errors.Is(err, store.ErrNotFound):
-			return store.Access{}, err
-		}
-	}
-	return st.AccessFor(ctx, p.OrgID, userID)
+	return st.AccessFor(ctx, p.OrgID, p.UserID)
 }
 
 func (g *Gateway) access(ctx context.Context, p auth.Principal) (store.Access, error) {
@@ -401,7 +392,7 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	}
 	start := time.Now()
 	intent := store.AuditEvent{ID: ids.New(), CallID: callID, Time: start, Actor: c.p.Name, ActorID: c.p.TokenID, Server: c.item.Alias,
-		Item: c.item.Name, Action: c.action, Decision: dec.label, ApprovedBy: dec.approvedBy, Payload: payload}
+		Item: c.item.Name, Action: c.action, Decision: dec.label, ApprovedBy: dec.approvedBy, Account: g.account(c), Payload: payload}
 	if err := g.Audit.Intent(ctx, c.p.OrgID, intent); err != nil {
 		restore()
 		g.Logger.Error("audit intent failed; refusing call", "err", err)
@@ -428,10 +419,10 @@ func (g *Gateway) session(ctx context.Context, c call) (*mcp.ClientSession, erro
 	if !g.Upstream.PerPerson(c.item.ServerID) {
 		return g.Upstream.Session(c.p.OrgID, c.item.ServerID)
 	}
-	if c.p.Person == "" {
+	if c.p.UserID == "" {
 		return nil, noAccount(c.item.Alias)
 	}
-	u, err := g.Store.UserByPerson(ctx, c.p.OrgID, c.p.Person)
+	u, err := g.Store.UserByID(ctx, c.p.OrgID, c.p.UserID)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
 		return nil, noAccount(c.item.Alias)
 	}
@@ -445,6 +436,16 @@ func (g *Gateway) session(ctx context.Context, c call) (*mcp.ClientSession, erro
 	return s, err
 }
 
+// account names whose upstream account a call uses (F07 R-01): on a server
+// where each person uses their own, the caller's member, the only one session
+// ever picks. Elsewhere the server's shared connection is used and it is "".
+func (g *Gateway) account(c call) string {
+	if c.p.UserID == "" || g.Upstream == nil || !g.Upstream.PerPerson(c.item.ServerID) {
+		return ""
+	}
+	return c.p.Person + " (user " + c.p.UserID + ")"
+}
+
 // accountError is a call that needs the person to act in the browser first. Its
 // text is fixed and safe to show to the AI client and the person.
 type accountError struct{ msg string }
@@ -452,7 +453,8 @@ type accountError struct{ msg string }
 func (e *accountError) Error() string { return e.msg }
 
 func noAccount(alias string) error {
-	return &accountError{fmt.Sprintf("%q runs with each person's own account, and this token's person has no Privo account. Ask an administrator for an invite (privo admin invite).", alias)}
+	return &accountError{fmt.Sprintf("%q runs with each person's own account, and this token is not a person's own token. "+
+		"Sign in to the Privo admin site and make your token on the Tokens page; if you have no account, ask an administrator for an invite.", alias)}
 }
 
 func (g *Gateway) connectFirst(alias string) error {

@@ -460,19 +460,10 @@ type myServerView struct {
 	ConnectURL string `json:"connect_url,omitempty"`
 }
 
-// userOf is the member behind p, or "" when there is none.
-func (a *API) userOf(ctx context.Context, p auth.Principal) (string, error) {
-	if p.UserID != "" {
-		return p.UserID, nil
-	}
-	if p.Person == "" {
-		return "", nil
-	}
-	u, err := a.Store.UserByPerson(ctx, p.OrgID, p.Person)
-	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
-		return "", nil
-	}
-	return u.ID, err
+// userOf is the member behind p, or "" when there is none: the signed-in
+// person or the member whose own token p is, never a person name (F07 R-01).
+func (a *API) userOf(_ context.Context, p auth.Principal) (string, error) {
+	return p.UserID, nil
 }
 
 // myTools is what the start page shows a person: their teams, the servers
