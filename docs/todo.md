@@ -602,15 +602,58 @@ text, with characters a person cannot see made visible (⟦U+200B⟧).
 - [ ] From that review: `previous` and "Available to AI clients" should follow the definition the gateway serves now, not the newest accepted one by time; route token events through `audit.Writer`; refuse refreshing a disabled server's grant
 
 ## F12. Audit log
-Status: In progress
-ADRs: 0001, 0002, 0006
+Status: In progress (second slice specified 2026-11-20)
+ADRs: 0001, 0002, 0006, 0025
 
 - [x] Synchronous intent record; batched completion; bounded queue that refuses rather than drops
 - [x] Arguments recording off by default; when on, arguments stored encrypted under the org key
-- [ ] Per-org fairness in the queue
-- [ ] Sealer, block chain, Ed25519-signed exportable checkpoints
-- [ ] Recording off by default; encrypted payloads; GDPR erasure
-- [ ] Search, CSV export, retention by partition
+- [ ] Per-org fairness in the queue (with the Postgres engine)
+
+### Second slice: tamper evidence, search, export, retention (2026-11-20)
+
+ADRs 0006 and 0025. Goal: an owner can show that the trail was not
+rewritten; an auditor finds and exports what they need; old events go away
+on a schedule, and recorded arguments can be erased, all without breaking
+the chain.
+
+Acceptance:
+1. A sealer chains new events into signed blocks every few seconds. The
+   signing key is derived from the master key and never stored.
+2. `privo audit verify` and `GET /api/v1/audit/integrity` report the
+   blocks and events checked and the first problem found. A changed,
+   deleted or reordered row, or a forged block, is found.
+3. `GET /api/v1/audit/checkpoints` and `GET /api/v1/audit/keys` give a
+   customer what to keep outside Privo.
+4. Calls and admin events can be filtered (person, server, action, decision,
+   time range), paged, and exported as CSV.
+5. A retention of N days deletes sealed events older than that; blocks stay
+   and verification still passes. Erasing a person's recorded arguments
+   keeps the chain valid.
+6. The Activity page offers the filters, Load more, Export CSV, the
+   integrity check, and, for those who manage the audit, the retention and
+   erasure settings.
+
+Threat note:
+- The signing key never touches the database. A database administrator who
+  edits rows breaks verification.
+- Retention never deletes unsealed events, and erasure clears payloads
+  only, never the fields the chain covers.
+- Search and export need `audit.read`; retention and erasure need
+  `audit.manage`. Each is audited.
+
+Tasks and the tests that name them:
+
+- [ ] Spec (this section) and ADR 0025
+- [ ] Store: migration `00012_audit_chain.sql` (`audit_events.chain_seq`, `payload_sha256`; `audit_blocks`); `SealAudit`, `AuditBlocks`, `AuditEventsInRange`, `SearchAudit`, `PruneAudit`, `EraseAuditPayloads`
+  - tests: `TestSealAssignsSequence`, `TestSearchAudit`, `TestPruneKeepsUnsealed`, `TestEraseKeepsDigest`
+- [ ] Audit: signing key derivation, event and block hashes, `Sealer`, `Verify`
+  - tests: `TestSigningKeyIsDerived`, `TestVerifyFindsTampering` (changed field, deleted row, reordered, forged block, foreign key), `TestVerifyAfterRetentionAndErasure`
+- [ ] Admin API and CLI: filters and cursor on `/api/v1/audit/events`; `/audit/export`, `/audit/integrity`, `/audit/checkpoints`, `/audit/keys`, `/audit/erase`; `retention_days` in audit settings; `privo audit verify`
+  - tests: `TestAuditSearchAPI`, `TestAuditIntegrityAPI`, `TestAuditEraseAPI`, `cmd/privo` `TestAuditVerifyCommand`
+- [ ] App: Activity filters, Load more, Export CSV, integrity, retention and erasure
+  - tests (Vitest)
+- [ ] Acceptance: `TestAuditChainEndToEnd` (calls sealed, verify passes, a row changed in the database is found)
+- [ ] Docs: README, `docs/manual-test.md`, version; security review
 
 ## F13. Stdio runner
 Status: Not started

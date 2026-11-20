@@ -34,3 +34,4 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0022](0022-tokens-bound-to-a-user.md) | A token is bound to its member by id, never by a person name | Proposed (accept after the security review of the fix) |
 | [0023](0023-toolsets.md) | Toolsets: a team can see only some of a server's tools | Proposed (accept after the F08 review) |
 | [0024](0024-rule-conditions-grants-and-yaml.md) | Rules look at arguments; grants only replace an ask; rules as YAML | Proposed (accept after the F09 review) |
+| [0025](0025-audit-signing-key-and-checkpoints.md) | The audit signing key comes from the master key; checkpoints anyone can check | Proposed (accept after the F12 review) |
