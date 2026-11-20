@@ -324,6 +324,22 @@ address on an internal network): `/metrics` there gives
 `privo_telemetry_dropped_total` and `privo_build_info`. It has no sign-in, so
 it never shares the public port.
 
+## Rules on arguments, and rules as a file
+
+A rule can look at what a call does (ADR 0027): **Rules → Add a rule → Only
+when the call's arguments…**, for example deny `delete_repo` when `repo` is
+`prod`, or ask before `create_payment` when `amount` is one of a list. Tests
+are `equals`, `not_equals`, `in`, `matches` (a pattern like `release/*`),
+`exists` and `missing`, on a dotted path (`options.force`); all must hold.
+They read the arguments exactly as sent to the server, and `"1"` is not `1`.
+A grant from an approval only ever turns an "ask" into "allow", never a deny.
+
+**Rules as a file** exports every rule and the default as YAML, and imports a
+file after a check that says what would change (`merge` adds, `replace`
+replaces everything but grants; one bad rule refuses the whole file). API:
+`GET /api/v1/policies/export`, `POST /api/v1/policies/import` with
+`{"yaml": "...", "mode": "merge", "dry_run": true}`.
+
 ## Roles
 
 A person holds a set of roles (ADR 0021): **owner** or **admin** alone, or

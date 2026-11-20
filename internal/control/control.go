@@ -106,6 +106,8 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("GET /api/v1/policies", wrap(auth.PermManagePolicy, a.listPolicies))
 	mux.Handle("POST /api/v1/policies", wrap(auth.PermManagePolicy, a.createPolicy))
 	mux.Handle("DELETE /api/v1/policies/{id}", wrap(auth.PermManagePolicy, a.deletePolicy))
+	mux.Handle("GET /api/v1/policies/export", wrap(auth.PermManagePolicy, a.exportPolicies))
+	mux.Handle("POST /api/v1/policies/import", wrap(auth.PermManagePolicy, a.importPolicies))
 	mux.Handle("POST /api/v1/servers/{alias}/policy:preset", wrap(auth.PermManagePolicy, a.applyPreset))
 	mux.Handle("PATCH /api/v1/settings/policy", wrap(auth.PermManagePolicy, a.patchPolicySettings))
 	mux.Handle("GET /api/v1/approvals", wrap(auth.PermDecide, a.listApprovals))
@@ -1071,11 +1073,16 @@ type policyView struct {
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 	// SubjectPerson names the member of a "user:" rule (F10 grants).
 	SubjectPerson string `json:"subject_person,omitempty"`
+	// Conditions on the call's arguments (ADR 0027).
+	Conditions []policy.Condition `json:"conditions,omitempty"`
+	// GrantOf is the approval a grant was made from (F10).
+	GrantOf string `json:"grant_of,omitempty"`
 }
 
 func viewPolicy(p store.Policy) policyView {
+	cs, _ := policy.RuleConditions(p)
 	return policyView{ID: p.ID, Server: p.Server, Tool: p.Tool, Subject: p.Subject, Action: p.Action, Priority: p.Priority,
-		Note: p.Note, CreatedBy: p.CreatedBy, ExpiresAt: p.ExpiresAt}
+		Note: p.Note, CreatedBy: p.CreatedBy, ExpiresAt: p.ExpiresAt, Conditions: cs, GrantOf: p.GrantOf}
 }
 
 func (a *API) listPolicies(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -1105,60 +1112,31 @@ func (a *API) listPolicies(w http.ResponseWriter, r *http.Request, p auth.Princi
 }
 
 func (a *API) createPolicy(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-	var req struct {
-		Server    string `json:"server"`
-		Tool      string `json:"tool"`
-		Subject   string `json:"subject"`
-		Action    string `json:"action"`
-		Priority  int    `json:"priority"`
-		Note      string `json:"note"`
-		ExpiresIn string `json:"expires_in"`
-	}
+	var req ruleInput
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	if req.Subject == "" {
-		req.Subject = "*"
-	}
-	if req.Tool == "" {
-		req.Tool = "*"
-	}
-	switch {
-	case req.Server != "*" && !aliasRe.MatchString(req.Server):
-		return errorf(http.StatusUnprocessableEntity, "server must be a server alias or *")
-	case !policy.ValidGlob(req.Tool):
-		return errorf(http.StatusUnprocessableEntity, "tool must be a name or glob pattern")
-	case !policy.ValidSubject(req.Subject):
-		return errorf(http.StatusUnprocessableEntity, "subject must be *, role:<role>, team:<slug>, user:<id> or token:<id>")
-	case !policy.ValidAction(req.Action):
-		return errorf(http.StatusUnprocessableEntity, "action must be allow, ask or deny")
-	case req.Priority < -1000 || req.Priority > 1000:
-		return errorf(http.StatusUnprocessableEntity, "priority must be between -1000 and 1000")
-	case len(req.Note) > 500:
-		return errorf(http.StatusUnprocessableEntity, "note is too long")
-	}
-	pol := store.Policy{ID: ids.New(), Server: req.Server, Tool: req.Tool, Subject: req.Subject, Action: req.Action,
-		Priority: req.Priority, Note: req.Note, CreatedBy: p.Name, CreatedAt: time.Now()}
-	if req.ExpiresIn != "" {
-		d, err := time.ParseDuration(req.ExpiresIn)
-		if err != nil || d <= 0 || d > 90*24*time.Hour {
-			return errorf(http.StatusUnprocessableEntity, "expires_in must be a duration up to 2160h")
-		}
-		exp := time.Now().Add(d)
-		pol.ExpiresAt = &exp
+	pol, err := req.policy(p, time.Now())
+	if err != nil {
+		return err
 	}
 	if err := a.Store.CreatePolicies(r.Context(), p.OrgID, pol); err != nil {
-		if errors.Is(err, store.ErrUnknownTeam) {
-			return errorf(http.StatusUnprocessableEntity, "there is no team %q", strings.TrimPrefix(pol.Subject, "team:"))
-		}
-		if errors.Is(err, store.ErrUnknownUser) {
-			return errorf(http.StatusUnprocessableEntity, "there is no member %q", strings.TrimPrefix(pol.Subject, "user:"))
-		}
-		return err
+		return ruleStoreError(err, pol)
 	}
 	a.adminEvent(r.Context(), p, fmt.Sprintf("policy.create:%s %s %s %s", pol.Action, pol.Server, pol.Tool, pol.Subject), pol.Server)
 	writeJSON(w, http.StatusCreated, map[string]any{"policy": viewPolicy(pol)})
 	return nil
+}
+
+// ruleStoreError turns the store's refusal of a rule into an answer.
+func ruleStoreError(err error, pol store.Policy) error {
+	switch {
+	case errors.Is(err, store.ErrUnknownTeam):
+		return errorf(http.StatusUnprocessableEntity, "there is no team %q", strings.TrimPrefix(pol.Subject, "team:"))
+	case errors.Is(err, store.ErrUnknownUser):
+		return errorf(http.StatusUnprocessableEntity, "there is no member %q", strings.TrimPrefix(pol.Subject, "user:"))
+	}
+	return err
 }
 
 func (a *API) deletePolicy(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -1408,9 +1386,9 @@ func (a *API) decide(approve bool) handler {
 // requester for d (F10, ADR 0005 scoped grants): one server, the exact tool,
 // the reviewed definition that was asked about, the requester's member (or
 // their token when it belongs to no member). The rules are evaluated again for
-// the requester now: a grant is made only when the call would still ask, and
-// ranks one above the rule that asks now, so a deny that wins today, added
-// while the request waited included, still wins (security review 2026-11-20).
+// the requester now: a grant is made only when the call would still ask. It
+// is marked with the approval (GrantOf), so it turns an ask into allow and
+// never a deny, whatever the deny's rank or conditions (ADR 0027).
 func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval, d time.Duration) (store.Policy, error) {
 	refuse := func(why string) (store.Policy, error) {
 		return store.Policy{}, errorf(http.StatusConflict, "%s Approve this call without allowing the tool for longer.", why)
@@ -1444,16 +1422,23 @@ func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval
 	if err != nil {
 		return store.Policy{}, err
 	}
+	// The approved call's own arguments, for rules with conditions (ADR 0027).
+	args, err := a.Approval.Arguments(ctx, p.OrgID, ap)
+	if err != nil {
+		return refuse("The call's arguments can no longer be read.")
+	}
 	now := time.Now()
 	dec := policy.Evaluate(rules, policy.Request{Roles: gateway.CallerRoles(requester, acc), TokenID: tok.ID, UserID: tok.UserID, Teams: acc.Teams,
-		Server: ap.ServerAlias, Tool: ap.Tool, PinHash: ap.PinHash, Annotations: def.Annotations}, dflt, now)
+		Server: ap.ServerAlias, Tool: ap.Tool, PinHash: ap.PinHash, Annotations: def.Annotations, Args: args}, dflt, now)
 	if dec.Action != store.ActionAsk {
 		return refuse("The rules changed while this request waited: this call would now be " + map[string]string{store.ActionAllow: "allowed", store.ActionDeny: "denied"}[dec.Action] + ".")
 	}
-	priority := 0
+	// The grant covers asks up to the rank of the one that asks now; the
+	// default's ask is below every rule (ADR 0027, security review 2026-11-20).
+	covers := -1000
 	for _, r := range rules {
 		if r.ID == dec.RuleID {
-			priority = r.Priority + 1
+			covers = r.Priority
 		}
 	}
 	subject := "token:" + tok.ID
@@ -1462,7 +1447,7 @@ func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval
 	}
 	exp := now.Add(d)
 	return store.Policy{ID: ids.New(), Server: ap.ServerAlias, Tool: policy.ExactTool(ap.Tool), Subject: subject, Action: store.ActionAllow,
-		Priority: priority, PinHash: ap.PinHash, Note: fmt.Sprintf("Allowed for %s by %s from approval %s", ap.RequesterPerson, p.Name, ap.ID),
+		GrantOf: ap.ID, Priority: covers, PinHash: ap.PinHash, Note: fmt.Sprintf("Allowed for %s by %s from approval %s", ap.RequesterPerson, p.Name, ap.ID),
 		CreatedBy: p.Name, CreatedAt: now, ExpiresAt: &exp}, nil
 }
 

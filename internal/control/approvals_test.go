@@ -96,7 +96,7 @@ func TestApproveWithGrant(t *testing.T) {
 	res := e.call(t, e.appr, http.MethodPost, "/api/v1/approvals/"+id+"/approve", map[string]any{"grant": "1h"}, http.StatusOK)
 	g := res["grant"].(map[string]any)
 	ada, _ := e.st.UserByPerson(ctx, e.org, "ada")
-	if g["subject"] != "user:"+ada.ID || g["server"] != "github" || g["tool"] != `merge\*` || g["action"] != "allow" || g["priority"] != float64(6) {
+	if g["subject"] != "user:"+ada.ID || g["server"] != "github" || g["tool"] != `merge\*` || g["action"] != "allow" || g["grant_of"] != id || g["priority"] != float64(5) {
 		t.Fatalf("grant %v", g)
 	}
 	exp, _ := time.Parse(time.RFC3339Nano, g["expires_at"].(string))
@@ -126,7 +126,7 @@ func TestGrantFromTheDefaultAndRefusals(t *testing.T) {
 	e.call(t, e.owner, http.MethodPatch, "/api/v1/settings/policy", map[string]any{"default": "ask"}, http.StatusOK)
 	// Asked by the org default: the grant ranks 0.
 	id := e.ask(t, "merge", "d1", "")
-	if g := e.call(t, e.appr, http.MethodPost, "/api/v1/approvals/"+id+"/approve", map[string]any{"grant": "15m"}, http.StatusOK)["grant"].(map[string]any); g["priority"] != float64(0) {
+	if g := e.call(t, e.appr, http.MethodPost, "/api/v1/approvals/"+id+"/approve", map[string]any{"grant": "15m"}, http.StatusOK)["grant"].(map[string]any); g["grant_of"] != id {
 		t.Fatalf("grant %v", g)
 	}
 	// No grant without an approval: a refused self-approval grants nothing.
@@ -240,12 +240,14 @@ func TestGrantRefusedWhenRulesChanged(t *testing.T) {
 	if a, _ := e.st.GetApproval(ctx, e.org, id); a.Status != store.ApprovalPending {
 		t.Fatalf("a refused grant decided the approval: %s", a.Status)
 	}
-	// With the deny gone and a higher ask, the grant ranks above that ask.
+	// With the deny gone and a higher ask, the grant is made: it replaces
+	// whichever ask wins, without a rank of its own (ADR 0027).
 	e.call(t, e.owner, http.MethodDelete, "/api/v1/policies/"+deny["id"].(string), nil, http.StatusOK)
 	e.call(t, e.owner, http.MethodPost, "/api/v1/policies", map[string]any{"server": "github", "tool": "delete_*", "action": "ask", "priority": 40}, http.StatusCreated)
 	g := e.call(t, e.appr, http.MethodPost, "/api/v1/approvals/"+id+"/approve", map[string]any{"grant": "1h"}, http.StatusOK)["grant"].(map[string]any)
-	if g["priority"] != float64(41) {
-		t.Fatalf("grant ranks %v, want one above the ask that wins now", g["priority"])
+	// It covers asks up to the rank of the ask that wins now (ADR 0027 review).
+	if g["grant_of"] != id || g["priority"] != float64(40) {
+		t.Fatalf("grant %v", g)
 	}
 }
 

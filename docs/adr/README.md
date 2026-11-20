@@ -36,3 +36,4 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0024](0024-call-statistics-and-diagnostic-log.md) | Call statistics, a diagnostic log and Prometheus metrics, apart from the audit | Accepted 2026-11-14; built in 0.10.0 |
 | [0025](0025-several-roles-per-person.md) | A person holds several roles; their gateway token only uses the gateway | Accepted 2026-11-18; built in 0.11.0 |
 | [0026](0026-toolsets.md) | Toolsets: a team can see only some of a server's tools | Proposed 2026-11-20 (numbered 0023 on its first branch; accept after the owner reads the review); built in 0.14.0 |
+| [0027](0027-rule-conditions-grants-and-yaml.md) | Rules look at arguments; grants only replace an ask; rules as YAML | Proposed 2026-11-20 (numbered 0024 on its first branch; accept after the owner reads the review) |

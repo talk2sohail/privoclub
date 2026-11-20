@@ -262,3 +262,24 @@ proxy that checks a header will do.
    Choose **All tools** → **Save**: everything is back after a refresh.
 5. **Activity → Admin changes**: `server.team_tools:<alias>:<team>:2`, then
    `…:0` if you saved with none, then `…:all`.
+
+## 17. Rules on arguments and rules as a file (needs 0.15.0+)
+
+1. **Rules → Add a rule**: server DeepWiki (or any), tool
+   `read_wiki_structure`, action **deny**, **Add a condition**: `repoName`
+   **is** `facebook/react` → **Add rule**. Expect the rule listed with
+   "when repoName is "facebook/react"".
+2. From an AI client, call that tool for `facebook/react`: denied. Call it for
+   `modelcontextprotocol/go-sdk`: it runs (or asks, if another rule says so).
+3. Add a rule **ask** for every tool of that server. Call it for another
+   repository: approval required. Approve with **Allow: this tool for 1
+   hour**. Calls for other repositories now run; `facebook/react` is still
+   denied: a grant never lifts a deny.
+4. **Rules as a file → Export**: a YAML file with both rules and the
+   condition. Paste it into **Import a rules file**, choose **Replace all
+   rules with these**, **Check**: expect "This adds 2 rules and deletes 2".
+   **Import**: the rules are the same as before, and the grant from step 3
+   is still listed.
+5. Paste a file with a mistake (for example `op: regex`) and **Check**:
+   expect a message naming the rule, and nothing changed.
+6. **Activity → Admin changes**: `policy.export:2`, `policy.import:replace:+2:-2`.
