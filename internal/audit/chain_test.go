@@ -197,7 +197,7 @@ func TestVerifyAfterRetentionAndErasure(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.add(t, 2, nil) // unsealed: never pruned
-	n, err := e.st.PruneAudit(ctx, e.org, cutoff)
+	n, err := e.seal.pruneBefore(ctx, cutoff)
 	if err != nil || n != 6 {
 		t.Fatalf("pruned %d, %v", n, err)
 	}

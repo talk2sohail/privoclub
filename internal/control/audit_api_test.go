@@ -92,6 +92,9 @@ func TestAuditIntegrityAPI(t *testing.T) {
 		t.Fatalf("retention %v", r)
 	}
 	e.call(t, owner, http.MethodPatch, "/api/v1/settings/audit", map[string]any{"retention_days": -1}, http.StatusUnprocessableEntity)
+	// At least 30 days (security review of F12): a mistyped setting cannot empty the trail.
+	e.call(t, owner, http.MethodPatch, "/api/v1/settings/audit", map[string]any{"retention_days": 1}, http.StatusUnprocessableEntity)
+	e.call(t, owner, http.MethodPatch, "/api/v1/settings/audit", map[string]any{"retention_days": 29}, http.StatusUnprocessableEntity)
 	e.call(t, owner, http.MethodPatch, "/api/v1/settings/audit", map[string]any{"retention_days": 99999}, http.StatusUnprocessableEntity)
 }
 

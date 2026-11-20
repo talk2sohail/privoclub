@@ -762,7 +762,12 @@ Tasks and the tests that name them:
   - tests (Vitest): `pages.test.tsx` audit (filters, load more, an integrity problem shown, retention and erasure sent; hidden from those who only read); 52/52
 - [x] Acceptance: `TestAuditChainEndToEnd` (calls sealed, verify passes, a row changed in the database is found)
 - [x] Docs: README, `docs/manual-test.md` section 18, version 0.16.0
-- [ ] Security review
+- [x] Security review 2026-11-21 (`docs/reviews/2026-11-21-f12-audit-security-review.md`): three Medium findings, all fixed. Each let someone with database write access but no master key change history while verification said intact.
+  - Unsigned deletion passed as retention: deletions are now signed prune records (`audit_prunes`), and events may be missing only up to the latest one (`TestDeletingOldEventsWithoutASignedPruneIsCaught`, `TestSignedPruneVerifies`, `TestForgedPruneRecordIsCaught`)
+  - Events outside every block were never checked (`TestEventOutsideTheBlocksIsCaught`)
+  - Backdated events were sealed as if old: a block's seal time is signed, and an event dated more than 5 minutes before the previous seal fails (`TestBackdatedEventIsCaught`, `TestSealTimeIsSigned`)
+  - Notes fixed: an erased unsealed payload keeps its digest (`TestErasedUnsealedPayloadKeepsItsDigest`); the new key endorses the old one during a rotation (`TestOldBlocksVerifyAfterKeyRotation`); retention keeps at least 30 days (`TestRetentionKeepsAtLeastThirtyDays`, API refuses 1 to 29); ADR 0028 says what only outside checkpoints show
+- [ ] Owner's walkthrough: `docs/manual-test.md` section 18
 
 ## F13. Stdio runner
 Status: Not started

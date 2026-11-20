@@ -944,8 +944,8 @@ func (a *API) patchAuditSettings(w http.ResponseWriter, r *http.Request, p auth.
 		return err
 	}
 	if d := req.RetentionDays; d != nil {
-		if *d < 0 || *d > audit.MaxRetentionDays {
-			return errorf(http.StatusUnprocessableEntity, "retention_days must be 0 (keep for ever) to %d", audit.MaxRetentionDays)
+		if *d < 0 || (*d > 0 && *d < audit.MinRetentionDays) || *d > audit.MaxRetentionDays {
+			return errorf(http.StatusUnprocessableEntity, "retention_days must be 0 (keep for ever) or %d to %d", audit.MinRetentionDays, audit.MaxRetentionDays)
 		}
 		a.adminEvent(ctx, p, audit.SettingRetentionDays+"="+strconv.Itoa(*d), "")
 		if err := a.Store.SetSetting(ctx, p.OrgID, audit.SettingRetentionDays, strconv.Itoa(*d)); err != nil {

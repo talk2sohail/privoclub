@@ -280,7 +280,7 @@ function Integrity({ manage }: { manage: boolean }) {
             <button type="submit" disabled={busy}>
               Save
             </button>
-            <small class="meta">0 keeps them for ever.</small>
+            <small class="meta">0 keeps them for ever; otherwise at least 30 days.</small>
           </form>
           <h3>Erase a person's recorded arguments</h3>
           <div class="row">
