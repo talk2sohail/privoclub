@@ -15,6 +15,7 @@ export type ServerView = {
   connect_url?: string;
   key_header?: string;
   teams?: string[];
+  team_tools?: Record<string, string[]>; // narrowed teams' tools (ADR 0026); admins only
 };
 
 export type Pin = {

@@ -801,3 +801,37 @@ describe("servers where each person brings their own key (ADR 0023)", () => {
     expect(screen.getByText(/takes your own API key \(mcp.acme.example\)/)).toBeTruthy();
   });
 });
+
+describe("toolsets", () => {
+  // ADR 0026: per team, all tools or only some.
+  it("lets an admin choose the tools a team sees, and go back to all", async () => {
+    at("/admin/servers/kit");
+    const pins = [
+      { kind: "tool", name: "echo", hash: "h1", status: "accepted", definition: { description: "e" }, findings: [] },
+      { kind: "tool", name: "shout", hash: "h2", status: "accepted", definition: { description: "s" }, findings: [] },
+    ];
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [{ alias: "kit", status: "up", target: "t", items: { tool: 2 }, pending_review: 0, teams: ["designers", "everyone"], team_tools: { everyone: ["old_tool"] } }] },
+      "GET /admin/api/v1/servers/kit/pins": { pins },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "PATCH /admin/api/v1/servers/kit/teams/designers": { team: "designers", tools: ["echo"] },
+      "PATCH /admin/api/v1/servers/kit/teams/everyone": { team: "everyone", tools: null },
+    });
+    await screen.findByText("Which tools each team sees");
+    // A saved list shows a name the server no longer offers.
+    expect(await screen.findByLabelText("Everyone: old_tool")).toBeTruthy();
+    expect(screen.getByText("not offered now")).toBeTruthy();
+
+    const designers = screen.getByRole("group", { name: "Designers" });
+    fireEvent.click(within(designers).getByLabelText("Only these"));
+    expect(within(designers).getByText("Designers will see none of this server's tools.")).toBeTruthy();
+    fireEvent.click(within(designers).getByLabelText("Designers: echo"));
+    fireEvent.click(screen.getByRole("button", { name: "Save the tools Designers sees" }));
+    await waitFor(() => expect(srv.writes()[0]).toMatchObject({ method: "PATCH", url: "/admin/api/v1/servers/kit/teams/designers", body: { tools: ["echo"] } }));
+
+    const everyone = screen.getByRole("group", { name: "Everyone" });
+    fireEvent.click(within(everyone).getByLabelText("All tools"));
+    fireEvent.click(screen.getByRole("button", { name: "Save the tools Everyone sees" }));
+    await waitFor(() => expect(srv.writes()[1]).toMatchObject({ url: "/admin/api/v1/servers/kit/teams/everyone", body: { tools: null } }));
+  });
+});

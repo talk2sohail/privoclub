@@ -34,4 +34,5 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0022](0022-gateway-sign-in-with-oauth.md) | AI clients sign in to the gateway with OAuth; Privo is the authorization server | Accepted 2026-11-12; points 9 and 16 amended by the owner the same day; built in 0.8.0, off unless `PRIVO_OAUTH_SERVER=on` ("As built") |
 | [0023](0023-each-server-as-it-presents-itself.md) | Each upstream server is reached the way it presents itself: each person's own API key, OAuth settings entered by hand | Accepted 2026-11-14; built in 0.9.0 |
 | [0024](0024-call-statistics-and-diagnostic-log.md) | Call statistics, a diagnostic log and Prometheus metrics, apart from the audit | Accepted 2026-11-14; built in 0.10.0 |
-| [0025](0025-several-roles-per-person.md) | A person holds several roles; their gateway token only uses the gateway | Accepted 2026-11-18 (the F20 spec; not built on main yet) |
+| [0025](0025-several-roles-per-person.md) | A person holds several roles; their gateway token only uses the gateway | Accepted 2026-11-18; built in 0.11.0 |
+| [0026](0026-toolsets.md) | Toolsets: a team can see only some of a server's tools | Proposed 2026-11-20 (numbered 0023 on its first branch; accept after the owner reads the review); built in 0.14.0 |

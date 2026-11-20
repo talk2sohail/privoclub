@@ -206,6 +206,11 @@ func (g *Gateway) visible(ctx context.Context, p auth.Principal, kind string) ([
 		if it.Kind != kind || !acc.Reaches(it.ServerID) {
 			continue
 		}
+		// A team may see only some of a server's tools (ADR 0026); a hidden
+		// tool is left out here, so a call on it is answered like an unknown name.
+		if it.Kind == upstream.KindTool && !acc.SeesTool(it.ServerID, it.Name) {
+			continue
+		}
 		st, ok := statuses[it.ServerID]
 		if !ok {
 			var err error
