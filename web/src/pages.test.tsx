@@ -602,3 +602,50 @@ describe("toolsets", () => {
     await waitFor(() => expect(srv.writes()[1]).toMatchObject({ url: "/admin/api/v1/servers/kit/teams/everyone", body: { tools: null } }));
   });
 });
+
+describe("rules", () => {
+  // ADR 0024: conditions on arguments; rules as a file.
+  it("adds a rule with a condition and shows it", async () => {
+    at("/admin/rules");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/policies": {
+        default: "allow",
+        policies: [
+          { id: "r1", server: "github", tool: "delete_repo", subject: "*", action: "deny", note: "", created_by: "boss", expires_at: null, conditions: [{ arg: "repo", op: "equals", value: "prod" }] },
+          { id: "g1", server: "github", tool: "merge", subject: "user:u1", subject_person: "ada", action: "allow", note: "", created_by: "carol", expires_at: "2027-01-01T00:00:00Z", grant_of: "a1" },
+        ],
+      },
+      "GET /admin/api/v1/servers": { servers: [{ alias: "github", status: "up", target: "t", items: {}, pending_review: 0 }] },
+      "POST /admin/api/v1/policies": () => [201, { policy: { id: "r2" } }],
+    });
+    await screen.findByText('when repo is "prod"');
+    expect(screen.getByText(/grant from an approval/)).toBeTruthy();
+    fireEvent.input(document.querySelector('input[name="tool"]')!, { target: { value: "create_payment" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add a condition" }));
+    fireEvent.input(screen.getByLabelText("Argument 1"), { target: { value: "amount" } });
+    fireEvent.change(screen.getByLabelText("Test 1"), { target: { value: "in" } });
+    fireEvent.input(screen.getByLabelText("Value 1"), { target: { value: "100, 200, big" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]!.body).toMatchObject({ tool: "create_payment", conditions: [{ arg: "amount", op: "in", value: [100, 200, "big"] }] });
+  });
+
+  it("checks an import before applying it", async () => {
+    at("/admin/rules");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/policies": { default: "allow", policies: [] },
+      "GET /admin/api/v1/servers": { servers: [] },
+      "POST /admin/api/v1/policies/import": (body: { dry_run?: boolean }) => [200, body?.dry_run ? { add: 2, delete: 5, default: "ask" } : { add: 2 }],
+    });
+    await screen.findByText("Rules as a file");
+    fireEvent.input(screen.getByLabelText("Rules file"), { target: { value: "version: 1\nrules: []\n" } });
+    fireEvent.click(screen.getByLabelText(/Replace all rules/));
+    expect(screen.getByRole("button", { name: "Import" })).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: "Check" }));
+    await screen.findByText(/This adds 2 rules and deletes 5, and sets the default to ask/);
+    fireEvent.click(screen.getByRole("button", { name: "Import" }));
+    await waitFor(() => expect(srv.writes()).toHaveLength(2));
+    expect(srv.writes()[0]!.body).toEqual({ yaml: "version: 1\nrules: []\n", mode: "replace", dry_run: true });
+    expect(srv.writes()[1]!.body).toEqual({ yaml: "version: 1\nrules: []\n", mode: "replace" });
+  });
+});

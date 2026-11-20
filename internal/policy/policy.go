@@ -11,6 +11,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -25,11 +26,12 @@ import (
 type Request struct {
 	Roles       []string // the caller's roles: a member's current ones (ADR 0021), or a token's own
 	TokenID     string
-	UserID      string   // the caller's member: a signed-in person or a member's own token (ADR 0022)
-	Teams       []string // the caller's teams, "everyone" included when they are in it
-	Server      string   // alias
-	Tool        string   // upstream name (tool, prompt, or resource URI)
-	PinHash     string   // hash of the reviewed definition being called
+	UserID      string          // the caller's member: a signed-in person or a member's own token (ADR 0022)
+	Teams       []string        // the caller's teams, "everyone" included when they are in it
+	Server      string          // alias
+	Tool        string          // upstream name (tool, prompt, or resource URI)
+	PinHash     string          // hash of the reviewed definition being called
+	Args        json.RawMessage // the canonical arguments sent upstream; conditions read them (ADR 0024)
 	Annotations *mcp.ToolAnnotations
 }
 
@@ -101,12 +103,69 @@ func matches(r store.Policy, req Request, now time.Time) bool {
 	return false
 }
 
+// RuleConditions reads a rule's conditions.
+func RuleConditions(r store.Policy) ([]Condition, error) {
+	if r.Conditions == "" {
+		return nil, nil
+	}
+	var cs []Condition
+	if err := json.Unmarshal([]byte(r.Conditions), &cs); err != nil {
+		return nil, err
+	}
+	for i := range cs {
+		cs[i] = cs[i].Normalize()
+	}
+	return cs, nil
+}
+
+// conditionsHold reports whether all of a rule's conditions hold. A rule whose
+// stored conditions cannot be read fails closed: a deny or ask still
+// matches, an allow does not.
+func conditionsHold(r store.Policy, args func() any) bool {
+	cs, err := RuleConditions(r)
+	if err != nil || ValidConditions(cs) != nil {
+		return r.Action != store.ActionAllow
+	}
+	for _, c := range cs {
+		if !c.holds(args()) {
+			return false
+		}
+	}
+	return true
+}
+
 // Evaluate decides a request against rules and the org default action.
+// Grants (rules made from an approval) are weighed last: one that matches
+// turns an ask into allow, and nothing else (ADR 0024).
 func Evaluate(rules []store.Policy, req Request, defaultAction string, now time.Time) Decision {
+	d := evaluate(rules, req, defaultAction, now)
+	if d.Action != store.ActionAsk {
+		return d
+	}
+	for _, g := range rules {
+		if g.GrantOf != "" && g.Action == store.ActionAllow && matches(g, req, now) {
+			return Decision{Action: store.ActionAllow, RuleID: g.ID, Reason: fmt.Sprintf("grant %s from approval %s, over %s", g.ID, g.GrantOf, d.Reason)}
+		}
+	}
+	return d
+}
+
+func evaluate(rules []store.Policy, req Request, defaultAction string, now time.Time) Decision {
+	var decoded bool
+	var args any
+	argsOf := func() any {
+		if !decoded {
+			decoded = true
+			if len(req.Args) > 0 {
+				args, _ = decodeArgs(req.Args)
+			}
+		}
+		return args
+	}
 	var best *store.Policy
 	for i := range rules {
 		r := &rules[i]
-		if !ValidAction(r.Action) || !matches(*r, req, now) {
+		if r.GrantOf != "" || !ValidAction(r.Action) || !matches(*r, req, now) || !conditionsHold(*r, argsOf) {
 			continue
 		}
 		if best == nil || r.Priority > best.Priority ||

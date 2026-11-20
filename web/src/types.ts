@@ -48,7 +48,11 @@ export type Policy = {
   created_by: string;
   expires_at: string | null;
   subject_person?: string; // the member of a "user:" rule (a grant from an approval)
+  conditions?: Condition[]; // on the call's arguments (ADR 0024)
+  grant_of?: string; // the approval a grant was made from
 };
+
+export type Condition = { arg: string; op: string; value?: unknown };
 
 export type Member = {
   person: string;

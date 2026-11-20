@@ -333,7 +333,7 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	// Rules match tools, prompts and resources alike by upstream name, so a
 	// server-wide deny or a default deny covers everything the server offers.
 	dec := policy.Evaluate(rules, policy.Request{Roles: CallerRoles(c.p, acc), TokenID: c.p.TokenID, UserID: c.p.UserID, Teams: acc.Teams, Server: c.item.Alias, Tool: c.item.Name,
-		PinHash: c.item.Hash, Annotations: ann}, def, time.Now())
+		PinHash: c.item.Hash, Annotations: ann, Args: c.args}, def, time.Now())
 	switch dec.Action {
 	case store.ActionAllow:
 		return decision{label: store.ActionAllow}, nil

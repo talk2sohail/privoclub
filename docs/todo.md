@@ -442,7 +442,7 @@ Tasks and the tests that name them:
 - [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
 
 ## F09. Policies
-Status: In progress (core done, reviewed)
+Status: In progress (core done, reviewed; second slice built 2026-11-20, 0.12.0, ADR 0024 proposed)
 ADRs: 0001, 0011, 0014, 0024
 
 - [x] Allow, deny, ask rules by server alias, tool pattern, subject (`*`, `role:`, `token:`); priority, ties deny > ask > allow; expiring rules (`internal/policy`)
@@ -486,19 +486,20 @@ Threat note:
 
 Tasks and the tests that name them:
 
-- [ ] Spec (this section) and ADR 0024
-- [ ] Policy: `Condition` (`Valid`, `Holds`), `Request.Args`; grants evaluated after the rest and only over an ask
-  - tests: `TestConditions` (each operator, types, nested paths, missing paths), `TestConditionValidation`, `TestGrantOnlyReplacesAsk` (a conditioned deny below a grant still wins)
-- [ ] Store: migration `00011_rule_conditions.sql` (`policies.conditions` JSON, `policies.grant_of`); `ReplacePolicies` (one transaction)
-  - tests: `TestPolicyConditionsRoundTrip`, `TestReplacePoliciesKeepsGrants`
-- [ ] Gateway: the canonical arguments go to the decision
+- [x] Spec (this section) and ADR 0024
+- [x] Policy: `Condition` (`Valid`, `Holds`), `Request.Args`; grants evaluated after the rest and only over an ask
+  - tests: `TestConditions` (each operator, types never mix, numbers by value, a huge exponent compared as written, nested and missing paths), `TestConditionValidation`, `TestGrantOnlyReplacesAsk` (a conditioned deny tied with an ask still wins over a grant at any rank; no ask, nothing to replace; another member's grant does nothing), `TestUnreadableConditionsFailClosed`
+- [x] Store: migration `00011_rule_conditions.sql` (`policies.conditions` JSON, `policies.grant_of`); `ImportPolicies` (one transaction, replace keeps grants, default set with it)
+  - tests: `TestPolicyConditionsRoundTrip`, `TestImportPoliciesKeepsGrants` (a refused import changes neither rules nor default)
+- [x] Gateway: the canonical arguments go to the decision; a grant is checked against the approved call's own arguments
   - tests: in the acceptance test below
-- [ ] Admin API: `conditions` on create and list; F10 grants carry `grant_of`; `GET /api/v1/policies/export`, `POST /api/v1/policies/import`
-  - tests: `TestCreateRuleWithConditions`, `TestPoliciesExportImport` (round trip, merge, replace keeps grants, dry run, unknown team or member refuses all, members refused)
-- [ ] App: conditions shown and added on Rules; export and import
-  - tests (Vitest): a condition is sent with a new rule; import shows the dry run before applying
-- [ ] Acceptance: `TestRulesOnArguments` (a deny on `text = secret` refuses that call and lets others run; a grant does not lift it)
-- [ ] Docs: README, `docs/manual-test.md`, version; security review
+- [x] Admin API: `conditions` on create and list; F10 grants carry `grant_of`; `GET /api/v1/policies/export`, `POST /api/v1/policies/import`
+  - tests: `TestCreateRuleWithConditions`, `TestPoliciesExportImport` (a member's rule exports as `person:`, grants left out, dry run changes nothing, replace keeps grants, merge adds, unknown team, unknown person, bad condition, unknown field, bad version and bad YAML refuse all in dry run and for real, approvers refused, audited); `TestApproveWithGrant` and `TestGrantRefusedWhenRulesChanged` now check the grant mark instead of a rank
+- [x] App: conditions shown and added on Rules (a person's way of typing values: JSON when it is JSON, else text; a comma list for "is one of"); grants labelled; export and import with a check first
+  - tests (Vitest): `pages.test.tsx` rules (a condition shown and sent, import checked before applied); 50/50
+- [x] Acceptance: `TestRulesOnArguments` (a deny on `text = secret` refuses that call while others ask; a grant lets the others through and not that one; the rules survive a YAML round trip)
+- [x] Docs: README, `docs/manual-test.md` section 14, version 0.12.0
+- [ ] Security review
 
 ## F10. Approvals
 Status: In progress (core done, reviewed)
