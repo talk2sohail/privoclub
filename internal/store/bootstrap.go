@@ -45,7 +45,8 @@ func (r BootstrapResult) String() string {
 // per org. The token, the consumed marker and the audit record ev (written with
 // phase admin) commit together, or not at all. It installs only owner control
 // tokens with a short, bounded lifetime, and only when the org has never had a
-// control token: an org that has been administered does not need a bootstrap.
+// control token or a member: an org that has been administered, by token or
+// through the browser, does not need a bootstrap (F24 second review R-01).
 func (s *Store) InstallBootstrapToken(ctx context.Context, t APIToken, ev AuditEvent) (BootstrapResult, error) {
 	if t.Role != RoleOwner || t.Kind != KindControl {
 		return 0, errors.New("store: a bootstrap token must be an owner control token")
@@ -64,12 +65,11 @@ func (s *Store) InstallBootstrapToken(ctx context.Context, t APIToken, ev AuditE
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
-		// Revoked control tokens count: the org has been administered before.
-		var controls int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_tokens WHERE org_id = ? AND kind = ?`, t.OrgID, KindControl).Scan(&controls); err != nil {
+		administered, err := administered(ctx, tx, t.OrgID)
+		if err != nil {
 			return err
 		}
-		if controls > 0 {
+		if administered {
 			result = BootstrapNotNeeded
 			return nil
 		}
@@ -101,16 +101,28 @@ func (s *Store) InstallBootstrapToken(ctx context.Context, t APIToken, ev AuditE
 }
 
 // BootstrapNeeded reports whether an org could still take a bootstrap token: no
-// bootstrap token was installed before and it has never had a control token. It
+// bootstrap token was installed before and it has never had a control token or
+// a member. It
 // only reads, so that startup can tell a bootstrap file that matters from a
 // leftover; InstallBootstrapToken still decides, in its own transaction.
 func (s *Store) BootstrapNeeded(ctx context.Context, org OrgID) (bool, error) {
 	if marker, err := s.Setting(ctx, org, BootstrapSetting, ""); err != nil || marker != "" {
 		return false, err
 	}
-	var controls int
-	if err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM api_tokens WHERE org_id = ? AND kind = ?`, org, KindControl).Scan(&controls); err != nil {
+	done, err := administered(ctx, s.r, org)
+	if err != nil {
 		return false, mapErr(err)
 	}
-	return controls == 0, nil
+	return !done, nil
+}
+
+// administered reports whether an org has ever had a control token (revoked
+// ones count) or a member (removed ones count).
+func administered(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, org OrgID) (bool, error) {
+	var n int
+	err := q.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM api_tokens WHERE org_id = ? AND kind = ?) + (SELECT COUNT(*) FROM users WHERE org_id = ?)`,
+		org, KindControl, org).Scan(&n)
+	return n > 0, err
 }

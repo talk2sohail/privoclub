@@ -115,6 +115,22 @@ func (s *Store) CreateToken(ctx context.Context, t APIToken) error {
 	return nil
 }
 
+// CreateTokenAudited stores a token and its audit record ev (phase admin) in
+// one transaction: a token is never created without its trace (F24 second
+// review R-02).
+func (s *Store) CreateTokenAudited(ctx context.Context, t APIToken, ev AuditEvent) error {
+	ev.Phase = "admin"
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO api_tokens (org_id, id, name, role, kind, person, user_id, secret_hash, created_at, expires_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			t.OrgID, t.ID, t.Name, t.Role, t.Kind, t.Person, t.UserID, t.SecretHash, ts(t.CreatedAt), ts(t.ExpiresAt)); err != nil {
+			return mapErr(err)
+		}
+		return insertAudit(ctx, tx, t.OrgID, []AuditEvent{ev})
+	})
+}
+
 // TokenByID looks a token up by its public id across orgs (it is globally unique).
 func (s *Store) TokenByID(ctx context.Context, id string) (APIToken, error) {
 	var t APIToken

@@ -31,6 +31,7 @@ import (
 	"privo.club/privo/internal/oauthserver"
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/runner"
+	"privo.club/privo/internal/scan"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/token"
@@ -94,6 +95,7 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("DELETE /api/v1/servers/{alias}/connections/{person}", wrap(auth.PermManageServers, a.deleteConnection))
 	mux.Handle("POST /api/v1/invites", wrap(auth.PermManageTokens, a.createInvite))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", wrap(auth.PermManageServers, a.acceptPins))
+	mux.Handle("POST /api/v1/servers/{alias}/pins:block", wrap(auth.PermManageServers, a.blockPins))
 	mux.Handle("GET /api/v1/tokens", wrap(auth.PermManageTokens, a.listTokens))
 	mux.Handle("POST /api/v1/tokens", wrap(auth.PermManageTokens, a.createToken))
 	mux.Handle("DELETE /api/v1/tokens/{id}", wrap(auth.PermManageTokens, a.revokeToken))
@@ -558,17 +560,62 @@ func (a *API) listPins(w http.ResponseWriter, r *http.Request, p auth.Principal)
 	if err != nil {
 		return err
 	}
+	// The definition a pending or blocked one would replace: the newest
+	// accepted one of the same name (pins come newest first).
+	accepted := map[[2]string]store.Pin{}
+	for _, pin := range pins {
+		k := [2]string{pin.Kind, pin.Name}
+		if _, seen := accepted[k]; !seen && pin.Status == store.PinAccepted {
+			accepted[k] = pin
+		}
+	}
 	out := make([]map[string]any, 0, len(pins))
 	for _, pin := range pins {
-		out = append(out, map[string]any{"kind": pin.Kind, "name": pin.Name, "hash": pin.Hash, "status": pin.Status,
-			"definition": json.RawMessage(pin.Definition)})
+		v := map[string]any{"kind": pin.Kind, "name": pin.Name, "hash": pin.Hash, "status": pin.Status,
+			"definition": json.RawMessage(pin.Definition),
+			// F11: signs of hidden instructions, for the reviewer (a hint, never a decision).
+			"findings": scan.Scan([]byte(pin.Definition))}
+		if prev, ok := accepted[[2]string{pin.Kind, pin.Name}]; ok && pin.Status != store.PinAccepted {
+			v["previous"] = map[string]any{"hash": prev.Hash, "definition": json.RawMessage(prev.Definition)}
+		}
+		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pins": out})
 	return nil
 }
 
+// pinsAction names what a review decided: the count, then each definition as
+// kind/name@hash-prefix (at most 20), so the trail says which ones.
+func pinsAction(verb string, done []store.PinKey) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "pins.%s:%d", verb, len(done))
+	for i, k := range done {
+		if i == 20 {
+			b.WriteString(",…")
+			break
+		}
+		sep := ","
+		if i == 0 {
+			sep = ":"
+		}
+		b.WriteString(sep + k.Kind + "/" + k.Name + "@" + k.Hash[:min(len(k.Hash), 12)])
+	}
+	return b.String()
+}
+
 // acceptPins accepts exactly the reviewed definitions named in the request.
 func (a *API) acceptPins(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	return a.decidePins(w, r, p, "accept", a.Store.AcceptPins)
+}
+
+// blockPins blocks exactly the reviewed pending definitions named in the
+// request (F11): they stay hidden and leave the review list.
+func (a *API) blockPins(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	return a.decidePins(w, r, p, "block", a.Store.BlockPins)
+}
+
+func (a *API) decidePins(w http.ResponseWriter, r *http.Request, p auth.Principal, verb string,
+	decide func(context.Context, store.OrgID, string, []store.PinKey) ([]store.PinKey, error)) error {
 	s, err := a.server(r, p)
 	if err != nil {
 		return err
@@ -580,18 +627,18 @@ func (a *API) acceptPins(w http.ResponseWriter, r *http.Request, p auth.Principa
 		return err
 	}
 	if len(req.Pins) == 0 || len(req.Pins) > 5000 {
-		return errorf(http.StatusUnprocessableEntity, "list the reviewed pins (kind, name, hash) to accept")
+		return errorf(http.StatusUnprocessableEntity, "list the reviewed pins (kind, name, hash) to %s", verb)
 	}
 	keys := make([]store.PinKey, 0, len(req.Pins))
 	for _, pr := range req.Pins {
 		keys = append(keys, store.PinKey{Kind: pr.Kind, Name: pr.Name, Hash: pr.Hash})
 	}
-	accepted, err := a.Store.AcceptPins(r.Context(), p.OrgID, s.ID, keys)
+	done, err := decide(r.Context(), p.OrgID, s.ID, keys)
 	if err != nil {
 		return err
 	}
-	a.adminEvent(r.Context(), p, fmt.Sprintf("pins.accept:%d", len(accepted)), s.Alias)
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": len(accepted), "requested": len(keys)})
+	a.adminEvent(r.Context(), p, pinsAction(verb, done), s.Alias)
+	writeJSON(w, http.StatusOK, map[string]any{verb + "ed": len(done), "requested": len(keys)})
 	return nil
 }
 
@@ -635,6 +682,10 @@ type TokenSpec struct {
 	Name, Role, Kind, Person string
 	UserID                   string
 	TTL                      time.Duration
+	// Event names who issues the token (Actor, ActorID, Client); IssueToken
+	// fills in the rest and writes it with the token, in one transaction
+	// (F24 second review R-02).
+	Event store.AuditEvent
 }
 
 // IssueToken creates a token and returns its plain text once. Shared with the CLI.
@@ -669,7 +720,10 @@ func IssueToken(ctx context.Context, s *store.Store, org store.OrgID, spec Token
 	now := time.Now()
 	rec := store.APIToken{OrgID: org, ID: tok.ID, Name: name, Role: role, Kind: spec.Kind, Person: person, UserID: spec.UserID, SecretHash: tok.SecretHash,
 		CreatedAt: now, ExpiresAt: now.Add(ttl)}
-	if err := s.CreateToken(ctx, rec); err != nil {
+	ev := spec.Event
+	ev.ID, ev.CallID, ev.Time = ids.New(), ids.New(), now
+	ev.Action, ev.Decision, ev.Outcome = "token.create:"+rec.Kind+":"+rec.Role+":"+rec.Name, "allow", "ok"
+	if err := s.CreateTokenAudited(ctx, rec, ev); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return "", rec, errorf(http.StatusConflict, "an active token named %q already exists", name)
 		}
@@ -702,11 +756,11 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	}
 	// No UserID: a token an administrator issues never belongs to a member,
 	// whatever person it names, so it cannot use anyone's accounts or teams.
-	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL})
+	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL,
+		Event: store.AuditEvent{Actor: p.Name, ActorID: p.ActorID()}})
 	if err != nil {
 		return err
 	}
-	a.adminEvent(r.Context(), p, "token.create:"+rec.Kind+":"+rec.Role+":"+rec.Name, "")
 	writeJSON(w, http.StatusCreated, map[string]any{"id": rec.ID, "token": plain, "name": rec.Name, "role": rec.Role, "kind": rec.Kind,
 		"person": rec.Person, "bound": false, "expires_at": rec.ExpiresAt})
 	return nil

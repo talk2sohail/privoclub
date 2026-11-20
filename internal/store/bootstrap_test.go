@@ -259,3 +259,27 @@ func TestInstallBootstrapTokenNameTaken(t *testing.T) {
 		t.Errorf("the existing token was renamed to %q", other.Name)
 	}
 }
+
+// F24 second review R-01: an org that was set up in the browser (a claimed
+// setup link, so a user and no control token) takes no bootstrap token.
+func TestBootstrapRefusedOnceASetupLinkWasClaimed(t *testing.T) {
+	ctx := context.Background()
+	s, org := signinOrg(t)
+	if err := s.CreateSetupLink(ctx, org, NewSetupLink{ID: "l", SecretHash: "lh", CreatedBy: "cli", Now: t0, ExpiresAt: t0.Add(time.Hour)}, adminEv("setup")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimSetup(ctx, org, Claim{LinkID: "l", UserID: "u-boss", Person: "boss", Subject: "1", Login: "boss", DisplayName: "Boss",
+		Session: Session{ID: "s1", CSRF: "c", CreatedAt: t0, LastSeenAt: t0, ExpiresAt: t0.Add(time.Hour)}, Now: t0}, adminEv("claim")); err != nil {
+		t.Fatal(err)
+	}
+	if need, err := s.BootstrapNeeded(ctx, org); err != nil || need {
+		t.Fatalf("BootstrapNeeded = %v, %v; want false once a person owns the org", need, err)
+	}
+	ev := bootstrapEvent("ev-b")
+	if res, err := s.InstallBootstrapToken(ctx, bootstrapTok(org, "tid-b"), ev); err != nil || res != BootstrapNotNeeded {
+		t.Fatalf("install = %v, %v; want BootstrapNotNeeded", res, err)
+	}
+	if _, err := s.TokenByID(ctx, "tid-b"); !errors.Is(err, ErrNotFound) {
+		t.Fatal("a bootstrap token was stored")
+	}
+}

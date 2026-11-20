@@ -200,3 +200,30 @@ proxy that checks a header will do.
    them no new token. Put **member** back.
 7. **Activity → Admin changes**: `member.roles:<person>:<before>-><after>`,
    one per Save, with you as actor.
+
+## 14. Home page and tool review (needs 0.12.0+)
+
+1. Open the address itself (`https://app.privo.club/`), signed out. Expect:
+   **Sign in** (it goes to the admin site), the MCP address
+   `https://app.privo.club/mcp` for AI clients, and **About Privo**.
+2. Add a server whose tools you have not accepted (any catalog server, or
+   remove and add DeepWiki again). On its page, under **Waiting for
+   review**, expect each tool on its own card: its whole description as
+   text (more than the first line), its inputs with their descriptions, and
+   **The whole definition** to open. Expect **Accept 0 tools** disabled:
+   nothing is chosen until you choose it.
+3. Choose one tool → **Accept 1 tool**. Choose another → **Block 1**. Expect:
+   the blocked one under **Blocked (1)**, and it does not appear in your AI
+   client's tool list. **Accept after all** on it: it appears at the next
+   refresh.
+4. A tool that changes: if a server you use changes a tool's description,
+   its page shows the tool as **changed** with **What changed since the
+   accepted version** (old lines in red, new in green). Until you accept,
+   the AI client does not see the tool.
+5. Warnings: a tool whose description talks to the model ("<IMPORTANT>",
+   "do not tell the user", "~/.ssh") or hides characters shows a red
+   **N warnings** badge and the lines that triggered it; hidden characters
+   appear as ⟦U+200B⟧. No warnings on ordinary tools such as DeepWiki's.
+6. **Activity → Admin changes**: `pins.accept:1:tool/<name>@<hash>`,
+   `pins.block:1:…` and `pins.accept:1:…` again, each naming the tool and the
+   start of its hash, with the server.
