@@ -38,3 +38,4 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0026](0026-toolsets.md) | Toolsets: a team can see only some of a server's tools | Proposed 2026-11-20 (numbered 0023 on its first branch; accept after the owner reads the review); built in 0.14.0 |
 | [0027](0027-rule-conditions-grants-and-yaml.md) | Rules look at arguments; grants only replace an ask; rules as YAML | Proposed 2026-11-20 (numbered 0024 on its first branch; accept after the owner reads the review) |
 | [0028](0028-audit-signing-key-and-checkpoints.md) | The audit signing key comes from the master key; checkpoints anyone can check | Proposed 2026-11-20 (numbered 0025 on its first branch; accept after the F12 review) |
+| [0029](0029-editing-a-server.md) | Editing a server: a new address ends connections, drops static secrets and sends tools back to review | Proposed 2026-11-21 |

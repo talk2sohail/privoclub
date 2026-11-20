@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -714,10 +715,12 @@ func (m *Manager) secrets(ctx context.Context, e *entry) (map[string]string, map
 			return nil, nil, fmt.Errorf("credential %s: %w", c.Purpose, err)
 		}
 		kind, name, _ := strings.Cut(c.Purpose, ":")
-		switch kind {
-		case "env":
+		// Only what the configuration names is sent: a credential left over
+		// from an earlier configuration goes nowhere (ADR 0029).
+		switch {
+		case kind == "env" && slices.Contains(e.srv.Config.EnvNames, name):
 			env[name] = string(pt)
-		case "header":
+		case kind == "header" && slices.Contains(e.srv.Config.HeaderNames, name):
 			headers[name] = string(pt)
 		}
 	}

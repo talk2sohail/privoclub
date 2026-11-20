@@ -249,6 +249,11 @@ type serverView struct {
 	// TeamTools are the narrowed teams' tool lists (ADR 0026); admins only.
 	// A team on the server that is not in it sees all tools.
 	TeamTools map[string][]string `json:"team_tools,omitempty"`
+	// For editing (ADR 0029), admins only: the static headers that are set
+	// and the OAuth client entered by hand. Never a value or a secret.
+	HeaderNames     []string `json:"header_names,omitempty"`
+	ClientID        string   `json:"client_id,omitempty"`
+	HasClientSecret bool     `json:"has_client_secret,omitempty"`
 }
 
 // view describes a server. Members and auditors see neither the full target
@@ -260,6 +265,10 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams 
 	if admin {
 		t := append([]string{}, teams...)
 		v.Teams = &t
+		v.HeaderNames = s.Config.HeaderNames
+		if o := s.Config.OAuth; o != nil && (o.Registration == store.RegistrationAdmin || o.Registration == store.RegistrationManual) {
+			v.ClientID, v.HasClientSecret = o.ClientID, o.HasClientSecret
+		}
 	}
 	switch {
 	case s.Transport == "stdio" && admin:
@@ -594,18 +603,39 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, p auth.Princip
 	var req struct {
 		Enabled *bool     `json:"enabled"`
 		Teams   *[]string `json:"teams"`
+		serverEdit
 	}
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	if req.Enabled == nil && req.Teams == nil {
+	if req.Enabled == nil && req.Teams == nil && !req.any() {
 		return errorf(http.StatusUnprocessableEntity, "nothing to change")
 	}
+	// Teams are checked before anything is written, so a refused request
+	// changed nothing (security review of the third slice, L2).
+	var teams []string
 	if req.Teams != nil {
-		teams, err := cleanTeams(*req.Teams)
-		if err != nil {
+		if teams, err = cleanTeams(*req.Teams); err != nil {
 			return err
 		}
+		for _, t := range teams {
+			if t == store.TeamEveryone {
+				continue
+			}
+			if _, err := a.Store.TeamBySlug(r.Context(), p.OrgID, t); errors.Is(err, store.ErrNotFound) {
+				return errorf(http.StatusUnprocessableEntity, "there is no team %q", t)
+			} else if err != nil {
+				return err
+			}
+		}
+	}
+	var dropped []string
+	if req.any() {
+		if dropped, err = a.editServer(r.Context(), p, s, req.serverEdit); err != nil {
+			return err
+		}
+	}
+	if req.Teams != nil {
 		if err := a.Store.SetServerTeams(r.Context(), p.OrgID, s.ID, teams, event(p, "server.teams="+strings.Join(teams, ","), s.Alias)); err != nil {
 			if errors.Is(err, store.ErrUnknownTeam) {
 				return errorf(http.StatusUnprocessableEntity, "one of the teams %v does not exist", teams)
@@ -628,7 +658,11 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": a.view(r.Context(), p, s, st[s.ID], nil)})
+	out := map[string]any{"server": a.view(r.Context(), p, s, st[s.ID], nil)}
+	if len(dropped) > 0 {
+		out["headers_dropped"] = dropped // the address changed; enter them again for the new one
+	}
+	writeJSON(w, http.StatusOK, out)
 	return nil
 }
 

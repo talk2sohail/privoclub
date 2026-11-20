@@ -827,6 +827,10 @@ func (c *Client) do(req *http.Request, headersOnly bool) (answer, error) {
 	}
 	resp, err := hc.Do(req.WithContext(ctx))
 	if err != nil {
+		var ne net.Error
+		if (errors.Is(err, context.DeadlineExceeded) && req.Context().Err() == nil) || (errors.As(err, &ne) && ne.Timeout()) {
+			return answer{}, &TimeoutError{Host: req.URL.Host, Wait: timeout}
+		}
 		return answer{}, transportError(err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -844,6 +848,22 @@ func (c *Client) do(req *http.Request, headersOnly bool) (answer, error) {
 	}
 	a.body = b
 	return a, nil
+}
+
+// TimeoutError is a request that got no answer in time. It names the host
+// only: the URL may carry a code or a token in its query.
+type TimeoutError struct {
+	Host string
+	Wait time.Duration
+}
+
+func (e *TimeoutError) Error() string {
+	n := int(e.Wait.Round(time.Second) / time.Second)
+	unit := "seconds"
+	if n == 1 {
+		unit = "second"
+	}
+	return fmt.Sprintf("%s did not answer within %d %s", e.Host, n, unit)
 }
 
 // transportError describes a transport error without the request URL (which

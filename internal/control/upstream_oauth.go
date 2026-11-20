@@ -152,14 +152,14 @@ func (a *API) configureOAuth(ctx context.Context, srv store.Server, req *oauthRe
 		// The server does not say where its people sign in; the admin did.
 		sm, merr := a.OAuth.ServerMetadataFor(ctx, req.Issuer)
 		if merr != nil {
-			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "the server names no authorization server, and %s could not be used: %v", req.Issuer, merr)
+			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "the server names no authorization server, and %s could not be used: %v%s", req.Issuer, merr, slowHint(merr))
 		}
 		d = upstreamauth.Discovery{Server: sm}
 	case errors.Is(err, upstreamauth.ErrNoResourceMetadata):
 		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity,
 			"the server does not say where its people sign in (no protected resource metadata); give oauth.issuer, or oauth.authorization_endpoint and oauth.token_endpoint with oauth.client_id")
 	case err != nil:
-		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "finding the server's sign-in failed: %v", err)
+		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "finding the server's sign-in failed: %v%s", err, slowHint(err))
 	}
 	if req.Resource != "" {
 		if d.Resource != "" {
@@ -189,7 +189,7 @@ func (a *API) configureOAuth(ctx context.Context, srv store.Server, req *oauthRe
 	case upstreamauth.RegistrationDynamic:
 		reg, err := a.OAuth.Register(ctx, d.Server.RegistrationEndpoint, a.PublicURL)
 		if err != nil {
-			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "registering Privo with the authorization server failed: %v", err)
+			return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "registering Privo with the authorization server failed: %v%s", err, slowHint(err))
 		}
 		o.ClientID, secret, o.TokenAuthMethod = reg.ClientID, reg.ClientSecret, reg.AuthMethod
 	}
@@ -363,4 +363,14 @@ func (a *API) deleteConnection(w http.ResponseWriter, r *http.Request, p auth.Pr
 	a.Upstream.ClosePerson(s.ID, u.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"disconnected": u.Person, "server": s.Alias})
 	return nil
+}
+
+// slowHint says what to do about a provider that did not answer in time
+// (F26: "context deadline exceeded" told an admin nothing).
+func slowHint(err error) string {
+	var te *upstreamauth.TimeoutError
+	if errors.As(err, &te) {
+		return ". The provider may be down or slow; try again in a few minutes"
+	}
+	return ""
 }

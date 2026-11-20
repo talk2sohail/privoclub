@@ -308,3 +308,32 @@ proxy that checks a header will do.
    `sqlite3` delete the oldest rows of `audit_events`, or add a row with an
    old `ts`. **Check the record** must say "Not intact" and name the block,
    event or prune record.
+
+## 19. Editing a server, restoring a member, token names (needs 0.17.0+ and the second account)
+
+1. **Servers → a server with a header** (add one with `Authorization` if
+   needed) **→ Edit**: the header shows as "set", never its value. Type a new
+   value → **Save changes** → "Saved."; the server stays up and its tools stay
+   accepted. **Activity → Admin changes**: `server.headers:Authorization`,
+   with no value anywhere.
+2. Change **Address** to another URL of the same server (for DeepWiki,
+   `https://mcp.deepwiki.com/mcp` and back): a warning lists what ends;
+   **Save changes** stays off until you tick "Change the address anyway".
+   Save: the flash asks to enter the headers again; the server's tools are
+   back in **Waiting for review**, and an AI client sees none of them until you
+   accept. Admin changes: `server.url`, `server.review_again:N`,
+   `server.connections_ended:N`.
+3. A server that uses each person's own account: **Address** is greyed out
+   with the reason. If its client was entered by hand, change the **Client
+   id**: the page warns that everyone connects again; after saving,
+   **Connections** is empty.
+4. **People → Remove…** the second account, then **Restore**: they are back
+   with the same roles. Signed in as them: no tokens from before; make one.
+5. Signed in as each of the two accounts, make a token named `claude-code`:
+   both work. A second `claude-code` for the same person is refused.
+6. **Add a server** from the catalog with an address that does not answer
+   (any catalog entry while offline, or a private address refused by the
+   egress policy): the error shows under that catalog entry's form, not only
+   at the top. A provider that hangs is named with "did not answer within 10
+   seconds" and what Privo was doing, never "context deadline exceeded".
+

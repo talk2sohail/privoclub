@@ -106,6 +106,7 @@ func (a *API) registerMembers(mux *http.ServeMux, wrap func(auth.Permission, han
 	mux.Handle("GET /api/v1/members", wrap(auth.PermManageMembers, a.listMembers))
 	mux.Handle("PATCH /api/v1/members/{person}", wrap(auth.PermManageMembers, a.patchMember))
 	mux.Handle("POST /api/v1/members/{person}/remove", wrap(auth.PermManageMembers, a.removeMember))
+	mux.Handle("POST /api/v1/members/{person}/restore", wrap(auth.PermManageMembers, a.restoreMember))
 	mux.Handle("GET /api/v1/me/tokens", wrap(auth.PermUseGateway, a.listMyTokens))
 	mux.Handle("POST /api/v1/me/tokens", wrap(auth.PermUseGateway, a.createMyToken))
 	mux.Handle("DELETE /api/v1/me/tokens/{id}", wrap(auth.PermUseGateway, a.revokeMyToken))
@@ -176,8 +177,17 @@ func (a *API) listMembers(w http.ResponseWriter, r *http.Request, p auth.Princip
 // member finds the active member named in the path and checks that p may
 // change them: not themselves, and an owner or admin only by an owner.
 func (a *API) member(r *http.Request, p auth.Principal) (store.User, error) {
+	return a.memberToChange(r, p, false)
+}
+
+// memberToChange finds the member a request names, active or (removed)
+// removed, and checks that p may change them.
+func (a *API) memberToChange(r *http.Request, p auth.Principal, removed bool) (store.User, error) {
 	u, err := a.Store.UserByPerson(r.Context(), p.OrgID, r.PathValue("person"))
-	if errors.Is(err, store.ErrNotFound) || (err == nil && u.DisabledAt != nil) {
+	if errors.Is(err, store.ErrNotFound) || (err == nil && (u.DisabledAt != nil) != removed) {
+		if removed {
+			return u, errorf(http.StatusNotFound, "no removed member %q", r.PathValue("person"))
+		}
 		return u, errorf(http.StatusNotFound, "no member %q", r.PathValue("person"))
 	}
 	if err != nil {
@@ -277,6 +287,26 @@ func (a *API) activeOwners(ctx context.Context, org store.OrgID) (int, error) {
 
 // removeMember ends a member's access: sessions, upstream grants, every active
 // token that belongs to them, and every token of nobody that names them.
+// restoreMember brings back a removed member with the account and roles they
+// had. Whoever could change their roles may restore them. Their tokens,
+// sessions and connections stay gone: they sign in and connect again.
+func (a *API) restoreMember(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	u, err := a.memberToChange(r, p, true)
+	if err != nil {
+		return err
+	}
+	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(),
+		Action: "member.restore:" + u.Person, Decision: "allow", Outcome: "ok"}
+	if err := a.Store.RestoreUser(r.Context(), p.OrgID, u.ID, ev); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errorf(http.StatusNotFound, "no removed member %q", u.Person)
+		}
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"restored": u.Person, "roles": u.Roles})
+	return nil
+}
+
 func (a *API) removeMember(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	u, err := a.member(r, p)
 	if err != nil {

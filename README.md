@@ -97,14 +97,30 @@ semantic version, see `docs/versioning.md`).
 
 Everything after the first sign-in happens in the browser at
 `<PRIVO_PUBLIC_URL>/admin/`: **Start** (each person's servers and client
-setup), **Servers** (add, review tools, turn off), **Teams**, **Rules** (allow,
-ask, deny), **People** (invite, roles, remove), **Tokens** (each person makes
+setup), **Servers** (add, edit, review tools, turn off), **Teams**, **Rules** (allow,
+ask, deny), **People** (invite, roles, remove, restore), **Tokens** (each person makes
 tokens for their AI clients, with a ready Claude Code command), **Activity**,
 **Approvals** and **Connections**. It is a small
 Preact app built into the binary (ADR 0019): moving between pages loads no
 page, and every action is a call to the admin API below, run in process as the
 signed-in person; the API stays for scripts. Changing the app needs Node 22
 and `make ui`; building Privo does not.
+
+**Editing a server** (ADR 0029, 0.17.0): a server's page changes its address,
+the headers sent with every request, and the OAuth client of a server whose
+client was entered by hand. Values are never shown again, only which headers
+are set. What was given for one address never follows a new one: a new
+address ends everyone's connection, drops header values not entered again,
+and sends every tool back to review. A server that uses each person's own
+account keeps its address (delete it and add it again); a new client id ends
+everyone's connection. API: `PATCH /api/v1/servers/{alias}` with `url`,
+`headers` (`""` removes one) and `oauth_client` (`client_id`,
+`client_secret`).
+
+**Restoring a member**: **People → Restore** (or
+`POST /api/v1/members/{person}/restore`) brings back a removed member with
+their GitHub account and roles; they sign in and make new tokens. Whoever may
+change their roles may restore them.
 
 People approve calls in a browser, with their GitHub account and no token
 (ADR 0016). It is off until you set `PRIVO_GITHUB_CLIENT_ID`,
@@ -392,6 +408,8 @@ accounts on OAuth servers, and the audit names the member with every call
 `privo token create`) belongs to nobody, whatever `person` it names: it
 reaches the servers everyone can use and never anyone's account. `person` is a
 label for approvals and the audit. The lists show which is which (`bound`).
+Token names are unique per person (0.17.0): two people may each call theirs
+`claude-code`; tokens of nobody stay unique among themselves.
 
 First setup, where you have a shell on the server:
 

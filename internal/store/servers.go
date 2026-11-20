@@ -5,7 +5,11 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"slices"
 	"time"
+
+	"privo.club/privo/internal/ids"
 )
 
 // Server is a registered upstream MCP server. Config never holds secrets.
@@ -297,4 +301,136 @@ func (s *Store) UpdateServerOAuth(ctx context.Context, org OrgID, serverID strin
 			org, secret.ID, serverID, secret.Purpose, secret.KeyVersion, secret.RowVersion, secret.Ciphertext)
 		return mapErr(err)
 	})
+}
+
+// ServerEdit is one edit of a server (ADR 0029).
+type ServerEdit struct {
+	// Version is the server's updated_at when the edit was built from it.
+	// An edit of a server changed since is refused (ErrConflict), so it
+	// cannot undo another edit (security review of the third slice, M1).
+	Version time.Time
+	// Config is the whole new configuration.
+	Config ServerConfig
+	// NewAddress deletes every static header credential that SetCreds does
+	// not give again: values entered for one address never go to another.
+	NewAddress bool
+	// SetCreds are sealed server credentials (owner ""), each replacing the
+	// server's credential with the same purpose.
+	SetCreds []Credential
+	// RemoveCreds are purposes of server credentials to delete.
+	RemoveCreds []string
+	// EndConnections deletes every person's grant or key for the server.
+	EndConnections bool
+	// ReviewAgain puts every accepted definition of the server back into
+	// review.
+	ReviewAgain bool
+}
+
+// EditOutcome says what an edit ended.
+type EditOutcome struct {
+	Ended    int // people's connections ended
+	Reviewed int // accepted definitions sent back to review
+}
+
+// EditServer applies an edit in one transaction with evs, and records how
+// many connections it ended (server.connections_ended:N) and definitions it
+// sent back to review (server.review_again:N) as events like evs[0]. It is
+// ErrNotFound for a server that is not the org's and ErrConflict for one
+// changed since e.Version.
+func (s *Store) EditServer(ctx context.Context, org OrgID, serverID string, e ServerEdit, evs []AuditEvent) (EditOutcome, error) {
+	cfg, err := json.Marshal(e.Config)
+	if err != nil {
+		return EditOutcome{}, err
+	}
+	for _, c := range e.SetCreds {
+		if c.ServerID != serverID || c.OwnerID != "" || c.Purpose == "" {
+			return EditOutcome{}, errors.New("store: a credential of the edit does not belong to this server")
+		}
+	}
+	if e.Version.IsZero() {
+		return EditOutcome{}, errors.New("store: an edit needs the version it was built from")
+	}
+	var out EditOutcome
+	err = s.tx(ctx, func(tx *sql.Tx) error {
+		out = EditOutcome{}
+		now := time.Now()
+		if !now.After(e.Version) {
+			now = e.Version.Add(time.Microsecond) // updated_at always moves forward
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE servers SET config = ?, updated_at = ? WHERE org_id = ? AND id = ? AND updated_at = ?`,
+			string(cfg), ts(now), org, serverID, ts(e.Version))
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			var one int
+			if err := tx.QueryRowContext(ctx, `SELECT 1 FROM servers WHERE org_id = ? AND id = ?`, org, serverID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			} else if err != nil {
+				return err
+			}
+			return ErrConflict
+		}
+		if e.NewAddress {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM credentials WHERE org_id = ? AND server_id = ? AND owner_id = '' AND purpose LIKE 'header:%'`, org, serverID); err != nil {
+				return err
+			}
+		}
+		for _, p := range e.RemoveCreds {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM credentials WHERE org_id = ? AND server_id = ? AND owner_id = '' AND purpose = ?`, org, serverID, p); err != nil {
+				return err
+			}
+		}
+		for _, c := range e.SetCreds {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM credentials WHERE org_id = ? AND server_id = ? AND owner_id = '' AND purpose = ?`, org, serverID, c.Purpose); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `
+				INSERT INTO credentials (org_id, id, server_id, owner_id, purpose, key_version, row_version, ciphertext)
+				VALUES (?, ?, ?, '', ?, ?, ?, ?)`,
+				org, c.ID, serverID, c.Purpose, c.KeyVersion, c.RowVersion, c.Ciphertext); err != nil {
+				return mapErr(err)
+			}
+		}
+		if e.EndConnections {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM credentials WHERE org_id = ? AND id IN (
+				SELECT credential_id FROM upstream_grants WHERE org_id = ? AND server_id = ?)`, org, org, serverID); err != nil {
+				return err
+			}
+			res, err := tx.ExecContext(ctx, `DELETE FROM upstream_grants WHERE org_id = ? AND server_id = ?`, org, serverID)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			out.Ended = int(n)
+		}
+		if e.ReviewAgain {
+			res, err := tx.ExecContext(ctx, `UPDATE pins SET status = ?, updated_at = ? WHERE org_id = ? AND server_id = ? AND status = ?`,
+				PinPending, ts(time.Now()), org, serverID, PinAccepted)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			out.Reviewed = int(n)
+		}
+		all := slices.Clone(evs)
+		if len(evs) > 0 {
+			counted := func(action string) {
+				ev := evs[0]
+				ev.ID, ev.CallID, ev.Action = ids.New(), ids.New(), action
+				all = append(all, ev)
+			}
+			if e.EndConnections {
+				counted(fmt.Sprintf("server.connections_ended:%d", out.Ended))
+			}
+			if e.ReviewAgain {
+				counted(fmt.Sprintf("server.review_again:%d", out.Reviewed))
+			}
+		}
+		for i := range all {
+			all[i].Phase = "admin"
+		}
+		return insertAudit(ctx, tx, org, all)
+	})
+	return out, err
 }
