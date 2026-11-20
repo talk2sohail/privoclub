@@ -99,6 +99,7 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("POST /api/v1/invites", wrap(auth.PermManageTokens, a.createInvite))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", wrap(auth.PermManageServers, a.acceptPins))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:block", wrap(auth.PermManageServers, a.blockPins))
+	mux.Handle("PATCH /api/v1/servers/{alias}/teams/{slug}", wrap(auth.PermManageServers, a.patchTeamTools))
 	mux.Handle("GET /api/v1/tokens", wrap(auth.PermManageTokens, a.listTokens))
 	mux.Handle("POST /api/v1/tokens", wrap(auth.PermManageTokens, a.createToken))
 	mux.Handle("DELETE /api/v1/tokens/{id}", wrap(auth.PermManageTokens, a.revokeToken))
@@ -235,11 +236,15 @@ type serverView struct {
 	// Teams that reach the server (ADR 0020); shown to admins only, and
 	// always to them, so an empty list ("nobody") is visible (F26 R-04).
 	Teams *[]string `json:"teams,omitempty"`
+	// TeamTools are the narrowed teams' tool lists (ADR 0026); admins only.
+	// A team on the server that is not in it sees all tools.
+	TeamTools map[string][]string `json:"team_tools,omitempty"`
 }
 
 // view describes a server. Members and auditors see neither the full target
 // (URLs often carry keys) nor connection errors (they can contain them).
-func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams []string) serverView {
+// acc is the caller's access when they do not manage servers, nil otherwise.
+func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams []string, acc *store.Access) serverView {
 	admin := p.Can(auth.PermManageServers)
 	v := serverView{ID: s.ID, Alias: s.Alias, Transport: s.Transport, Enabled: s.Enabled, Status: upstream.StatusConnecting, Items: map[string]int{}}
 	if admin {
@@ -271,8 +276,13 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams 
 		}
 		pins, _ := a.Store.PinStatuses(ctx, p.OrgID, s.ID)
 		for _, it := range st.Items {
+			// Others count only the tools their teams let them see (ADR 0026),
+			// so a narrowed team does not learn how many are hidden.
+			if acc != nil && it.Kind == upstream.KindTool && !acc.SeesTool(s.ID, it.Name) {
+				continue
+			}
 			v.Items[it.Kind]++
-			if pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinPending {
+			if admin && pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinPending {
 				v.Pending++
 			}
 		}
@@ -298,13 +308,79 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request, p auth.Princip
 			return err
 		}
 	}
+	var tt map[string]map[string][]string
+	if admin {
+		if tt, err = a.Store.TeamTools(r.Context(), p.OrgID); err != nil {
+			return err
+		}
+	}
 	out := make([]serverView, 0, len(servers))
 	for _, s := range servers {
 		if admin || acc.Reaches(s.ID) {
-			out = append(out, a.view(r.Context(), p, s, st[s.ID]))
+			var mine *store.Access
+			if !admin {
+				mine = &acc
+			}
+			v := a.view(r.Context(), p, s, st[s.ID], mine)
+			v.TeamTools = tt[s.ID]
+			out = append(out, v)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": out})
+	return nil
+}
+
+// patchTeamTools sets which of a server's tools a team sees (ADR 0026):
+// {"tools": null} for all, {"tools": [names]} for exactly those.
+func (a *API) patchTeamTools(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	s, err := a.server(r, p)
+	if err != nil {
+		return err
+	}
+	team := r.PathValue("slug")
+	var req struct {
+		Tools json.RawMessage `json:"tools"`
+	}
+	if err := decode(r, &req); err != nil {
+		return err
+	}
+	var tools []string
+	switch raw := bytes.TrimSpace(req.Tools); {
+	case len(raw) == 0:
+		return errorf(http.StatusUnprocessableEntity, "tools must be null (all tools) or a list of tool names")
+	case string(raw) == "null":
+	default:
+		var list []string
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return errorf(http.StatusUnprocessableEntity, "tools must be null (all tools) or a list of tool names")
+		}
+		tools = []string{}
+		for _, name := range list {
+			if name == "" || len(name) > 128 || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+				return errorf(http.StatusUnprocessableEntity, "a tool name must be 1 to 128 characters without control characters")
+			}
+			if !slices.Contains(tools, name) {
+				tools = append(tools, name)
+			}
+		}
+		if len(tools) > store.MaxTeamTools {
+			return errorf(http.StatusUnprocessableEntity, "at most %d tools per team", store.MaxTeamTools)
+		}
+		sort.Strings(tools)
+	}
+	what := "all"
+	if tools != nil {
+		what = strconv.Itoa(len(tools))
+	}
+	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(), Server: s.Alias,
+		Action: "server.team_tools:" + s.Alias + ":" + team + ":" + what, Decision: "allow", Outcome: "ok"}
+	if err := a.Store.SetTeamTools(r.Context(), p.OrgID, s.ID, team, tools, ev); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errorf(http.StatusNotFound, "%q is not a team of %q", team, s.Alias)
+		}
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": s.Alias, "team": team, "tools": tools})
 	return nil
 }
 
@@ -467,7 +543,7 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	// Report the first connection result, so the admin sees the status and
 	// how many items wait for review in the response.
 	a.Upstream.WaitSettled(ctx, srv.ID, ConnectWait)
-	writeJSON(w, http.StatusCreated, map[string]any{"server": a.view(ctx, p, srv, srv.Teams)})
+	writeJSON(w, http.StatusCreated, map[string]any{"server": a.view(ctx, p, srv, srv.Teams, nil)})
 	return nil
 }
 
@@ -542,7 +618,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": a.view(r.Context(), p, s, st[s.ID])})
+	writeJSON(w, http.StatusOK, map[string]any{"server": a.view(r.Context(), p, s, st[s.ID], nil)})
 	return nil
 }
 
@@ -1348,8 +1424,8 @@ func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval
 	if err != nil {
 		return store.Policy{}, err
 	}
-	if !acc.Reaches(ap.ServerID) || (tok.UserID != "" && !auth.RolesCan(acc.Roles, auth.PermUseGateway)) {
-		return refuse("The person who asked no longer reaches this server.")
+	if !acc.SeesTool(ap.ServerID, ap.Tool) || (tok.UserID != "" && !auth.RolesCan(acc.Roles, auth.PermUseGateway)) {
+		return refuse("The person who asked no longer sees this tool.")
 	}
 	pin, err := a.Store.PinDefinition(ctx, p.OrgID, ap.ServerID, store.PinKey{Kind: upstream.KindTool, Name: ap.Tool, Hash: ap.PinHash})
 	if errors.Is(err, store.ErrNotFound) || (err == nil && pin.Status != store.PinAccepted) {

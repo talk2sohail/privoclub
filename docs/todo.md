@@ -501,9 +501,53 @@ until URL elicitation lands.
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ## F08. Toolsets
-Status: Not started (server-level access per team came first, in F26 and ADR 0020)
+Status: In progress (first slice built and reviewed 2026-11-20, ported onto main as 0.14.0 on 2026-11-21; ADR 0026 proposed; the owner's walkthrough, `docs/manual-test.md` section 16, open)
+ADRs: 0020, 0026
 
-- [ ] Toolsets per user and group; hide unseen tools from lists
+Goal: an admin gives a team some of a server's tools rather than all of
+them, so each AI client lists what its person needs (less context, fewer
+tools the model may call).
+
+Acceptance:
+1. For each team on a server, an admin chooses all tools (the default) or a
+   list of tool names. Existing installs see no change.
+2. A person sees a tool when any of their teams that reaches the server
+   sees it. A team that sees all tools opens all of them.
+3. The gateway lists only the tools a person sees. A call on any other tool
+   is answered exactly like an unknown name. A change applies to the next
+   request.
+4. A new tool on a server is hidden from narrowed teams until chosen; a
+   chosen tool still needs review (pins).
+5. Removing a team from a server, or deleting the team, removes its list.
+   Each change is audited. Only those who manage servers change it; members
+   cannot read it.
+6. The server page shows, per team, "all tools" or the chosen ones, and lets
+   an admin choose them from the server's reviewed tools. Start shows each
+   person only the tools they see.
+
+Threat note:
+- Toolsets narrow visibility only: rules, approvals and pins still decide
+  every call on a visible tool, and a toolset never makes an unreviewed
+  definition visible.
+- Fail closed: a narrowed team sees nothing that is not chosen, new tools
+  included. An error reading toolsets fails the request.
+- No probing: a hidden tool answers like a name that does not exist.
+
+Tasks and the tests that name them:
+
+- [x] Spec (this section) and ADR 0026
+- [x] Store: migration `00013_server_team_tools.sql` (`server_teams.narrowed`, `server_team_tools` deleted with its `server_teams` row); `SetTeamTools` (nil means all), `TeamTools`; `Access` carries per-server tool sets (nil = all); removing a server's team and deleting a team or the server drop the list; saving a server's teams keeps the lists of the teams that stay
+  - tests: `TestTeamToolsNarrowAccess` (union across teams, all wins, an empty list hides all but still reaches the server, `everyone` narrowed, back to all, only a team on the server), `TestTeamToolsFollowTeamChanges`, `TestTeamToolsAreIsolatedPerOrg`
+- [x] Gateway: lists and resolve filter tools by `Access.SeesTool`; `/me/tools` counts only seen tools
+  - tests: in the acceptance test below (the list stage needs a live upstream)
+- [x] Admin API: `PATCH /api/v1/servers/{alias}/teams/{slug}` (`{"tools": [...]}` or `null` for all; `servers.manage`; audited); the server list shows `team_tools` to managers; `/me/tools` counts follow
+  - tests: `TestTeamToolsAPI` (repeats dropped and sorted, managers see `team_tools` and members do not, validation, a team not on the server and an unknown server are 404, none and back to all, audit); the counts on Start in the acceptance test
+- [x] App: on the server page, per team, "All tools" or "Only these" with the reviewed tools to tick
+  - tests (Vitest): `pages.test.tsx` toolsets (a saved name the server no longer offers is shown, choosing tools sends the list, back to all sends null); 48/48
+- [x] Acceptance: `TestToolsetsLimitWhatATeamSees` (a designer lists the one chosen tool while a developer lists both; a call on the hidden one answers like an unknown name; Start counts what the designer sees; a new choice applies once the client's short-lived list is refreshed; members cannot change it)
+- [x] Docs: README, `docs/manual-test.md` section 16, version 0.14.0
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f08-toolsets-security-review.md`): no findings at 0.8 or above. Acted on: the server list counts for members only the tools they see; a grant needs the requester to still see the tool; the server page says prompts and resources are not narrowed
+- [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
 
 ## F09. Policies
 Status: In progress (core done, reviewed)
