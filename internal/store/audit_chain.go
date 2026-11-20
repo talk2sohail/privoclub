@@ -90,7 +90,10 @@ func (s *Store) SealAudit(ctx context.Context, org OrgID, limit int, now time.Ti
 		next := prev.LastSeq + 1
 		for i := range evs {
 			evs[i].Seq = next + int64(i)
-			evs[i].PayloadSHA256 = PayloadDigest(evs[i].Payload)
+			// An erased payload keeps the digest recorded at erasure.
+			if len(evs[i].Payload) > 0 || evs[i].PayloadSHA256 == "" {
+				evs[i].PayloadSHA256 = PayloadDigest(evs[i].Payload)
+			}
 		}
 		b, err := seal(prev, evs)
 		if err != nil {
@@ -180,18 +183,121 @@ func (s *Store) CountUnsealed(ctx context.Context, org OrgID) (int, error) {
 	return n, err
 }
 
-// PruneAudit deletes the events of whole blocks sealed before before
-// (retention): a block sealed then holds only older events, and keeping
-// blocks whole keeps every remaining block verifiable. Unsealed events and
-// blocks themselves are never deleted. It returns how many rows went.
-func (s *Store) PruneAudit(ctx context.Context, org OrgID, before time.Time) (int, error) {
-	res, err := s.w.ExecContext(ctx, `DELETE FROM audit_events WHERE org_id = ? AND chain_seq IS NOT NULL AND chain_seq <= (
-		SELECT COALESCE(MAX(last_seq), 0) FROM audit_blocks WHERE org_id = ? AND julianday(sealed_at) < julianday(?))`, org, org, ts(before))
+// AuditPrune is a signed record that the events of the chain up to
+// ThroughSeq were deleted by retention (security review 2026-11-21).
+type AuditPrune struct {
+	Seq        int64
+	ThroughSeq int64
+	PrunedAt   time.Time
+	KeyID      string
+	PublicKey  string
+	Signature  string
+}
+
+// PruneAudit applies retention in one transaction: it finds the last event of
+// the blocks sealed before before, and when that is past the latest prune
+// point, stores the record sign returns for it and deletes the events up to
+// it. Unsealed events and blocks are never deleted. It returns how many
+// events went.
+func (s *Store) PruneAudit(ctx context.Context, org OrgID, before, now time.Time, sign func(seq, through int64) (AuditPrune, error)) (int, error) {
+	n := 0
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var through, done, last int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(last_seq), 0) FROM audit_blocks WHERE org_id = ? AND julianday(sealed_at) < julianday(?)`,
+			org, ts(before)).Scan(&through); err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(through_seq), 0), COALESCE(MAX(seq), 0) FROM audit_prunes WHERE org_id = ?`, org).Scan(&done, &last); err != nil {
+			return err
+		}
+		if through <= done {
+			return nil
+		}
+		p, err := sign(last+1, through)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO audit_prunes (org_id, seq, through_seq, pruned_at, key_id, public_key, signature) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			org, last+1, through, ts(now), p.KeyID, p.PublicKey, p.Signature); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `DELETE FROM audit_events WHERE org_id = ? AND chain_seq IS NOT NULL AND chain_seq <= ?`, org, through)
+		if err != nil {
+			return err
+		}
+		c, _ := res.RowsAffected()
+		n = int(c)
+		return nil
+	})
+	return n, err
+}
+
+// AuditPrunes returns an org's prune records in order.
+func (s *Store) AuditPrunes(ctx context.Context, org OrgID) ([]AuditPrune, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT seq, through_seq, pruned_at, key_id, public_key, signature FROM audit_prunes WHERE org_id = ? ORDER BY seq`, org)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	n, _ := res.RowsAffected()
-	return int(n), nil
+	defer func() { _ = rows.Close() }()
+	var out []AuditPrune
+	for rows.Next() {
+		var p AuditPrune
+		var at string
+		if err := rows.Scan(&p.Seq, &p.ThroughSeq, &at, &p.KeyID, &p.PublicKey, &p.Signature); err != nil {
+			return nil, err
+		}
+		p.PrunedAt = parseTS(at)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// AuditKeyEndorsement is a trusted key vouching for another signing key.
+type AuditKeyEndorsement struct {
+	KeyID, PublicKey, EndorsedBy, Signature string
+	EndorsedAt                              time.Time
+}
+
+// AddAuditKeyEndorsement stores an endorsement once.
+func (s *Store) AddAuditKeyEndorsement(ctx context.Context, org OrgID, e AuditKeyEndorsement) error {
+	_, err := s.w.ExecContext(ctx, `INSERT INTO audit_keys (org_id, key_id, public_key, endorsed_by, signature, endorsed_at) VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (org_id, key_id, endorsed_by) DO NOTHING`, org, e.KeyID, e.PublicKey, e.EndorsedBy, e.Signature, ts(e.EndorsedAt))
+	return err
+}
+
+// AuditKeyEndorsements lists an org's endorsements.
+func (s *Store) AuditKeyEndorsements(ctx context.Context, org OrgID) ([]AuditKeyEndorsement, error) {
+	rows, err := s.r.QueryContext(ctx, `SELECT key_id, public_key, endorsed_by, signature, endorsed_at FROM audit_keys WHERE org_id = ?`, org)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []AuditKeyEndorsement
+	for rows.Next() {
+		var e AuditKeyEndorsement
+		var at string
+		if err := rows.Scan(&e.KeyID, &e.PublicKey, &e.EndorsedBy, &e.Signature, &at); err != nil {
+			return nil, err
+		}
+		e.EndorsedAt = parseTS(at)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// CountSealedOutside counts events that claim a place in the chain outside
+// 1..last: no block covers them, so they would never be checked.
+func (s *Store) CountSealedOutside(ctx context.Context, org OrgID, last int64) (int, error) {
+	var n int
+	err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE org_id = ? AND chain_seq IS NOT NULL AND (chain_seq < 1 OR chain_seq > ?)`, org, last).Scan(&n)
+	return n, err
+}
+
+// CountSealed counts the events that hold a place in the chain.
+func (s *Store) CountSealed(ctx context.Context, org OrgID) (int64, error) {
+	var n int64
+	err := s.r.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_events WHERE org_id = ? AND chain_seq IS NOT NULL`, org).Scan(&n)
+	return n, err
 }
 
 // EraseAuditPayloads clears the recorded payloads of events whose actor id is

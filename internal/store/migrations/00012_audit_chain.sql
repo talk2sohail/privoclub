@@ -20,7 +20,34 @@ CREATE TABLE audit_blocks (
     PRIMARY KEY (org_id, seq)
 );
 
+-- Retention as signed records: verification accepts missing events only up
+-- to the latest signed prune point (security review 2026-11-21).
+CREATE TABLE audit_prunes (
+    org_id      TEXT NOT NULL REFERENCES orgs(id),
+    seq         INTEGER NOT NULL,  -- from 1
+    through_seq INTEGER NOT NULL,  -- events with chain_seq up to this may be gone
+    pruned_at   TEXT NOT NULL,
+    key_id      TEXT NOT NULL,
+    public_key  TEXT NOT NULL,
+    signature   TEXT NOT NULL,
+    PRIMARY KEY (org_id, seq)
+);
+
+-- Signing keys a trusted key vouches for, so blocks signed before a master
+-- key rotation keep verifying once the old key is gone.
+CREATE TABLE audit_keys (
+    org_id      TEXT NOT NULL REFERENCES orgs(id),
+    key_id      TEXT NOT NULL,
+    public_key  TEXT NOT NULL,
+    endorsed_by TEXT NOT NULL,     -- the key id that signed the endorsement
+    signature   TEXT NOT NULL,
+    endorsed_at TEXT NOT NULL,
+    PRIMARY KEY (org_id, key_id, endorsed_by)
+);
+
 -- +goose Down
+DROP TABLE audit_keys;
+DROP TABLE audit_prunes;
 DROP TABLE audit_blocks;
 DROP INDEX audit_events_org_chain;
 ALTER TABLE audit_events DROP COLUMN payload_sha256;
