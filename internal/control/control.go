@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -86,6 +87,7 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("POST /api/v1/invites", wrap(auth.PermManageTokens, a.createInvite))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", wrap(auth.PermManageServers, a.acceptPins))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:block", wrap(auth.PermManageServers, a.blockPins))
+	mux.Handle("PATCH /api/v1/servers/{alias}/teams/{slug}", wrap(auth.PermManageServers, a.patchTeamTools))
 	mux.Handle("GET /api/v1/tokens", wrap(auth.PermManageTokens, a.listTokens))
 	mux.Handle("POST /api/v1/tokens", wrap(auth.PermManageTokens, a.createToken))
 	mux.Handle("DELETE /api/v1/tokens/{id}", wrap(auth.PermManageTokens, a.revokeToken))
@@ -218,6 +220,9 @@ type serverView struct {
 	// Teams that reach the server (ADR 0020); shown to admins only, and
 	// always to them, so an empty list ("nobody") is visible (F26 R-04).
 	Teams *[]string `json:"teams,omitempty"`
+	// TeamTools are the narrowed teams' tool lists (ADR 0023); admins only.
+	// A team on the server that is not in it sees all tools.
+	TeamTools map[string][]string `json:"team_tools,omitempty"`
 }
 
 // view describes a server. Members and auditors see neither the full target
@@ -278,13 +283,75 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request, p auth.Princip
 			return err
 		}
 	}
+	var tt map[string]map[string][]string
+	if admin {
+		if tt, err = a.Store.TeamTools(r.Context(), p.OrgID); err != nil {
+			return err
+		}
+	}
 	out := make([]serverView, 0, len(servers))
 	for _, s := range servers {
 		if admin || acc.Reaches(s.ID) {
-			out = append(out, a.view(r.Context(), p, s, st[s.ID]))
+			v := a.view(r.Context(), p, s, st[s.ID])
+			v.TeamTools = tt[s.ID]
+			out = append(out, v)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": out})
+	return nil
+}
+
+// patchTeamTools sets which of a server's tools a team sees (ADR 0023):
+// {"tools": null} for all, {"tools": [names]} for exactly those.
+func (a *API) patchTeamTools(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	s, err := a.server(r, p)
+	if err != nil {
+		return err
+	}
+	team := r.PathValue("slug")
+	var req struct {
+		Tools json.RawMessage `json:"tools"`
+	}
+	if err := decode(r, &req); err != nil {
+		return err
+	}
+	var tools []string
+	switch raw := bytes.TrimSpace(req.Tools); {
+	case len(raw) == 0:
+		return errorf(http.StatusUnprocessableEntity, "tools must be null (all tools) or a list of tool names")
+	case string(raw) == "null":
+	default:
+		var list []string
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return errorf(http.StatusUnprocessableEntity, "tools must be null (all tools) or a list of tool names")
+		}
+		tools = []string{}
+		for _, name := range list {
+			if name == "" || len(name) > 128 || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+				return errorf(http.StatusUnprocessableEntity, "a tool name must be 1 to 128 characters without control characters")
+			}
+			if !slices.Contains(tools, name) {
+				tools = append(tools, name)
+			}
+		}
+		if len(tools) > store.MaxTeamTools {
+			return errorf(http.StatusUnprocessableEntity, "at most %d tools per team", store.MaxTeamTools)
+		}
+		sort.Strings(tools)
+	}
+	what := "all"
+	if tools != nil {
+		what = strconv.Itoa(len(tools))
+	}
+	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(), Server: s.Alias,
+		Action: "server.team_tools:" + s.Alias + ":" + team + ":" + what, Decision: "allow", Outcome: "ok"}
+	if err := a.Store.SetTeamTools(r.Context(), p.OrgID, s.ID, team, tools, ev); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errorf(http.StatusNotFound, "%q is not a team of %q", team, s.Alias)
+		}
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": s.Alias, "team": team, "tools": tools})
 	return nil
 }
 

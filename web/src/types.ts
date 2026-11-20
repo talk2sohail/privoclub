@@ -14,6 +14,7 @@ export type ServerView = {
   registration?: string;
   connect_url?: string;
   teams?: string[];
+  team_tools?: Record<string, string[]>; // narrowed teams' tools (ADR 0023); admins only
 };
 
 export type Finding = { path: string; rule: string; severity: "warn" | "note"; message: string; excerpt?: string };

@@ -525,7 +525,7 @@ func (a *API) myTools(w http.ResponseWriter, r *http.Request, p auth.Principal) 
 				return err
 			}
 			for _, it := range st.Items {
-				if it.Kind == upstream.KindTool && pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinAccepted {
+				if it.Kind == upstream.KindTool && acc.SeesTool(s.ID, it.Name) && pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinAccepted {
 					v.Tools++
 				}
 			}

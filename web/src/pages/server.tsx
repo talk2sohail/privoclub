@@ -103,6 +103,7 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
         </section>
       )}
       {session.can.teams && <Access srv={current} />}
+      {session.can.servers && (current.teams ?? []).length > 0 && <Toolsets srv={current} tools={toolNames(accepted)} />}
       {current.auth === "oauth" && <Connected alias={alias} />}
       <Settings srv={current} />
     </>
@@ -222,6 +223,80 @@ function Access({ srv }: { srv: ServerView }) {
         </>
       )}
     </section>
+  );
+}
+
+/** toolNames are the distinct names of the accepted tools, sorted. */
+function toolNames(accepted: Pin[]): string[] {
+  return [...new Set(accepted.filter((p) => p.kind === "tool").map((p) => p.name))].sort();
+}
+
+// Toolsets (ADR 0023): per team, all of this server's tools or only some.
+function Toolsets({ srv, tools }: { srv: ServerView; tools: string[] }) {
+  const teams = useData<{ teams: Team[] }>("/v1/teams");
+  const names = new Map((teams.data?.teams ?? []).map((t) => [t.slug, t.name]));
+  return (
+    <section class="card">
+      <h2>Which tools each team sees</h2>
+      <p class="meta">
+        A team sees all of this server's tools unless you choose some. A person in several teams sees what any of them sees. New tools stay hidden from a
+        team that sees only some, until you choose them.
+      </p>
+      {(srv.teams ?? []).map((slug) => (
+        <TeamToolset key={slug} alias={srv.alias} slug={slug} name={names.get(slug) ?? slug} saved={srv.team_tools?.[slug] ?? null} tools={tools} />
+      ))}
+    </section>
+  );
+}
+
+function TeamToolset({ alias, slug, name, saved, tools }: { alias: string; slug: string; name: string; saved: string[] | null; tools: string[] }) {
+  // null: all tools; a list: only those.
+  const [draft, setDraft] = useState<string[] | null | undefined>(undefined);
+  const [busy, run] = useAction();
+  const current = draft === undefined ? saved : draft;
+  const changed = draft !== undefined && JSON.stringify(draft === null ? null : [...draft].sort()) !== JSON.stringify(saved === null ? null : [...saved].sort());
+  const offered = [...new Set([...tools, ...(current ?? [])])].sort();
+  const save = () =>
+    void run(async () => {
+      await api("PATCH", "/v1/servers/" + seg(alias) + "/teams/" + seg(slug), { tools: current === null ? null : [...current].sort() });
+      invalidate("/v1/servers");
+      setDraft(undefined);
+    }, "Saved. " + name + " sees the change at its next request.");
+  return (
+    <fieldset>
+      <legend>{name}</legend>
+      <label class="inline">
+        <input type="radio" name={"toolset-" + slug} checked={current === null} onChange={() => setDraft(null)} /> All tools
+      </label>
+      <label class="inline">
+        <input type="radio" name={"toolset-" + slug} checked={current !== null} onChange={() => setDraft(current ?? [])} /> Only these
+      </label>
+      {current !== null && (
+        <div class="stack">
+          {offered.length === 0 && <p class="meta">This server has no reviewed tools yet.</p>}
+          {offered.map((tool) => (
+            <label class="inline" key={tool}>
+              <input
+                type="checkbox"
+                checked={current.includes(tool)}
+                aria-label={name + ": " + tool}
+                onChange={(e) =>
+                  setDraft((e.currentTarget as HTMLInputElement).checked ? [...current, tool] : current.filter((t) => t !== tool))
+                }
+              />{" "}
+              <code>{tool}</code>
+              {!tools.includes(tool) && <small class="meta"> not offered now</small>}
+            </label>
+          ))}
+          {current.length === 0 && <p class="flash warn">{name} will see none of this server's tools.</p>}
+        </div>
+      )}
+      <div class="actions">
+        <button type="button" class="primary small" aria-label={"Save the tools " + name + " sees"} disabled={busy || !changed} onClick={save}>
+          Save
+        </button>
+      </div>
+    </fieldset>
   );
 }
 

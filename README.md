@@ -187,12 +187,20 @@ Each team sees only the servers given to it (ADR 0020). On the admin site:
 - **A server's page → Who can use it**: the teams that reach it.
   **Everyone** is built in (every member is in it). A server with no team is
   reachable by nobody.
+- **A server's page → Which tools each team sees** (toolsets, ADR 0023): per
+  team, all of the server's tools or only the ones you tick. A person in
+  several teams sees what any of them sees; a new tool stays hidden from a
+  team that sees only some until you tick it. Rules, approvals and the tool
+  review still apply to every tool a person sees. API:
+  `PATCH /api/v1/servers/<alias>/teams/<slug>` with `{"tools": ["a", "b"]}`,
+  or `{"tools": null}` for all.
 - **Start** (where members land): their teams, their servers with a Connect
   link where their own account is needed, and the setup of Claude Code,
   Cursor, VS Code, Codex or Windsurf with a token made on the spot.
 
-The gateway lists only the tools of servers the caller's teams reach and
-answers a call on any other server as if the name did not exist. Rules can
+The gateway lists only the tools of servers the caller's teams reach, and of
+those only the ones their teams see, and answers a call on any other tool as
+if the name did not exist. Rules can
 name a team: subject `team:<slug>`. Existing servers, and servers added through
 the API without `"teams"`, are for everyone. API: `GET/POST /api/v1/teams`,
 `PATCH/DELETE /api/v1/teams/<slug>`, `POST /api/v1/teams/<slug>/members`

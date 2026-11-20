@@ -186,3 +186,19 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
    appears at the bottom of **Waiting**.
 5. **Activity → Admin changes**: `approval.withdraw:…` by the second
    account, `approval.approve:…` and `policy.grant:…` by you.
+
+## 13. Toolsets (needs 0.11.0+ and the second account)
+
+1. Give a server with several tools to a team the second account is in (for
+   example GitHub to Developers). On the server's page, under **Which tools
+   each team sees**, that team shows **All tools**.
+2. Choose **Only these**, tick two tools → **Save**. Expect "Saved". In the
+   second account's AI client, after a refresh, the server lists only those
+   two tools; a call on another tool of that server says it is not
+   available, exactly as for a name that does not exist.
+3. As the second account, **Start** counts only those two tools for that
+   server.
+4. Untick both: expect the warning that the team sees none of the tools.
+   Choose **All tools** → **Save**: everything is back after a refresh.
+5. **Activity → Admin changes**: `server.team_tools:<alias>:<team>:2`, then
+   `…:0` if you saved with none, then `…:all`.

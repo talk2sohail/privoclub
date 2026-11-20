@@ -393,7 +393,7 @@ until URL elicitation lands.
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ## F08. Toolsets
-Status: In progress (specified 2026-11-20, ADR 0023 proposed)
+Status: In progress (first slice built 2026-11-20, 0.11.0; ADR 0023 proposed; security review and the owner's walkthrough, `docs/manual-test.md` section 13, open)
 ADRs: 0020, 0023
 
 Goal: an admin gives a team some of a server's tools rather than all of
@@ -427,17 +427,18 @@ Threat note:
 
 Tasks and the tests that name them:
 
-- [ ] Spec (this section) and ADR 0023
-- [ ] Store: migration `00010_server_team_tools.sql`; `SetTeamTools` (nil means all), `TeamTools`; `Access` carries per-server tool sets (nil = all); removing a server's team and deleting a team drop the list
-  - tests: `TestTeamToolsNarrowAccess` (union across teams, all wins, everyone narrowed), `TestTeamToolsFollowTeamChanges`, `TestTeamToolsAreIsolatedPerOrg`
-- [ ] Gateway: lists and resolve filter tools by `Access`
-  - tests: `TestVisibleFollowsToolsets` (hidden tool not listed, a call answered like an unknown name, prompts unaffected)
-- [ ] Admin API: `PUT /api/v1/servers/{alias}/teams/{slug}/tools` (`{"tools": [...]}` or `null` for all; `servers.manage`; audited); the server list shows `team_tools` to managers; `/me/tools` counts follow
-  - tests: `TestTeamToolsAPI` (validation, unknown team or a team not on the server, members refused, audit), `TestMyToolsFollowToolsets`
-- [ ] App: on the server page, per team, "All tools" or "Only these" with the reviewed tools to tick
-  - tests (Vitest): choosing tools sends the list; back to all sends null
-- [ ] Acceptance: `TestToolsetsLimitWhatATeamSees` (a designer lists two of a server's tools while a developer lists all; a call on a hidden tool answers like an unknown name; a new choice applies to the next request)
-- [ ] Docs: README, `docs/manual-test.md`, version; security review
+- [x] Spec (this section) and ADR 0023
+- [x] Store: migration `00010_server_team_tools.sql` (`server_teams.narrowed`, `server_team_tools` deleted with its `server_teams` row); `SetTeamTools` (nil means all), `TeamTools`; `Access` carries per-server tool sets (nil = all); removing a server's team and deleting a team or the server drop the list; saving a server's teams keeps the lists of the teams that stay
+  - tests: `TestTeamToolsNarrowAccess` (union across teams, all wins, an empty list hides all but still reaches the server, `everyone` narrowed, back to all, only a team on the server), `TestTeamToolsFollowTeamChanges`, `TestTeamToolsAreIsolatedPerOrg`
+- [x] Gateway: lists and resolve filter tools by `Access.SeesTool`; `/me/tools` counts only seen tools
+  - tests: in the acceptance test below (the list stage needs a live upstream)
+- [x] Admin API: `PATCH /api/v1/servers/{alias}/teams/{slug}` (`{"tools": [...]}` or `null` for all; `servers.manage`; audited); the server list shows `team_tools` to managers; `/me/tools` counts follow
+  - tests: `TestTeamToolsAPI` (repeats dropped and sorted, managers see `team_tools` and members do not, validation, a team not on the server and an unknown server are 404, none and back to all, audit); the counts on Start in the acceptance test
+- [x] App: on the server page, per team, "All tools" or "Only these" with the reviewed tools to tick
+  - tests (Vitest): `pages.test.tsx` toolsets (a saved name the server no longer offers is shown, choosing tools sends the list, back to all sends null); 48/48
+- [x] Acceptance: `TestToolsetsLimitWhatATeamSees` (a designer lists the one chosen tool while a developer lists both; a call on the hidden one answers like an unknown name; Start counts what the designer sees; a new choice applies once the client's short-lived list is refreshed; members cannot change it)
+- [x] Docs: README, `docs/manual-test.md` section 13, version 0.11.0
+- [ ] Security review
 - [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
 
 ## F09. Policies
