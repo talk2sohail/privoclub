@@ -94,6 +94,10 @@ func TestAdminUIFromScratch(t *testing.T) {
 	if !strings.Contains(fmt.Sprint(pins[0]["definition"]), "Repeat the text. <b>bold</b>") {
 		t.Fatalf("pin %v", pins[0])
 	}
+	// F11: the review carries the scan; an honest tool raises nothing.
+	if f, ok := pins[0]["findings"].([]any); !ok || len(f) != 0 {
+		t.Fatalf("findings of an honest tool: %v", pins[0]["findings"])
+	}
 	accept := []map[string]any{}
 	for _, p := range pins {
 		accept = append(accept, map[string]any{"kind": p["kind"], "hash": p["hash"], "name": p["name"]})

@@ -433,13 +433,23 @@ ADRs: 0005
 - [ ] Withdraw endpoint for requesters
 
 ## F11. Manifest pinning and scanning
-Status: Not started
+Status: In progress (pins built with F02; review, diff, block and scan 2026-11-20)
 
 ADRs: 0001, 0002
 
-- [ ] Per-tool canonical hash pins with scope keys; first pin reviewed
-- [ ] New tools hidden until accepted; changed tools blocked; diff view
-- [ ] Scan tool descriptions for hidden instructions
+Threat note: the scan is a hint for the reviewer, never a gate: it accepts,
+blocks and hides nothing by itself, and finding nothing proves nothing. The
+gate is still a person accepting an exact hash. Upstream text is shown only as
+text, with characters a person cannot see made visible (⟦U+200B⟧).
+
+- [x] Per-tool canonical hash pins; first pin reviewed (F02: `pins`, `RecordSeen`, `AcceptPins`, the gateway serves accepted definitions only)
+- [x] New tools hidden until accepted; changed tools hidden until the new definition is accepted (F02)
+- [x] Diff view: a pending or blocked definition carries the accepted one it would replace (`previous`), and the review shows a line diff of the two (keys sorted)
+- [x] Block: `POST /api/v1/servers/{alias}/pins:block` (managers of servers; audited `pins.block:N`) blocks exactly the listed pending definitions; they leave the review, stay hidden, are never pruned, and can still be accepted (`AcceptPins` takes pending or blocked)
+- [x] Scan for hidden instructions (`internal/scan`): every string of a definition (description, titles, the schema's property names and descriptions, annotations) for characters a person cannot see, tags that address the model, overriding or concealing instructions, "before using this tool you must", secret files and exfiltration (warnings); secret words, long texts and encoded runs (notes). At most 50 findings; `findings` on every pin
+  - tests: `internal/scan` `TestScanFindsInstructionsAfterTheFirstLine`, `TestScanFindsHiddenCharacters`, `TestScanWalksSchemaAndAnnotations`, `TestScanNotesLongAndEncodedText`, `TestScanQuietOnOrdinaryTools` (no warning on GitHub, Notion and DeepWiki shapes), `TestScanUnreadableAndBounded`, `TestReveal`; `internal/store` `TestBlockPins`; `internal/control` `TestPinReviewShowsPreviousAndFindings`; acceptance `TestAdminUIFromScratch` (an honest tool has no findings); Vitest `review.test.ts`, `pages.test.tsx` (the whole description as text, nothing chosen by default, the diff and warnings, block)
+- [ ] Scope keys on pins (per team or per person), with toolsets (F08)
+- [ ] Phrases in other languages; a scan of resource contents and tool results (F02 result checks)
 
 ## F12. Audit log
 Status: In progress
@@ -542,10 +552,10 @@ Tasks and the tests that name them:
 
 ### Review findings, open (independent review 2026-11-03, `docs/reviews/2026-11-03-f14-admin-app-independent-review.md`: approve with changes; 0 Critical, 0 High, 2 Medium, 4 Low, 2 Info; fixes parked by the owner)
 
-- [ ] R-01 (Medium): the tool review shows only the first line (at most 300 characters) of a description, while the hash that is accepted covers all of it, the input schema and the annotations. Show the whole description as text, the schema, and a diff for a changed definition
+- [x] R-01 (Medium): the tool review shows only the first line (at most 300 characters) of a description, while the hash that is accepted covers all of it, the input schema and the annotations. Fixed 2026-11-20 with F11: each pending definition shows its findings, the diff against the accepted version, the whole description as text, its inputs, and the whole definition; hidden characters are made visible
 - [x] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fixed with F07 R-01 (2026-11-18): the API refuses a member's name; the field is now "Service", and the token list marks each token "own token" or "service"
 - [ ] R-03 (Low): a refused or cross-site request still slides the session's idle timeout; touch the session only after every check passed
-- [ ] R-04 (Low): the review ticks everything by default, also items that arrive while the page polls; make ticking opt-in or mark new rows
+- [x] R-04 (Low): the review ticks everything by default, also items that arrive while the page polls. Fixed 2026-11-20: nothing is chosen until the reviewer chooses it ("Choose all N shown" chooses only what is on the page)
 - [ ] R-05 (Low): the UI build has no audit step (`web/.npmrc` has `audit=false` and `legacy-peer-deps=true`; `npm ci` runs lifecycle scripts; actions are pinned by tag): `npm ci --ignore-scripts`, `npm audit --omit=dev`, `npm audit signatures` in the `ui` job, actions by SHA
 - [ ] R-06 (Low): the bridge passes a body on GET and DELETE and accepts any content type with an empty body
 - [ ] R-07, R-08 (Info): a session can mint long-lived owner control tokens (consider a confirmation and an audit tag); a token shown once stays in the page's state until the person leaves

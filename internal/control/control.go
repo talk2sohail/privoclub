@@ -29,6 +29,7 @@ import (
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/runner"
+	"privo.club/privo/internal/scan"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/token"
 	"privo.club/privo/internal/upstream"
@@ -81,6 +82,7 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("DELETE /api/v1/servers/{alias}/connections/{person}", wrap(auth.PermManageServers, a.deleteConnection))
 	mux.Handle("POST /api/v1/invites", wrap(auth.PermManageTokens, a.createInvite))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", wrap(auth.PermManageServers, a.acceptPins))
+	mux.Handle("POST /api/v1/servers/{alias}/pins:block", wrap(auth.PermManageServers, a.blockPins))
 	mux.Handle("GET /api/v1/tokens", wrap(auth.PermManageTokens, a.listTokens))
 	mux.Handle("POST /api/v1/tokens", wrap(auth.PermManageTokens, a.createToken))
 	mux.Handle("DELETE /api/v1/tokens/{id}", wrap(auth.PermManageTokens, a.revokeToken))
@@ -511,10 +513,25 @@ func (a *API) listPins(w http.ResponseWriter, r *http.Request, p auth.Principal)
 	if err != nil {
 		return err
 	}
+	// The definition a pending or blocked one would replace: the newest
+	// accepted one of the same name (pins come newest first).
+	accepted := map[[2]string]store.Pin{}
+	for _, pin := range pins {
+		k := [2]string{pin.Kind, pin.Name}
+		if _, seen := accepted[k]; !seen && pin.Status == store.PinAccepted {
+			accepted[k] = pin
+		}
+	}
 	out := make([]map[string]any, 0, len(pins))
 	for _, pin := range pins {
-		out = append(out, map[string]any{"kind": pin.Kind, "name": pin.Name, "hash": pin.Hash, "status": pin.Status,
-			"definition": json.RawMessage(pin.Definition)})
+		v := map[string]any{"kind": pin.Kind, "name": pin.Name, "hash": pin.Hash, "status": pin.Status,
+			"definition": json.RawMessage(pin.Definition),
+			// F11: signs of hidden instructions, for the reviewer (a hint, never a decision).
+			"findings": scan.Scan([]byte(pin.Definition))}
+		if prev, ok := accepted[[2]string{pin.Kind, pin.Name}]; ok && pin.Status != store.PinAccepted {
+			v["previous"] = map[string]any{"hash": prev.Hash, "definition": json.RawMessage(prev.Definition)}
+		}
+		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pins": out})
 	return nil
@@ -522,6 +539,17 @@ func (a *API) listPins(w http.ResponseWriter, r *http.Request, p auth.Principal)
 
 // acceptPins accepts exactly the reviewed definitions named in the request.
 func (a *API) acceptPins(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	return a.decidePins(w, r, p, "accept", a.Store.AcceptPins)
+}
+
+// blockPins blocks exactly the reviewed pending definitions named in the
+// request (F11): they stay hidden and leave the review list.
+func (a *API) blockPins(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	return a.decidePins(w, r, p, "block", a.Store.BlockPins)
+}
+
+func (a *API) decidePins(w http.ResponseWriter, r *http.Request, p auth.Principal, verb string,
+	decide func(context.Context, store.OrgID, string, []store.PinKey) ([]store.PinKey, error)) error {
 	s, err := a.server(r, p)
 	if err != nil {
 		return err
@@ -533,18 +561,18 @@ func (a *API) acceptPins(w http.ResponseWriter, r *http.Request, p auth.Principa
 		return err
 	}
 	if len(req.Pins) == 0 || len(req.Pins) > 5000 {
-		return errorf(http.StatusUnprocessableEntity, "list the reviewed pins (kind, name, hash) to accept")
+		return errorf(http.StatusUnprocessableEntity, "list the reviewed pins (kind, name, hash) to %s", verb)
 	}
 	keys := make([]store.PinKey, 0, len(req.Pins))
 	for _, pr := range req.Pins {
 		keys = append(keys, store.PinKey{Kind: pr.Kind, Name: pr.Name, Hash: pr.Hash})
 	}
-	accepted, err := a.Store.AcceptPins(r.Context(), p.OrgID, s.ID, keys)
+	done, err := decide(r.Context(), p.OrgID, s.ID, keys)
 	if err != nil {
 		return err
 	}
-	a.adminEvent(r.Context(), p, fmt.Sprintf("pins.accept:%d", len(accepted)), s.Alias)
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": len(accepted), "requested": len(keys)})
+	a.adminEvent(r.Context(), p, fmt.Sprintf("pins.%s:%d", verb, len(done)), s.Alias)
+	writeJSON(w, http.StatusOK, map[string]any{verb + "ed": len(done), "requested": len(keys)})
 	return nil
 }
 

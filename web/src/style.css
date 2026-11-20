@@ -27,3 +27,14 @@ form.row { margin-top: 8px; }
 .client-setup .tabs { margin-bottom: 4px; }
 h3 { font-size: 1rem; margin: 16px 0 8px; }
 table.list tr.current td { background: var(--code-bg); }
+.pins { list-style: none; padding: 0; margin: 8px 0 12px; display: grid; gap: 12px; }
+.pin { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.pin-head { flex-wrap: wrap; margin-bottom: 4px; }
+.badge.warn { background: var(--danger); color: var(--accent-text); }
+.findings { margin: 8px 0; padding-left: 20px; }
+.findings li { margin: 4px 0; }
+.findings li.warn strong { color: var(--danger); }
+.findings .excerpt { display: block; margin-top: 2px; padding: 4px 8px; background: var(--code-bg); border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+.diff .add { color: var(--ok); }
+.diff .del { color: var(--danger); }
+.pre-wrap { white-space: pre-wrap; word-break: break-word; }

@@ -16,12 +16,17 @@ export type ServerView = {
   teams?: string[];
 };
 
+export type Finding = { path: string; rule: string; severity: "warn" | "note"; message: string; excerpt?: string };
+
 export type Pin = {
   kind: string;
   name: string;
   hash: string;
   status: string;
-  definition: { description?: string; title?: string } | null;
+  // The whole definition as the server sent it: upstream text, shown only as text.
+  definition: Record<string, unknown> | null;
+  findings?: Finding[]; // signs of hidden instructions (F11); a hint, never a decision
+  previous?: { hash: string; definition: Record<string, unknown> | null }; // the accepted version it would replace
 };
 
 export type ServerConnection = {
