@@ -45,6 +45,7 @@ type Store interface {
 	TouchGrant(ctx context.Context, org store.OrgID, serverID, userID string, now time.Time) error
 	ServerCredentials(ctx context.Context, org store.OrgID, serverID string) ([]store.Credential, error)
 	UpdateServerOAuth(ctx context.Context, org store.OrgID, serverID string, o store.ServerOAuth, secret *store.Credential) error
+	ServerByID(ctx context.Context, org store.OrgID, id string) (store.Server, error)
 }
 
 // Service is safe for concurrent use.
@@ -249,6 +250,17 @@ func (s *Service) refresh(ctx context.Context, org store.OrgID, srv store.Server
 }
 
 func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Server, userID, stale string) (string, error) {
+	// The caller's copy of the server can predate a re-registration or an
+	// admin's edit; refreshing as the old client gets invalid_grant and would
+	// delete a good grant (F07 R-02). Refresh with the registration as stored.
+	cur, err := s.Store.ServerByID(ctx, org, srv.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		return "", ErrNotConnected
+	}
+	if err != nil {
+		return "", err
+	}
+	srv = cur
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrNotConnected

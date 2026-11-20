@@ -29,6 +29,8 @@ type Grants interface {
 type Upstreams interface {
 	Kick(serverID string)
 	ClosePerson(serverID, userID string)
+	// Sync reloads changed servers, such as one registered again (F07 R-02).
+	Sync(ctx context.Context, org store.OrgID) error
 }
 
 var (
@@ -329,6 +331,10 @@ func (s *Server) connectCallbackHandler(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 			s.audit(r.Context(), u, "server.oauth_register:"+srv.Alias+":dynamic")
+			// The running connections still hold the old client (F07 R-02).
+			if serr := s.o.Upstream.Sync(r.Context(), s.o.Org); serr != nil {
+				s.log.Warn("web: reloading servers after registering again", "server", srv.Alias, "err", serr)
+			}
 			s.connectFailed(w, http.StatusConflict, "Privo had to register itself again with "+hostOf(e.TokenEndpoint)+". Start the connection again.")
 			return
 		}

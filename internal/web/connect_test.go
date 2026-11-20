@@ -110,6 +110,14 @@ type fakeUpstreams struct {
 	mu     sync.Mutex
 	kicks  []string
 	closes []string
+	syncs  int
+}
+
+func (f *fakeUpstreams) Sync(context.Context, store.OrgID) error {
+	f.mu.Lock()
+	f.syncs++
+	f.mu.Unlock()
+	return nil
 }
 
 func (f *fakeUpstreams) Kick(id string) { f.mu.Lock(); f.kicks = append(f.kicks, id); f.mu.Unlock() }
@@ -611,6 +619,10 @@ func TestDynamicRegistrationRetriedWhenRejected(t *testing.T) {
 	srv, _ := e.st.ServerByAlias(context.Background(), e.org, "linear")
 	if e.as.registered != 1 || srv.Config.OAuth.ClientID != "re-registered-1" {
 		t.Fatalf("registered %d times, client id %q", e.as.registered, srv.Config.OAuth.ClientID)
+	}
+	// F07 R-02: the running connections reload the new registration.
+	if e.ups.syncs != 1 {
+		t.Fatalf("servers reloaded %d times after registering again, want 1", e.ups.syncs)
 	}
 	if _, err := e.grant(u.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatal("a grant was stored")

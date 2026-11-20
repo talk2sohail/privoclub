@@ -393,3 +393,45 @@ func TestTokensNeverInLogsAuditOrErrors(t *testing.T) {
 		t.Errorf("audit holds a token")
 	}
 }
+
+// F07 R-02: after a registration changes (a re-registration, an admin edit),
+// a refresh made with the running manager's older copy of the server uses the
+// current client, not the one the copy remembers.
+func TestRefreshUsesTheCurrentRegistration(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "rejected", RefreshToken: "rt-0", Expiry: t0.Add(time.Hour)})
+	var sawClient string
+	e.as.answer = func(form url.Values) (int, string) {
+		sawClient = form.Get("client_id")
+		return http.StatusOK, `{"access_token":"at-new","token_type":"Bearer","refresh_token":"rt-new","expires_in":3600}`
+	}
+	o := *e.srv.Config.OAuth
+	o.ClientID = "client-2"
+	if err := e.st.UpdateServerOAuth(ctx, e.org, e.srv.ID, o, nil); err != nil {
+		t.Fatal(err)
+	}
+	stale := e.srv // what the upstream manager still holds
+	if at, err := e.svc.RefreshAfterReject(ctx, e.org, stale, e.ada.ID, "rejected"); err != nil || at != "at-new" {
+		t.Fatalf("refresh: %q %v", at, err)
+	}
+	if sawClient != "client-2" {
+		t.Fatalf("refreshed as %q, want the current client-2", sawClient)
+	}
+}
+
+// A server deleted while a refresh was due has no grant left to refresh.
+func TestRefreshOfADeletedServer(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "rejected", RefreshToken: "rt-0", Expiry: t0.Add(time.Hour)})
+	if err := e.st.DeleteServer(ctx, e.org, e.srv.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.RefreshAfterReject(ctx, e.org, e.srv, e.ada.ID, "rejected"); !errors.Is(err, ErrNotConnected) {
+		t.Fatalf("refresh after delete: %v", err)
+	}
+	if e.as.refreshes.Load() != 0 {
+		t.Fatal("asked the authorization server for a deleted server")
+	}
+}
