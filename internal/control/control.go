@@ -20,6 +20,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"privo.club/privo/internal/approval"
 	"privo.club/privo/internal/audit"
 	"privo.club/privo/internal/auth"
@@ -1200,7 +1202,19 @@ func (a *API) decide(approve bool) handler {
 		if err != nil {
 			return err
 		}
-		err = a.Approval.Decide(r.Context(), p.OrgID, id, approval.Decider{TokenID: p.TokenID, UserID: p.UserID, Name: p.Name, Person: p.Person}, approve)
+		decider := approval.Decider{TokenID: p.TokenID, UserID: p.UserID, Name: p.Name, Person: p.Person}
+		var planned store.Policy
+		if grant > 0 {
+			// Nobody allows a tool for themselves, even where they may approve
+			// their own calls: a grant takes the person out of every later call.
+			if approval.Own(decider, before) {
+				return errorf(http.StatusForbidden, "you cannot allow a tool for yourself; approve this call alone")
+			}
+			if planned, err = a.planGrant(r.Context(), p, before, grant); err != nil {
+				return err
+			}
+		}
+		err = a.Approval.Decide(r.Context(), p.OrgID, id, decider, approve)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			return errorf(http.StatusNotFound, "no approval %q", id)
@@ -1224,12 +1238,12 @@ func (a *API) decide(approve bool) handler {
 		a.adminEvent(r.Context(), p, "approval."+verb+":"+id, "")
 		resp := map[string]any{}
 		if grant > 0 {
-			pol, err := a.grantFrom(r.Context(), p, before, grant)
-			if err != nil {
+			if err := a.Store.CreatePolicies(r.Context(), p.OrgID, planned); err != nil {
 				a.Logger.Error("saving a grant after an approval", "approval", id, "err", err)
 				return errorf(http.StatusInternalServerError, "the call is approved, but allowing the tool for longer failed; add a rule on Rules instead")
 			}
-			resp["grant"] = viewPolicy(pol)
+			a.adminEvent(r.Context(), p, fmt.Sprintf("policy.grant:%s:%s:%s/%s:%s", planned.ID, planned.Subject, planned.Server, before.Tool, grant), planned.Server)
+			resp["grant"] = viewPolicy(planned)
 		}
 		ap, _ := a.Store.GetApproval(r.Context(), p.OrgID, id)
 		resp["approval"] = a.approvalView(r.Context(), p.OrgID, ap, false)
@@ -1238,38 +1252,66 @@ func (a *API) decide(approve bool) handler {
 	}
 }
 
-// grantFrom allows an approved call's tool for its requester for d (F10,
-// ADR 0005 scoped grants): one server, the exact tool, the requester's member
-// (or their token when it belongs to no member), ranked one above the rule
-// that asked so a deny that outranked it still wins.
-func (a *API) grantFrom(ctx context.Context, p auth.Principal, ap store.Approval, d time.Duration) (store.Policy, error) {
-	subject := "token:" + ap.RequesterID
-	if tok, err := a.Store.TokenByID(ctx, ap.RequesterID); err == nil && tok.OrgID == p.OrgID && tok.UserID != "" {
-		subject = "user:" + tok.UserID
+// planGrant builds the rule that allows an approved call's tool for its
+// requester for d (F10, ADR 0005 scoped grants): one server, the exact tool,
+// the reviewed definition that was asked about, the requester's member (or
+// their token when it belongs to no member). The rules are evaluated again for
+// the requester now: a grant is made only when the call would still ask, and
+// ranks one above the rule that asks now, so a deny that wins today, added
+// while the request waited included, still wins (security review 2026-11-20).
+func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval, d time.Duration) (store.Policy, error) {
+	refuse := func(why string) (store.Policy, error) {
+		return store.Policy{}, errorf(http.StatusConflict, "%s Approve this call without allowing the tool for longer.", why)
 	}
-	priority := 0
-	if ap.RuleID != "" {
-		rules, err := a.Store.ListPolicies(ctx, p.OrgID)
-		if err != nil {
-			return store.Policy{}, err
-		}
-		priority = 1
-		for _, r := range rules {
-			if r.ID == ap.RuleID {
-				priority = r.Priority + 1
-			}
-		}
+	tok, err := a.Store.TokenByID(ctx, ap.RequesterID)
+	if err != nil || tok.OrgID != p.OrgID || tok.RevokedAt != nil {
+		return refuse("The token that asked is gone.")
 	}
-	now := time.Now()
-	exp := now.Add(d)
-	pol := store.Policy{ID: ids.New(), Server: ap.ServerAlias, Tool: policy.ExactTool(ap.Tool), Subject: subject, Action: store.ActionAllow,
-		Priority: priority, Note: fmt.Sprintf("Allowed for %s by %s from approval %s", ap.RequesterPerson, p.Name, ap.ID),
-		CreatedBy: p.Name, CreatedAt: now, ExpiresAt: &exp}
-	if err := a.Store.CreatePolicies(ctx, p.OrgID, pol); err != nil {
+	requester := auth.Principal{OrgID: p.OrgID, TokenID: tok.ID, Name: tok.Name, Roles: []string{tok.Role}, Kind: tok.Kind, Person: tok.Person, UserID: tok.UserID}
+	acc, err := gateway.Access(ctx, a.Store, requester)
+	if err != nil {
 		return store.Policy{}, err
 	}
-	a.adminEvent(ctx, p, fmt.Sprintf("policy.grant:%s:%s:%s/%s:%s", pol.ID, subject, pol.Server, ap.Tool, d), pol.Server)
-	return pol, nil
+	if !acc.Reaches(ap.ServerID) || (tok.UserID != "" && !auth.RolesCan(acc.Roles, auth.PermUseGateway)) {
+		return refuse("The person who asked no longer reaches this server.")
+	}
+	pin, err := a.Store.PinDefinition(ctx, p.OrgID, ap.ServerID, store.PinKey{Kind: upstream.KindTool, Name: ap.Tool, Hash: ap.PinHash})
+	if errors.Is(err, store.ErrNotFound) || (err == nil && pin.Status != store.PinAccepted) {
+		return refuse("The tool's definition is no longer the accepted one.")
+	}
+	if err != nil {
+		return store.Policy{}, err
+	}
+	var def mcp.Tool
+	_ = json.Unmarshal([]byte(pin.Definition), &def) // annotations only tighten; none is the safe reading
+	rules, err := a.Store.ListPolicies(ctx, p.OrgID)
+	if err != nil {
+		return store.Policy{}, err
+	}
+	dflt, err := a.Store.Setting(ctx, p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
+	if err != nil {
+		return store.Policy{}, err
+	}
+	now := time.Now()
+	dec := policy.Evaluate(rules, policy.Request{Roles: gateway.CallerRoles(requester, acc), TokenID: tok.ID, UserID: tok.UserID, Teams: acc.Teams,
+		Server: ap.ServerAlias, Tool: ap.Tool, PinHash: ap.PinHash, Annotations: def.Annotations}, dflt, now)
+	if dec.Action != store.ActionAsk {
+		return refuse("The rules changed while this request waited: this call would now be " + map[string]string{store.ActionAllow: "allowed", store.ActionDeny: "denied"}[dec.Action] + ".")
+	}
+	priority := 0
+	for _, r := range rules {
+		if r.ID == dec.RuleID {
+			priority = r.Priority + 1
+		}
+	}
+	subject := "token:" + tok.ID
+	if tok.UserID != "" {
+		subject = "user:" + tok.UserID
+	}
+	exp := now.Add(d)
+	return store.Policy{ID: ids.New(), Server: ap.ServerAlias, Tool: policy.ExactTool(ap.Tool), Subject: subject, Action: store.ActionAllow,
+		Priority: priority, PinHash: ap.PinHash, Note: fmt.Sprintf("Allowed for %s by %s from approval %s", ap.RequesterPerson, p.Name, ap.ID),
+		CreatedBy: p.Name, CreatedAt: now, ExpiresAt: &exp}, nil
 }
 
 func (a *API) patchApprovalSettings(w http.ResponseWriter, r *http.Request, p auth.Principal) error {

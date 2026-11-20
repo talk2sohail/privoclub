@@ -33,7 +33,11 @@ function usePages(path: string) {
   const first = useData<Page>(path);
   // Pages loaded after the first one, valid only for that first page: when
   // it reloads (a decision, a refresh), they are dropped.
-  const [extra, setExtra] = useState<{ from?: Page; more: Approval[]; next?: string }>({ more: [] });
+  const [extra, setExtra] = useState<{
+    from?: Page;
+    more: Approval[];
+    next?: string;
+  }>({ more: [] });
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const fresh = first.data !== undefined && extra.from === first.data;
@@ -44,7 +48,10 @@ function usePages(path: string) {
     const from = first.data;
     setLoadingMore(true);
     try {
-      const page = await api<Page>("GET", path + "&before=" + encodeURIComponent(next));
+      const page = await api<Page>(
+        "GET",
+        path + "&before=" + encodeURIComponent(next),
+      );
       setExtra({ from, more: [...more, ...page.approvals], next: page.next });
       setError("");
     } catch (e) {
@@ -61,7 +68,12 @@ function MoreButton({ pages }: { pages: ReturnType<typeof usePages> }) {
   if (!pages.next) return null;
   return (
     <div class="actions">
-      <button type="button" class="link" disabled={pages.loadingMore} onClick={() => void pages.loadMore()}>
+      <button
+        type="button"
+        class="link"
+        disabled={pages.loadingMore}
+        onClick={() => void pages.loadMore()}
+      >
         {pages.loadingMore ? "Loading…" : "Load more"}
       </button>
     </div>
@@ -77,10 +89,22 @@ export function Approvals(_: PageProps) {
     <>
       <h1>Approvals</h1>
       <div class="row tabs" role="tablist" aria-label="Approvals">
-        <button type="button" role="tab" aria-selected={tab === "waiting"} class={tab === "waiting" ? "primary small" : "small"} onClick={() => setTab("waiting")}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "waiting"}
+          class={tab === "waiting" ? "primary small" : "small"}
+          onClick={() => setTab("waiting")}
+        >
           Waiting
         </button>
-        <button type="button" role="tab" aria-selected={tab === "history"} class={tab === "history" ? "primary small" : "small"} onClick={() => setTab("history")}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "history"}
+          class={tab === "history" ? "primary small" : "small"}
+          onClick={() => setTab("history")}
+        >
           History
         </button>
       </div>
@@ -108,11 +132,23 @@ function Waiting() {
     const label = grantChoices.find(([v]) => v === g)?.[1] ?? "";
     return void run(
       async () => {
-        await api("POST", "/v1/approvals/" + seg(a.id) + (approve ? "/approve" : "/deny"), g ? { grant: g } : undefined);
+        await api(
+          "POST",
+          "/v1/approvals/" + seg(a.id) + (approve ? "/approve" : "/deny"),
+          g ? { grant: g } : undefined,
+        );
         invalidate("/v1/approvals");
         if (g) invalidate("/v1/policies");
       },
-      approve ? (g ? "Approved, and " + a.requester_person + " may use " + label + " without asking." : "Approved. The call can go ahead.") : "Denied.",
+      approve
+        ? g
+          ? "Approved, and " +
+            a.requester_person +
+            " may use " +
+            label +
+            " without asking."
+          : "Approved. The call can go ahead."
+        : "Denied.",
     ).then((ok) => {
       if (!ok) invalidate("/v1/approvals");
     });
@@ -122,13 +158,20 @@ function Waiting() {
   return (
     <>
       <p>
-        <button type="button" class="link small" onClick={reload} disabled={pages.first.loading}>
+        <button
+          type="button"
+          class="link small"
+          onClick={reload}
+          disabled={pages.first.loading}
+        >
           {pages.first.loading ? "refreshing…" : "refresh"}
         </button>
       </p>
       <ErrorLine text={pages.first.error || pages.error} />
       {!list && pages.first.loading && <Loading what="approvals" />}
-      {list && list.length === 0 && <Empty>Nothing is waiting for a decision.</Empty>}
+      {list && list.length === 0 && (
+        <Empty>Nothing is waiting for a decision.</Empty>
+      )}
       {(list ?? []).map((a) => (
         <article class="approval" key={a.id}>
           <h2>
@@ -136,12 +179,15 @@ function Waiting() {
           </h2>
           <p class="meta">
             Requested by <strong>{a.requester_person}</strong>
-            {a.own && " (you)"} using the token “{a.requester}”. Expires {when(a.expires_at)}.
+            {a.own && " (you)"} using the token “{a.requester}”. Expires{" "}
+            {when(a.expires_at)}.
           </p>
           {a.reason && <p>{a.reason}</p>}
           {a.decide_blocked && <p class="warn-text">{a.decide_blocked}</p>}
           {a.arguments_error ? (
-            <p class="warn-text">The arguments cannot be shown, so this call can only be denied.</p>
+            <p class="warn-text">
+              The arguments cannot be shown, so this call can only be denied.
+            </p>
           ) : (
             <pre class="args">{pretty(a.arguments)}</pre>
           )}
@@ -149,22 +195,44 @@ function Waiting() {
             <div class="actions">
               {!a.arguments_error && (
                 <>
-                  <label class="inline">
-                    Allow
-                    <select aria-label={"Allow for " + a.requester_person} value={grant[a.id] ?? ""} onChange={(e) => setGrant({ ...grant, [a.id]: (e.currentTarget as HTMLSelectElement).value })}>
-                      {grantChoices.map(([v, l]) => (
-                        <option key={v} value={v}>
-                          {l}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button type="button" class="approve" disabled={busy} onClick={() => decide(a, true)}>
+                  {!a.own && (
+                    <label class="inline">
+                      Allow
+                      <select
+                        aria-label={"Allow for " + a.requester_person}
+                        value={grant[a.id] ?? ""}
+                        onChange={(e) =>
+                          setGrant({
+                            ...grant,
+                            [a.id]: (e.currentTarget as HTMLSelectElement)
+                              .value,
+                          })
+                        }
+                      >
+                        {grantChoices.map(([v, l]) => (
+                          <option key={v} value={v}>
+                            {l}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <button
+                    type="button"
+                    class="approve"
+                    disabled={busy}
+                    onClick={() => decide(a, true)}
+                  >
                     Approve
                   </button>
                 </>
               )}
-              <button type="button" class="deny" disabled={busy} onClick={() => decide(a, false)}>
+              <button
+                type="button"
+                class="deny"
+                disabled={busy}
+                onClick={() => decide(a, false)}
+              >
                 Deny
               </button>
             </div>
@@ -208,12 +276,18 @@ function History() {
                 <tr key={a.id}>
                   <td>{when(a.created_at)}</td>
                   <td>
-                    <code>{a.tool}</code> <small class="meta">on {a.server}</small>
+                    <code>{a.tool}</code>{" "}
+                    <small class="meta">on {a.server}</small>
                   </td>
                   <td>{a.requester_person}</td>
                   <td>
                     {statusLabel[a.status] ?? a.status}
-                    {a.decided_by && <small class="meta"> by {a.decided_by.split(" (")[0]}</small>}
+                    {a.decided_by && (
+                      <small class="meta">
+                        {" "}
+                        by {a.decided_by.split(" (")[0]}
+                      </small>
+                    )}
                   </td>
                 </tr>
               ))}

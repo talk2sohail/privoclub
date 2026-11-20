@@ -101,6 +101,7 @@ type Request struct {
 	Args            json.RawMessage
 	Reason          string
 	RuleID          string // the rule that asked; "" for the org default
+	PinHash         string // the reviewed definition called
 }
 
 // Gate consumes a matching approval if one is approved, otherwise creates or
@@ -167,7 +168,7 @@ func (s *Service) create(ctx context.Context, r Request, b store.ApprovalBinding
 		ttl = 10 * time.Minute
 	}
 	a := store.Approval{ID: ids.New(), RequesterID: r.RequesterID, RequesterName: r.RequesterName, RequesterPerson: r.RequesterPerson, ServerID: r.ServerID,
-		ServerAlias: r.ServerAlias, Tool: r.Tool, ArgsDigest: r.ArgsDigest, Reason: r.Reason, RuleID: r.RuleID,
+		ServerAlias: r.ServerAlias, Tool: r.Tool, ArgsDigest: r.ArgsDigest, Reason: r.Reason, RuleID: r.RuleID, PinHash: r.PinHash,
 		Status: store.ApprovalPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 	sealed, err := s.seal(ctx, r.Org, a.ID, r.Args)
 	if err != nil {

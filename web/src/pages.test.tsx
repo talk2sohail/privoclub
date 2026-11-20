@@ -278,6 +278,19 @@ describe("approvals", () => {
   });
 });
 
+describe("own request where self-approval is allowed", () => {
+  it("offers approving it, but no grant", async () => {
+    at("/admin/approvals");
+    await start(session("approver"), {
+      "GET /admin/api/v1/approvals?status=pending": {
+        approvals: [{ id: "a4", status: "pending", tool: "merge", server: "github", requester: "laptop", requester_person: "ada", reason: "", arguments: {}, own: true }],
+      },
+    });
+    await screen.findByRole("button", { name: "Approve" });
+    expect(screen.queryByLabelText("Allow for ada")).toBeNull();
+  });
+});
+
 describe("own requests", () => {
   it("lists a person's waiting requests on Start and withdraws one", async () => {
     at("/admin/start");

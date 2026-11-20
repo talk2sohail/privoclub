@@ -467,6 +467,11 @@ Threat note:
   someone else.
 - History shows no arguments (they are purged once a call is decided or
   used).
+- A grant is checked when it is made, against the rules and the requester
+  as they are then: it is made only when the call would still ask, ranks
+  above the rule that asks now, and is pinned to the reviewed definition.
+  Nobody grants for their own request, even where self-approval is allowed.
+  A grant covers all of the person's tokens (it is "for this person").
 
 Tasks and the tests that name them:
 
@@ -482,7 +487,7 @@ Tasks and the tests that name them:
   - tests (Vitest): `pages.test.tsx` (approve with a grant, load more and history, withdraw from Start); 46/46
 - [x] Acceptance: `TestApprovalGrantAndWithdraw` (a grant lets the next calls through without asking and names the person on Rules; without it the call asks again; a withdrawn request cannot be approved and a retry asks anew; history lists both without arguments. A held call ending on withdrawal is `internal/approval` `TestHeldCallEndsWhenWithdrawn`)
 - [x] Docs: README, `docs/manual-test.md` section 12, version 0.10.0
-- [ ] Security review
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f10-approvals-security-review.md`): two Medium findings, both fixed. No grant for one's own request (`TestNoGrantForOneself`); a grant is checked against the current rules, requester and accepted definition before anything is decided, and pinned to that definition (`TestGrantRefusedWhenRulesChanged`, `TestGrantNeedsTheAcceptedDefinition`)
 
 ## F11. Manifest pinning and scanning
 Status: In progress (pins built with F02; review, diff, block and scan 2026-11-20)
