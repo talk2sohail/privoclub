@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -61,4 +62,16 @@ func FuzzCanonical(f *testing.F) {
 			t.Fatalf("invalid JSON: %s", out)
 		}
 	})
+}
+
+// ADR 0027 review: an exponent beyond 9 digits is refused, so rules compare
+// every number they see exactly.
+func TestCanonicalRefusesHugeExponents(t *testing.T) {
+	if _, err := Canonical(json.RawMessage(`{"n":1e1234567890}`)); err == nil {
+		t.Fatal("a 10-digit exponent was accepted")
+	}
+	if got, err := Canonical(json.RawMessage(`{"n":1e123456789,"m":1000.00000000000000000000000000000000000000000000000000000000000000000}`)); err != nil ||
+		!strings.Contains(string(got), "1000.0000") {
+		t.Fatalf("ordinary long numbers: %s %v", got, err)
+	}
 }

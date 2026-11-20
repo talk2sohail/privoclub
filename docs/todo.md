@@ -550,8 +550,8 @@ Tasks and the tests that name them:
 - [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
 
 ## F09. Policies
-Status: In progress (core done, reviewed)
-ADRs: 0001, 0011, 0014
+Status: In progress (core done, reviewed; second slice built 2026-11-20, ported onto main as 0.15.0 on 2026-11-21, ADR 0027 proposed)
+ADRs: 0001, 0011, 0014, 0027
 
 - [x] Allow, deny, ask rules by server alias, tool pattern, subject (`*`, `role:`, `token:`); priority, ties deny > ask > allow; expiring rules (`internal/policy`)
 - [x] Own glob matcher where `*` covers any characters, including `/`
@@ -560,11 +560,58 @@ ADRs: 0001, 0011, 0014
 - [x] Annotations tighten defaults only (explicit destructiveHint means ask)
 - [x] Admin API: list, create, delete rules, apply presets, set default; every change audited
 - [x] Rules removed with their server
-- [ ] Export and import as YAML
 - [ ] Cross-server flow rule (source and sink tags)
 - [ ] Admin overrides of annotations shown to clients
 - [ ] Cache rules per org with invalidation (now read per call)
-- [ ] Argument conditions in rules
+
+### Second slice: conditions on arguments, safer grants, YAML (2026-11-20)
+
+ADR 0027. Goal: rules about what a call does, not only which tool it is;
+grants that can never outrank a deny; rules kept in Git.
+
+Acceptance:
+1. A rule may carry up to 8 conditions on the call's arguments (`equals`,
+   `not_equals`, `in`, `matches` a glob, `exists`, `missing`), all of which
+   must hold. "Deny `delete_repo` when `repo` is `prod`" denies that call
+   and leaves `sandbox` to the other rules.
+2. Conditions read the canonical arguments, the ones sent upstream. A value
+   of another type or a missing path never satisfies `equals`, `in` or
+   `matches`.
+3. A grant (F10) turns an ask into allow and never a deny into allow,
+   whatever the deny's rank or conditions.
+4. Rules export as YAML and import back (`merge` or `replace`, `dry_run`),
+   refused whole when a rule is invalid or names something unknown.
+5. The Rules page shows each rule's conditions, lets an admin add them, and
+   offers export and import.
+
+Threat note:
+- Conditions read exactly what runs upstream. Numbers compare by exact value
+  at any length. An argument of another type than the rule's value is
+  unsure, since servers often read "1" as 1 or "yes" as true: an unsure
+  deny or ask applies, an unsure allow does not. Case-insensitive names need
+  the "any case" tests. Allow-lists fail closed by construction (security
+  review 2026-11-20).
+- No regular expressions: `matches` is the rules' own glob, so a rule
+  cannot be made to take unbounded time.
+- Import runs in one transaction and only for `policy.manage`. A replace
+  never deletes grants; the dry run changes nothing.
+
+Tasks and the tests that name them:
+
+- [x] Spec (this section) and ADR 0027
+- [x] Policy: `Condition` (`Valid`, `Holds`), `Request.Args`; grants evaluated after the rest and only over an ask
+  - tests: `TestConditions` (each operator, types never mix, numbers by value, a huge exponent compared as written, nested and missing paths), `TestConditionValidation`, `TestGrantOnlyReplacesAsk` (a conditioned deny tied with an ask still wins over a grant at any rank; no ask, nothing to replace; another member's grant does nothing), `TestUnreadableConditionsFailClosed`
+- [x] Store: migration `00014_rule_conditions.sql` (`policies.conditions` JSON, `policies.grant_of`); `ImportPolicies` (one transaction, replace keeps grants, default set with it)
+  - tests: `TestPolicyConditionsRoundTrip`, `TestImportPoliciesKeepsGrants` (a refused import changes neither rules nor default)
+- [x] Gateway: the canonical arguments go to the decision; a grant is checked against the approved call's own arguments
+  - tests: in the acceptance test below
+- [x] Admin API: `conditions` on create and list; F10 grants carry `grant_of`; `GET /api/v1/policies/export`, `POST /api/v1/policies/import`
+  - tests: `TestCreateRuleWithConditions`, `TestPoliciesExportImport` (a member's rule exports as `person:`, grants left out, dry run changes nothing, replace keeps grants, merge adds, unknown team, unknown person, bad condition, unknown field, bad version and bad YAML refuse all in dry run and for real, approvers refused, audited); `TestApproveWithGrant` and `TestGrantRefusedWhenRulesChanged` now check the grant mark instead of a rank
+- [x] App: conditions shown and added on Rules (a person's way of typing values: JSON when it is JSON, else text; a comma list for "is one of"); grants labelled; export and import with a check first
+  - tests (Vitest): `pages.test.tsx` rules (a condition shown and sent, import checked before applied); 50/50
+- [x] Acceptance: `TestRulesOnArguments` (a deny on `text = secret` refuses that call while others ask; a grant lets the others through and not that one; the rules survive a YAML round trip)
+- [x] Docs: README, `docs/manual-test.md` section 17, version 0.15.0
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f09-policies-security-review.md`): two Medium findings, both fixed. Long numbers were compared as text (`42.000…0` missed "42"): numbers now compare by exact value at any length and arguments refuse exponents beyond 9 digits (`TestConditions`, `TestCanonicalRefusesHugeExponents`). Servers coerce types and ignore case: an argument of another type is unsure and fails closed, and "any case" tests exist (`TestUnsureFailsClosed`). Also acted on: a grant lifts asks up to the rank it was made over, never a higher one (`TestGrantCoversItsRankOnly`); condition values keep exact numbers from JSON (`TestConditionNumbersStayExact`); grants made before migration 11 are marked (`TestMigrationMarksOldGrants`); the dry run checks members; an export leaves out rules for removed members
 
 ## F10. Approvals
 Status: In progress (core done, reviewed)

@@ -144,7 +144,7 @@ func TestInviteCarriesRoleSet(t *testing.T) {
 func TestUserRolesMigration(t *testing.T) {
 	ctx := context.Background()
 	s, org := signinOrg(t)
-	provider, err := goose.NewProvider(goose.DialectSQLite3, s.w, mustSub(migrations, "migrations"))
+	provider, err := goose.NewProvider(goose.DialectSQLite3, s.w, migrationFiles())
 	if err != nil {
 		t.Fatal(err)
 	}
