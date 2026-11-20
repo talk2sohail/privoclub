@@ -429,7 +429,7 @@ func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *s
 		opts.AuthServer = conn.authServer
 	}
 	if len(opts.Missing) == 0 {
-		opts.GitHub = &githubauth.Client{ClientID: webCfg.ClientID, ClientSecret: webCfg.ClientSecret.Reveal(), BaseURL: webCfg.BaseURL, APIURL: webCfg.APIURL,
+		opts.GitHub = &githubauth.Client{ClientID: webCfg.ClientID, ClientSecret: webCfg.ClientSecret.Reveal(), BaseURL: webCfg.BaseURL, APIURL: webCfg.APIURL, OrgIDs: webCfg.OrgIDs,
 			HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1})}
 	}
 	site := web.New(opts)

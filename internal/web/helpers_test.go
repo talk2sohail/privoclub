@@ -91,6 +91,10 @@ type fakeGitHub struct {
 	profiles     int
 	issuedTokens []string
 	issuedCodes  []string
+	// wantScope is the scope sign-in must ask for ("" for none); orgs are
+	// each user's organisation ids, for /user/orgs (F05 A).
+	wantScope string
+	orgs      map[int64][]int64
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -98,6 +102,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /login/oauth/access_token", f.accessToken)
 	mux.HandleFunc("GET /api/user", f.user)
+	mux.HandleFunc("GET /api/user/orgs", f.userOrgs)
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)
 	return f
@@ -126,8 +131,8 @@ func (f *fakeGitHub) authorize(location string, u ghUser) (code, state string) {
 		q.Get("state") == "" || q.Get("allow_signup") != "false" || q.Get("redirect_uri") == "" {
 		f.t.Fatalf("authorize parameters: %v", q)
 	}
-	if _, has := q["scope"]; has {
-		f.t.Fatalf("a scope was requested: %v", q)
+	if got, has := q["scope"]; (has || f.wantScope != "") && (len(got) != 1 || got[0] != f.wantScope) {
+		f.t.Fatalf("scope %v requested, want %q", got, f.wantScope)
 	}
 	if strings.Contains(location, ghClientSecret) {
 		f.t.Fatal("the client secret is in the authorization URL")
@@ -172,6 +177,30 @@ func (f *fakeGitHub) user(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = w.Write([]byte(u.json()))
+}
+
+func (f *fakeGitHub) userOrgs(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	u, ok := f.tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+	if !ok {
+		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+		return
+	}
+	if r.URL.Query().Get("page") != "1" {
+		_, _ = w.Write([]byte(`[]`))
+		return
+	}
+	var b strings.Builder
+	b.WriteString("[")
+	for i, id := range f.orgs[u.ID] {
+		if i > 0 {
+			b.WriteString(",")
+		}
+		fmt.Fprintf(&b, `{"login":"org%d","id":%d}`, id, id)
+	}
+	b.WriteString("]")
+	_, _ = w.Write([]byte(b.String()))
 }
 
 // ---- a mini browser: a cookie store over a handler

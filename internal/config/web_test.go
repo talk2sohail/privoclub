@@ -72,6 +72,8 @@ func TestWebSettingsLimits(t *testing.T) {
 		{"PRIVO_GITHUB_CLIENT_ID", "id\nwith-newline"},
 		{"PRIVO_GITHUB_CLIENT_SECRET", "two words"},
 		{"PRIVO_GITHUB_CLIENT_SECRET", strings.Repeat("x", 300)},
+		{"PRIVO_GITHUB_ORG_IDS", "acme"},  // names are not ids
+		{"PRIVO_GITHUB_ORG_IDS", "42,-1"}, // nor are negative numbers
 	} {
 		_, err := LoadWeb(env(map[string]string{tc.name: tc.value}))
 		if err == nil || !strings.Contains(err.Error(), tc.name) {
@@ -239,5 +241,16 @@ func TestOAuthServerSettings(t *testing.T) {
 		if _, err := LoadWeb(env(bad)); err == nil {
 			t.Errorf("%s: an unknown value was accepted", name)
 		}
+	}
+}
+
+// F05 A: sign-in limited to GitHub organisations, by numeric id.
+func TestGitHubOrgIDs(t *testing.T) {
+	w, err := LoadWeb(env(map[string]string{"PRIVO_GITHUB_ORG_IDS": " 42, 7 ,42"}))
+	if err != nil || len(w.OrgIDs) != 2 || w.OrgIDs[0] != 42 || w.OrgIDs[1] != 7 {
+		t.Fatalf("org ids %v, %v", w.OrgIDs, err)
+	}
+	if w, _ := LoadWeb(env(map[string]string{})); len(w.OrgIDs) != 0 {
+		t.Fatalf("unset gave %v", w.OrgIDs)
 	}
 }

@@ -49,7 +49,7 @@ func join(t *testing.T, g *gateway, gh *acceptanceGitHub, boss *person, name str
 	if cb, _ := p.signInThroughGitHub(start); cb.Header.Get("Location") != "/admin/start" {
 		t.Fatalf("%s lands on %q, want /admin/start", name, cb.Header.Get("Location"))
 	}
-	// Token names are unique in the org, not per person (see docs/todo.md F26).
+	// Token names are unique per person since 0.17.0; the person's name keeps tests readable.
 	code, tok := p.app(http.MethodPost, "/v1/me/tokens", map[string]any{"name": "claude-code-" + name}, nil)
 	token, _ := tok["token"].(string)
 	if code != http.StatusCreated || token == "" {

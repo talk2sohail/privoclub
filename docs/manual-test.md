@@ -395,3 +395,15 @@ proxy that checks a header will do.
    **Activity → Admin changes**: `upstream.disconnect:<server>:<person>`.
 4. Signed in as a member: no **Everyone's connections** section.
 
+## 24. Sign-in limited to a GitHub organisation (needs 0.19.0+ and the second account)
+
+1. Find your organisation's id: `curl https://api.github.com/orgs/<name>`,
+   field `id`. Set `PRIVO_GITHUB_ORG_IDS=<id>` in Coolify and redeploy.
+2. Sign out and in again: GitHub asks to let Privo read your organisations.
+   If the organisation restricts OAuth App access, approve Privo's app for it
+   (organisation settings → Third-party access) or you are refused.
+3. Invite a GitHub account that is not in the organisation and open the
+   link with it: "This GitHub account cannot sign in", naming the
+   organisation. **Activity → Admin changes**: `signin.refused:not_in_org`.
+4. Unset the variable and redeploy: sign-in asks for no scope again.
+
