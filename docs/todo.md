@@ -443,7 +443,7 @@ Tasks and the tests that name them:
 
 ## F09. Policies
 Status: In progress (core done, reviewed)
-ADRs: 0001, 0011, 0014
+ADRs: 0001, 0011, 0014, 0024
 
 - [x] Allow, deny, ask rules by server alias, tool pattern, subject (`*`, `role:`, `token:`); priority, ties deny > ask > allow; expiring rules (`internal/policy`)
 - [x] Own glob matcher where `*` covers any characters, including `/`
@@ -452,11 +452,53 @@ ADRs: 0001, 0011, 0014
 - [x] Annotations tighten defaults only (explicit destructiveHint means ask)
 - [x] Admin API: list, create, delete rules, apply presets, set default; every change audited
 - [x] Rules removed with their server
-- [ ] Export and import as YAML
 - [ ] Cross-server flow rule (source and sink tags)
 - [ ] Admin overrides of annotations shown to clients
 - [ ] Cache rules per org with invalidation (now read per call)
-- [ ] Argument conditions in rules
+
+### Second slice: conditions on arguments, safer grants, YAML (2026-11-20)
+
+ADR 0024. Goal: rules about what a call does, not only which tool it is;
+grants that can never outrank a deny; rules kept in Git.
+
+Acceptance:
+1. A rule may carry up to 8 conditions on the call's arguments (`equals`,
+   `not_equals`, `in`, `matches` a glob, `exists`, `missing`), all of which
+   must hold. "Deny `delete_repo` when `repo` is `prod`" denies that call
+   and leaves `sandbox` to the other rules.
+2. Conditions read the canonical arguments, the ones sent upstream. A value
+   of another type or a missing path never satisfies `equals`, `in` or
+   `matches`.
+3. A grant (F10) turns an ask into allow and never a deny into allow,
+   whatever the deny's rank or conditions.
+4. Rules export as YAML and import back (`merge` or `replace`, `dry_run`),
+   refused whole when a rule is invalid or names something unknown.
+5. The Rules page shows each rule's conditions, lets an admin add them, and
+   offers export and import.
+
+Threat note:
+- Conditions read exactly what runs upstream, so the shape of an argument
+  cannot make a deny miss while the call still goes through.
+- No regular expressions: `matches` is the rules' own glob, so a rule
+  cannot be made to take unbounded time.
+- Import runs in one transaction and only for `policy.manage`. A replace
+  never deletes grants; the dry run changes nothing.
+
+Tasks and the tests that name them:
+
+- [ ] Spec (this section) and ADR 0024
+- [ ] Policy: `Condition` (`Valid`, `Holds`), `Request.Args`; grants evaluated after the rest and only over an ask
+  - tests: `TestConditions` (each operator, types, nested paths, missing paths), `TestConditionValidation`, `TestGrantOnlyReplacesAsk` (a conditioned deny below a grant still wins)
+- [ ] Store: migration `00011_rule_conditions.sql` (`policies.conditions` JSON, `policies.grant_of`); `ReplacePolicies` (one transaction)
+  - tests: `TestPolicyConditionsRoundTrip`, `TestReplacePoliciesKeepsGrants`
+- [ ] Gateway: the canonical arguments go to the decision
+  - tests: in the acceptance test below
+- [ ] Admin API: `conditions` on create and list; F10 grants carry `grant_of`; `GET /api/v1/policies/export`, `POST /api/v1/policies/import`
+  - tests: `TestCreateRuleWithConditions`, `TestPoliciesExportImport` (round trip, merge, replace keeps grants, dry run, unknown team or member refuses all, members refused)
+- [ ] App: conditions shown and added on Rules; export and import
+  - tests (Vitest): a condition is sent with a new rule; import shows the dry run before applying
+- [ ] Acceptance: `TestRulesOnArguments` (a deny on `text = secret` refuses that call and lets others run; a grant does not lift it)
+- [ ] Docs: README, `docs/manual-test.md`, version; security review
 
 ## F10. Approvals
 Status: In progress (core done, reviewed)
