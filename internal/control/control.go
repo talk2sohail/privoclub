@@ -227,7 +227,8 @@ type serverView struct {
 
 // view describes a server. Members and auditors see neither the full target
 // (URLs often carry keys) nor connection errors (they can contain them).
-func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams []string) serverView {
+// acc is the caller's access when they do not manage servers, nil otherwise.
+func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams []string, acc *store.Access) serverView {
 	admin := p.Can(auth.PermManageServers)
 	v := serverView{ID: s.ID, Alias: s.Alias, Transport: s.Transport, Enabled: s.Enabled, Status: upstream.StatusConnecting, Items: map[string]int{}}
 	if admin {
@@ -256,8 +257,13 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams 
 		}
 		pins, _ := a.Store.PinStatuses(ctx, p.OrgID, s.ID)
 		for _, it := range st.Items {
+			// Others count only the tools their teams let them see (ADR 0023),
+			// so a narrowed team does not learn how many are hidden.
+			if acc != nil && it.Kind == upstream.KindTool && !acc.SeesTool(s.ID, it.Name) {
+				continue
+			}
 			v.Items[it.Kind]++
-			if pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinPending {
+			if admin && pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinPending {
 				v.Pending++
 			}
 		}
@@ -292,7 +298,11 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request, p auth.Princip
 	out := make([]serverView, 0, len(servers))
 	for _, s := range servers {
 		if admin || acc.Reaches(s.ID) {
-			v := a.view(r.Context(), p, s, st[s.ID])
+			var mine *store.Access
+			if !admin {
+				mine = &acc
+			}
+			v := a.view(r.Context(), p, s, st[s.ID], mine)
 			v.TeamTools = tt[s.ID]
 			out = append(out, v)
 		}
@@ -487,7 +497,7 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	// Report the first connection result, so the admin sees the status and
 	// how many items wait for review in the response.
 	a.Upstream.WaitSettled(ctx, srv.ID, ConnectWait)
-	writeJSON(w, http.StatusCreated, map[string]any{"server": a.view(ctx, p, srv, srv.Teams)})
+	writeJSON(w, http.StatusCreated, map[string]any{"server": a.view(ctx, p, srv, srv.Teams, nil)})
 	return nil
 }
 
@@ -562,7 +572,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": a.view(r.Context(), p, s, st[s.ID])})
+	writeJSON(w, http.StatusOK, map[string]any{"server": a.view(r.Context(), p, s, st[s.ID], nil)})
 	return nil
 }
 
@@ -1339,8 +1349,8 @@ func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval
 	if err != nil {
 		return store.Policy{}, err
 	}
-	if !acc.Reaches(ap.ServerID) || (tok.UserID != "" && !auth.RolesCan(acc.Roles, auth.PermUseGateway)) {
-		return refuse("The person who asked no longer reaches this server.")
+	if !acc.SeesTool(ap.ServerID, ap.Tool) || (tok.UserID != "" && !auth.RolesCan(acc.Roles, auth.PermUseGateway)) {
+		return refuse("The person who asked no longer sees this tool.")
 	}
 	pin, err := a.Store.PinDefinition(ctx, p.OrgID, ap.ServerID, store.PinKey{Kind: upstream.KindTool, Name: ap.Tool, Hash: ap.PinHash})
 	if errors.Is(err, store.ErrNotFound) || (err == nil && pin.Status != store.PinAccepted) {

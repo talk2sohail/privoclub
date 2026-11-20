@@ -240,7 +240,7 @@ function Toolsets({ srv, tools }: { srv: ServerView; tools: string[] }) {
       <h2>Which tools each team sees</h2>
       <p class="meta">
         A team sees all of this server's tools unless you choose some. A person in several teams sees what any of them sees. New tools stay hidden from a
-        team that sees only some, until you choose them.
+        team that sees only some, until you choose them. Prompts and resources are not narrowed: every team on the server sees them.
       </p>
       {(srv.teams ?? []).map((slug) => (
         <TeamToolset key={slug} alias={srv.alias} slug={slug} name={names.get(slug) ?? slug} saved={srv.team_tools?.[slug] ?? null} tools={tools} />

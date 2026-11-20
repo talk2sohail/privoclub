@@ -393,7 +393,7 @@ until URL elicitation lands.
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ## F08. Toolsets
-Status: In progress (first slice built 2026-11-20, 0.11.0; ADR 0023 proposed; security review and the owner's walkthrough, `docs/manual-test.md` section 13, open)
+Status: In progress (first slice built and reviewed 2026-11-20, 0.11.0; ADR 0023 proposed; the owner's walkthrough, `docs/manual-test.md` section 13, open)
 ADRs: 0020, 0023
 
 Goal: an admin gives a team some of a server's tools rather than all of
@@ -438,7 +438,7 @@ Tasks and the tests that name them:
   - tests (Vitest): `pages.test.tsx` toolsets (a saved name the server no longer offers is shown, choosing tools sends the list, back to all sends null); 48/48
 - [x] Acceptance: `TestToolsetsLimitWhatATeamSees` (a designer lists the one chosen tool while a developer lists both; a call on the hidden one answers like an unknown name; Start counts what the designer sees; a new choice applies once the client's short-lived list is refreshed; members cannot change it)
 - [x] Docs: README, `docs/manual-test.md` section 13, version 0.11.0
-- [ ] Security review
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f08-toolsets-security-review.md`): no findings at 0.8 or above. Acted on: the server list counts for members only the tools they see; a grant needs the requester to still see the tool; the server page says prompts and resources are not narrowed
 - [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
 
 ## F09. Policies

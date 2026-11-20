@@ -81,6 +81,14 @@ func TestToolsetsLimitWhatATeamSees(t *testing.T) {
 			t.Fatalf("start counts %v tools of kit for ada", s["tools"])
 		}
 	}
+	// The server list counts only what ada sees, so she does not learn how
+	// many tools are hidden (security review 2026-11-20).
+	_, servers := ada.app(http.MethodGet, "/v1/servers", nil, nil)
+	for _, s := range list(servers, "servers") {
+		if items, _ := s["items"].(map[string]any); s["alias"] == "kit" && items["tool"] != float64(1) {
+			t.Fatalf("the server list counts %v tools of kit for ada", items["tool"])
+		}
+	}
 	// A new choice applies to the next request.
 	if code, _ := boss.app(http.MethodPatch, "/v1/servers/kit/teams/designers", map[string]any{"tools": []string{"shout"}}, nil); code != http.StatusOK {
 		t.Fatal("change")
