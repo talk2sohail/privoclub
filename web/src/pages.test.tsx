@@ -194,7 +194,7 @@ describe("approvals", () => {
     await screen.findByText("delete_repo");
     expect(document.querySelector("pre")!.textContent).toBe(JSON.stringify({ repo: evil }, null, 2));
     expect(document.querySelector("img")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Approve this call" }));
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
     await waitFor(() => expect(srv.writes().map((c) => c.url)).toEqual(["/admin/api/v1/approvals/a1/approve"]));
     await screen.findByText("Approved. The call can go ahead.");
   });
@@ -208,9 +208,79 @@ describe("approvals", () => {
       "POST /admin/api/v1/approvals/a2/deny": () => [403, { error: "you cannot decide your own request" }],
     });
     await screen.findByText(/can only be denied/);
-    expect(screen.queryByRole("button", { name: "Approve this call" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Deny" }));
     await screen.findByText("you cannot decide your own request");
+  });
+  // F10: approving can also allow the tool for a while; more pages load on
+  // demand; decided requests are in History.
+  it("approves with a grant", async () => {
+    at("/admin/approvals");
+    const srv = await start(session("approver"), {
+      "GET /admin/api/v1/approvals?status=pending": {
+        approvals: [{ id: "a3", status: "pending", tool: "merge", server: "github", requester: "laptop", requester_person: "grace", reason: "", arguments: {} }],
+      },
+      "POST /admin/api/v1/approvals/a3/approve": { approval: { id: "a3" }, grant: { id: "r1" } },
+    });
+    await screen.findByText("merge");
+    fireEvent.change(screen.getByLabelText("Allow for grace"), { target: { value: "1h" } });
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]!.body).toEqual({ grant: "1h" });
+    await screen.findByText("Approved, and grace may use this tool for 1 hour without asking.");
+  });
+
+  it("loads more waiting requests and shows the history", async () => {
+    at("/admin/approvals");
+    const one = (id: string, extra = {}) => ({ id, status: "pending", tool: "t-" + id, server: "s", requester: "r", requester_person: "ada", reason: "", arguments: {}, ...extra });
+    await start(session("approver"), {
+      "GET /admin/api/v1/approvals?status=pending": { approvals: [one("p1")], next: "c1" },
+      "GET /admin/api/v1/approvals?status=pending&before=c1": { approvals: [one("p2")], next: "" },
+      "GET /admin/api/v1/approvals?status=history": {
+        approvals: [one("h1", { status: "withdrawn", decided_by: "ada (user u-1)" }), one("h2", { status: "consumed", decided_by: "bob (user u-2)" })],
+        next: "",
+      },
+    });
+    await screen.findByText("t-p1");
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await screen.findByText("t-p2");
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "History" }));
+    await screen.findByText("withdrawn");
+    expect(screen.getByText("approved and used")).toBeTruthy();
+    expect(screen.getByText("by bob")).toBeTruthy();
+    expect(document.querySelector("pre")).toBeNull();
+  });
+});
+
+describe("own request where self-approval is allowed", () => {
+  it("offers approving it, but no grant", async () => {
+    at("/admin/approvals");
+    await start(session("approver"), {
+      "GET /admin/api/v1/approvals?status=pending": {
+        approvals: [{ id: "a4", status: "pending", tool: "merge", server: "github", requester: "laptop", requester_person: "ada", reason: "", arguments: {}, own: true }],
+      },
+    });
+    await screen.findByRole("button", { name: "Approve" });
+    expect(screen.queryByLabelText("Allow for ada")).toBeNull();
+  });
+});
+
+describe("own requests", () => {
+  it("lists a person's waiting requests on Start and withdraws one", async () => {
+    at("/admin/start");
+    const srv = await start(session("member"), {
+      "GET /admin/api/v1/me/tools": { teams: [], servers: [] },
+      "GET /admin/api/v1/me/tokens": { tokens: [] },
+      "GET /admin/api/v1/me/approvals": {
+        approvals: [{ id: "a9", server: "github", tool: "merge", requester: "laptop", reason: "", created_at: "2026-11-20T10:00:00Z", expires_at: "2026-11-20T10:10:00Z" }],
+      },
+      "POST /admin/api/v1/me/approvals/a9/withdraw": { withdrawn: "a9" },
+    });
+    await screen.findByText("Waiting for approval");
+    fireEvent.click(screen.getByRole("button", { name: "Withdraw" }));
+    await waitFor(() => expect(srv.writes().map((c) => c.url)).toEqual(["/admin/api/v1/me/approvals/a9/withdraw"]));
+    await screen.findByText("Withdrawn. If your AI client calls again, it asks again.");
   });
 });
 
@@ -277,7 +347,7 @@ describe("own approvals", () => {
       },
     });
     await screen.findByText("This is your own request. Another approver decides it.");
-    expect(screen.queryByRole("button", { name: "Approve this call" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
   });
 });

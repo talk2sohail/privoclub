@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 )
 
@@ -99,6 +100,18 @@ func (s *Store) ListPins(ctx context.Context, org OrgID, serverID string) ([]Pin
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// PinDefinition returns one recorded definition and its status, or
+// ErrNotFound.
+func (s *Store) PinDefinition(ctx context.Context, org OrgID, serverID string, k PinKey) (Pin, error) {
+	p := Pin{ServerID: serverID, Kind: k.Kind, Name: k.Name, Hash: k.Hash}
+	err := s.r.QueryRowContext(ctx, `SELECT definition, status FROM pins WHERE org_id = ? AND server_id = ? AND kind = ? AND name = ? AND hash = ?`,
+		org, serverID, k.Kind, k.Name, k.Hash).Scan(&p.Definition, &p.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return p, ErrNotFound
+	}
+	return p, err
 }
 
 // PinStatuses returns status by (kind, name, hash) for a server.

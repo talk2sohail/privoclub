@@ -181,9 +181,10 @@ func (g *Gateway) access(ctx context.Context, p auth.Principal) (store.Access, e
 	return acc, nil
 }
 
-// callerRoles are the roles rules see (ADR 0025): a member's current roles,
+// CallerRoles are the roles rules see (ADR 0025): a member's current roles,
 // read with their access, or the token's own role when no member is behind it.
-func callerRoles(p auth.Principal, acc store.Access) []string {
+// The admin API uses it to check a grant against the rules (F10).
+func CallerRoles(p auth.Principal, acc store.Access) []string {
 	if p.UserID != "" {
 		return acc.Roles
 	}
@@ -338,7 +339,7 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	}
 	// Rules match tools, prompts and resources alike by upstream name, so a
 	// server-wide deny or a default deny covers everything the server offers.
-	dec := policy.Evaluate(rules, policy.Request{Roles: callerRoles(c.p, acc), TokenID: c.p.TokenID, Teams: acc.Teams, Server: c.item.Alias, Tool: c.item.Name,
+	dec := policy.Evaluate(rules, policy.Request{Roles: CallerRoles(c.p, acc), TokenID: c.p.TokenID, UserID: c.p.UserID, Teams: acc.Teams, Server: c.item.Alias, Tool: c.item.Name,
 		PinHash: c.item.Hash, Annotations: ann}, def, time.Now())
 	switch dec.Action {
 	case store.ActionAllow:
@@ -360,7 +361,7 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	gated := time.Now()
 	out, err := g.Approval.Gate(ctx, approval.Request{Org: c.p.OrgID, RequesterID: c.p.TokenID, RequesterName: c.p.Name,
 		RequesterPerson: c.p.Person, ServerID: c.item.ServerID, ServerAlias: c.item.Alias, Tool: c.item.Name, ArgsDigest: digest,
-		Args: c.args, Reason: dec.Reason})
+		Args: c.args, Reason: dec.Reason, RuleID: dec.RuleID, PinHash: c.item.Hash})
 	if errors.Is(err, approval.ErrTooManyPending) {
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "too_many_pending")
 		return decision{}, &refusal{msg: "Too many of your calls are already waiting for approval. Wait for decisions before asking again.", class: "too_many_pending"}
@@ -371,6 +372,9 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	switch out.Result {
 	case approval.Approved:
 		return decision{label: "approved:" + out.ID, approvalID: out.ID, approvedBy: out.DecidedBy, waited: time.Since(gated)}, nil
+	case approval.Withdrawn:
+		g.recordRefusal(ctx, c, callID, store.ActionAsk, "withdrawn_by_requester")
+		return decision{}, &refusal{msg: "This request was withdrawn in Privo. Call again to ask for approval anew."}
 	case approval.Denied:
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "denied_by_approver")
 		return decision{}, &refusal{msg: "A person denied this exact call. Do not retry it unchanged.", class: "denied_by_approver"}

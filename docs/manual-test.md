@@ -227,3 +227,22 @@ proxy that checks a header will do.
 6. **Activity → Admin changes**: `pins.accept:1:tool/<name>@<hash>`,
    `pins.block:1:…` and `pins.accept:1:…` again, each naming the tool and the
    start of its hash, with the server.
+
+## 15. Approvals people live with (needs 0.13.0+ and the second account)
+
+1. Make sure a rule asks before a tool (as in 3). From the second account's
+   AI client, call it. As the second account, open **Start**: expect
+   **Waiting for approval** with that call. **Withdraw** it. Expect the AI
+   client's next identical call to ask again (a new request).
+2. As the owner, open **Approvals**. Next to **Approve**, choose **Allow:
+   this tool for 1 hour** → **Approve**. Expect "Approved, and <person> may
+   use this tool for 1 hour without asking." The AI client's call goes
+   through, and so do its next calls of that tool with other arguments.
+3. **Rules**: a new allow rule for that person, "until" an hour from now,
+   with the note "Allowed for … from approval …". Delete it: the next call
+   asks again.
+4. **Approvals → History**: the approved and the withdrawn requests, with
+   who decided, and no arguments. With more than 50 waiting, **Load more**
+   appears at the bottom of **Waiting**.
+5. **Activity → Admin changes**: `approval.withdraw:…` by the second
+   account, `approval.approve:…` and `policy.grant:…` by you.
