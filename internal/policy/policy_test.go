@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -109,7 +110,7 @@ func TestValidation(t *testing.T) {
 			t.Errorf("%q rejected", s)
 		}
 	}
-	for _, s := range []string{"", "role:king", "token:", "user:x"} {
+	for _, s := range []string{"", "role:king", "token:", "user:", "person:x"} {
 		if ValidSubject(s) {
 			t.Errorf("%q accepted", s)
 		}
@@ -188,6 +189,28 @@ func TestTeamSubject(t *testing.T) {
 	}
 	if d := Evaluate(rules, Request{Server: "notion", Tool: "delete_page"}, "allow", now); d.Action != "allow" {
 		t.Fatalf("a caller in no team matched team:everyone: %s", d.Action)
+	}
+}
+
+func TestValidSubjectUser(t *testing.T) {
+	if !ValidSubject("user:01abc") || ValidSubject("user:") || ValidSubject("user:"+strings.Repeat("x", 200)) {
+		t.Fatal("user subjects")
+	}
+}
+
+// F10: a rule for one member matches that member's calls only, never a
+// caller without a member.
+func TestUserSubject(t *testing.T) {
+	now := time.Now()
+	rules := []store.Policy{rule("g", "github", ExactTool("merge*"), "user:u-ada", "allow", 1), rule("k", "*", "*", "*", "ask", 0)}
+	ada := Request{UserID: "u-ada", Server: "github", Tool: "merge*"}
+	if d := Evaluate(rules, ada, "allow", now); d.Action != "allow" || d.RuleID != "g" {
+		t.Fatalf("ada: %+v", d)
+	}
+	for _, req := range []Request{{UserID: "u-bob", Server: "github", Tool: "merge*"}, {Server: "github", Tool: "merge*"}, {UserID: "u-ada", Server: "github", Tool: "merge_all"}} {
+		if d := Evaluate(rules, req, "allow", now); d.Action != "ask" {
+			t.Errorf("%+v: %+v", req, d)
+		}
 	}
 }
 

@@ -49,3 +49,10 @@ table.list tr.level-warn td:nth-child(2) { font-weight: 600; }
   table.list.stats td[data-label]::before { content: attr(data-label); color: var(--muted); }
 }
 .definition .hidden-warning { color: var(--danger); font-weight: 600; margin: 0 0 6px; }
+.pins { list-style: none; padding: 0; margin: 8px 0 12px; display: grid; gap: 12px; }
+.pin { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.badge.warn { background: var(--danger); color: var(--accent-text); margin-left: 6px; }
+.findings { margin: 8px 0; padding-left: 20px; }
+.findings li { margin: 4px 0; }
+.findings li.warn strong { color: var(--danger); }
+.findings .excerpt { display: block; margin-top: 2px; padding: 4px 8px; background: var(--code-bg); border-radius: 4px; white-space: pre-wrap; word-break: break-word; }

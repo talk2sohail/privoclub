@@ -1,11 +1,49 @@
+import { useState } from "preact/hooks";
 import { api, seg } from "../api";
 import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
-import type { Policy, ServerView } from "../types";
-import { Empty, ErrorLine, Loading, formValues, useAction, when } from "../ui";
+import type { Condition, Policy, ServerView } from "../types";
+import { Copy, Empty, ErrorLine, Loading, formValues, useAction, when } from "../ui";
 
-export function subjectLabel(sub: string): string {
+const opLabel: Record<string, string> = {
+  equals: "is",
+  equals_any_case: "is (any case)",
+  not_equals: "is not",
+  in: "is one of",
+  in_any_case: "is one of (any case)",
+  matches: "matches",
+  matches_any_case: "matches (any case)",
+  exists: "is given",
+  missing: "is not given",
+};
+
+/** conditionText reads a condition as a person would say it. */
+export function conditionText(c: Condition): string {
+  const v = c.op === "exists" || c.op === "missing" ? "" : " " + (Array.isArray(c.value) ? c.value.map((x) => JSON.stringify(x)).join(", ") : JSON.stringify(c.value));
+  return c.arg + " " + (opLabel[c.op] ?? c.op) + v;
+}
+
+/** parseValue reads what a person typed: JSON when it is JSON (numbers,
+ * true, "quoted"), otherwise the text itself; for "is one of", a comma list. */
+export function parseValue(op: string, raw: string): unknown {
+  const one = (s: string): unknown => {
+    const t = s.trim();
+    try {
+      return JSON.parse(t);
+    } catch {
+      return t;
+    }
+  };
+  if (op === "exists" || op === "missing") return undefined;
+  if (op === "in") return raw.split(",").map(one);
+  if (op === "in_any_case") return raw.split(",").map((x) => x.trim());
+  if (op === "matches" || op === "matches_any_case" || op === "equals_any_case") return raw.trim();
+  return one(raw);
+}
+
+export function subjectLabel(sub: string, person?: string): string {
   if (sub === "*") return "everyone";
+  if (sub.startsWith("user:")) return person || "a removed member";
   if (sub.startsWith("role:")) return sub.slice(5) + "s";
   if (sub.startsWith("token:")) return "token " + sub.slice(6);
   return sub;
@@ -13,7 +51,10 @@ export function subjectLabel(sub: string): string {
 
 const actionLabel: Record<string, string> = { allow: "allow", ask: "ask for approval", deny: "deny" };
 
+type Draft = { arg: string; op: string; value: string };
+
 export function Rules(_: PageProps) {
+  const [conds, setConds] = useState<Draft[]>([]);
   const res = useData<{ policies: Policy[]; default: string }>("/v1/policies");
   const servers = useData<{ servers: ServerView[] }>("/v1/servers");
   const [busy, run] = useAction();
@@ -37,8 +78,10 @@ export function Rules(_: PageProps) {
         subject: f.subject,
         action: f.action,
         note: (f.note ?? "").trim(),
+        conditions: conds.map((c) => ({ arg: c.arg.trim(), op: c.op, value: parseValue(c.op, c.value) })),
       });
       form.reset();
+      setConds([]);
       invalidate("/v1/policies");
     }, "Rule added.");
   };
@@ -95,12 +138,18 @@ export function Rules(_: PageProps) {
                     <td>{r.server === "*" ? "every server" : r.server}</td>
                     <td>
                       <code>{r.tool}</code>
+                      {(r.conditions ?? []).map((c, i) => (
+                        <div key={i}>
+                          <small class="meta">when {conditionText(c)}</small>
+                        </div>
+                      ))}
                     </td>
-                    <td>{subjectLabel(r.subject)}</td>
+                    <td>{subjectLabel(r.subject, r.subject_person)}</td>
                     <td>
                       <span class={"action " + r.action}>{actionLabel[r.action] ?? r.action}</span>
                     </td>
                     <td>
+                      {r.grant_of && <small class="meta">grant from an approval: replaces an ask, never a deny. </small>}
                       {r.note}
                       {r.expires_at && <small class="meta"> until {when(r.expires_at)}</small>}
                     </td>
@@ -153,6 +202,42 @@ export function Rules(_: PageProps) {
               <option value="allow">allow</option>
             </select>
           </label>
+          <fieldset>
+            <legend>Only when the call's arguments… (optional)</legend>
+            {conds.map((c, i) => (
+              <div class="row" key={i}>
+                <input aria-label={"Argument " + (i + 1)} placeholder="argument, e.g. repo" value={c.arg} onInput={(e) => setConds(conds.map((x, j) => (j === i ? { ...x, arg: (e.currentTarget as HTMLInputElement).value } : x)))} />
+                <select aria-label={"Test " + (i + 1)} value={c.op} onChange={(e) => setConds(conds.map((x, j) => (j === i ? { ...x, op: (e.currentTarget as HTMLSelectElement).value } : x)))}>
+                  {Object.entries(opLabel).map(([op, label]) => (
+                    <option key={op} value={op}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                {c.op !== "exists" && c.op !== "missing" && (
+                  <input
+                    aria-label={"Value " + (i + 1)}
+                    placeholder={c.op === "in" ? "a, b, c" : c.op === "matches" ? "release/*" : "value"}
+                    value={c.value}
+                    onInput={(e) => setConds(conds.map((x, j) => (j === i ? { ...x, value: (e.currentTarget as HTMLInputElement).value } : x)))}
+                  />
+                )}
+                <button type="button" class="link" onClick={() => setConds(conds.filter((_, j) => j !== i))}>
+                  Remove
+                </button>
+              </div>
+            ))}
+            {conds.length < 8 && (
+              <button type="button" class="link" onClick={() => setConds([...conds, { arg: "", op: "equals", value: "" }])}>
+                Add a condition
+              </button>
+            )}
+            <p class="meta">
+              All conditions must hold. They read the arguments as sent to the server. When an argument has another type than your value ("1" for 1),
+              a deny or ask still applies and an allow does not, since many servers read them alike. For names a server reads without case (a
+              repository, a host), use an "any case" test. The tool's page lists its inputs.
+            </p>
+          </fieldset>
           <label>
             Note <small class="meta">optional, why this rule exists</small>
             <input name="note" maxLength={500} />
@@ -164,6 +249,79 @@ export function Rules(_: PageProps) {
           </div>
         </form>
       </section>
+      <RulesFile />
     </>
+  );
+}
+
+// RulesFile exports the rules as YAML and imports a file, after a dry run
+// that says what would change (ADR 0027).
+function RulesFile() {
+  const [exported, setExported] = useState("");
+  const [text, setText] = useState("");
+  const [mode, setMode] = useState("merge");
+  const [plan, setPlan] = useState<{ add: number; delete: number; default: string } | null>(null);
+  const [busy, run] = useAction();
+  const doExport = () =>
+    void run(async () => {
+      const out = await api<{ yaml: string }>("GET", "/v1/policies/export");
+      setExported(out.yaml);
+    }, "Exported. Keep the file where your team keeps configuration.");
+  const check = () =>
+    void run(async () => {
+      setPlan(await api<{ add: number; delete: number; default: string }>("POST", "/v1/policies/import", { yaml: text, mode, dry_run: true }));
+    }, "Checked. Nothing has changed yet.");
+  const apply = () =>
+    void run(async () => {
+      await api("POST", "/v1/policies/import", { yaml: text, mode });
+      setPlan(null);
+      setText("");
+      invalidate("/v1/policies");
+    }, "Imported.");
+  return (
+    <section class="card">
+      <h2>Rules as a file</h2>
+      <p class="meta">Export the rules as YAML to keep them in Git, and import a file here. Grants from approvals are not part of the file.</p>
+      <div class="actions">
+        <button type="button" disabled={busy} onClick={doExport}>
+          Export
+        </button>
+      </div>
+      {exported && <Copy text={exported} label="rules file" />}
+      <label class="stack">
+        Import a rules file
+        <textarea
+          aria-label="Rules file"
+          rows={8}
+          value={text}
+          onInput={(e) => {
+            setText((e.currentTarget as HTMLTextAreaElement).value);
+            setPlan(null);
+          }}
+        />
+      </label>
+      <label class="inline">
+        <input type="radio" name="import-mode" checked={mode === "merge"} onChange={() => (setMode("merge"), setPlan(null))} /> Add these rules
+      </label>
+      <label class="inline">
+        <input type="radio" name="import-mode" checked={mode === "replace"} onChange={() => (setMode("replace"), setPlan(null))} /> Replace all rules
+        with these
+      </label>
+      {plan && (
+        <p class="flash">
+          This adds {plan.add} {plan.add === 1 ? "rule" : "rules"}
+          {mode === "replace" && <> and deletes {plan.delete}</>}
+          {plan.default && <>, and sets the default to {plan.default}</>}.
+        </p>
+      )}
+      <div class="actions">
+        <button type="button" disabled={busy || !text.trim()} onClick={check}>
+          Check
+        </button>
+        <button type="button" class="primary" disabled={busy || !plan} onClick={apply}>
+          Import
+        </button>
+      </div>
+    </section>
   );
 }

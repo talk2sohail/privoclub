@@ -285,3 +285,38 @@ func TestOrgKeys(t *testing.T) {
 		t.Fatalf("got %+v %v", got, err)
 	}
 }
+
+// F11: a reviewer blocks a definition; it leaves review, stays a decision,
+// and can still be accepted later.
+func TestBlockPins(t *testing.T) {
+	ctx := context.Background()
+	s, _ := open(t)
+	org, _ := s.EnsureOrg(ctx, "a", "A")
+	other, _ := s.EnsureOrg(ctx, "b", "B")
+	p := Pin{ServerID: "srv", Kind: "tool", Name: "echo", Hash: "h1", Definition: "{}"}
+	if err := s.RecordSeen(ctx, org.ID, []Pin{p}); err != nil {
+		t.Fatal(err)
+	}
+	key := PinKey{"tool", "echo", "h1"}
+	if got, _ := s.BlockPins(ctx, other.ID, "srv", []PinKey{key}); len(got) != 0 {
+		t.Fatal("blocked another org's pin")
+	}
+	if got, err := s.BlockPins(ctx, org.ID, "srv", []PinKey{key, {"tool", "echo", "nope"}}); err != nil || len(got) != 1 {
+		t.Fatalf("BlockPins = %v, %v", got, err)
+	}
+	if st, _ := s.PinStatuses(ctx, org.ID, "srv"); st[key] != PinBlocked {
+		t.Fatalf("status %q", st[key])
+	}
+	if n, _ := s.PrunePending(ctx, org.ID, "srv", nil); n != 0 {
+		t.Fatal("pruning deleted a blocked pin")
+	}
+	if got, _ := s.BlockPins(ctx, org.ID, "srv", []PinKey{key}); len(got) != 0 {
+		t.Fatal("blocked twice")
+	}
+	if got, _ := s.AcceptPins(ctx, org.ID, "srv", []PinKey{key}); len(got) != 1 {
+		t.Fatal("a blocked pin cannot be accepted")
+	}
+	if got, _ := s.BlockPins(ctx, org.ID, "srv", []PinKey{key}); len(got) != 0 {
+		t.Fatal("an accepted pin was blocked through the review path")
+	}
+}

@@ -15,6 +15,7 @@ export type ServerView = {
   connect_url?: string;
   key_header?: string;
   teams?: string[];
+  team_tools?: Record<string, string[]>; // narrowed teams' tools (ADR 0026); admins only
 };
 
 export type Pin = {
@@ -23,7 +24,10 @@ export type Pin = {
   hash: string;
   status: string;
   definition: { description?: string; title?: string; [key: string]: unknown } | null;
+  findings?: Finding[]; // signs of hidden instructions (F11 scan); a hint, never a decision
 };
+
+export type Finding = { path: string; rule: string; severity: "warn" | "note"; message: string; excerpt?: string };
 
 export type ServerConnection = {
   person: string;
@@ -42,7 +46,12 @@ export type Policy = {
   note: string;
   created_by: string;
   expires_at: string | null;
+  subject_person?: string; // the member of a "user:" rule (a grant from an approval)
+  conditions?: Condition[]; // on the call's arguments (ADR 0027)
+  grant_of?: string; // the approval a grant was made from
 };
+
+export type Condition = { arg: string; op: string; value?: unknown };
 
 export type Member = {
   person: string;
@@ -91,6 +100,8 @@ export type Approval = {
   expires_at: string;
   arguments?: unknown;
   arguments_error?: string;
+  decided_by?: string;
+  decided_at?: string | null;
   own?: boolean; // the viewer's own request
   decide_blocked?: string; // why the viewer cannot decide it
 };
@@ -237,3 +248,6 @@ export type LogEntry = {
   message: string;
   repeats: number;
 };
+
+/** A person's own request that waits for a decision (F10). */
+export type MyApproval = { id: string; server: string; tool: string; requester: string; reason: string; created_at: string; expires_at: string };

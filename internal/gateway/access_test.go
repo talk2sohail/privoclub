@@ -130,14 +130,14 @@ func TestDemotedMembersTokenReachesNothing(t *testing.T) {
 // an automation token is seen with its own.
 func TestRoleRulesSeeTheMembersCurrentRoles(t *testing.T) {
 	own := auth.Principal{UserID: "u-ada", Roles: []string{store.RoleMember}}
-	if got := callerRoles(own, store.Access{Roles: []string{store.RoleApprover, store.RoleMember}}); !slices.Equal(got, []string{store.RoleApprover, store.RoleMember}) {
+	if got := CallerRoles(own, store.Access{Roles: []string{store.RoleApprover, store.RoleMember}}); !slices.Equal(got, []string{store.RoleApprover, store.RoleMember}) {
 		t.Fatalf("own token: %q", got)
 	}
-	if got := callerRoles(own, store.Access{}); len(got) != 0 {
+	if got := CallerRoles(own, store.Access{}); len(got) != 0 {
 		t.Fatalf("a removed member's token keeps roles %q", got)
 	}
 	ci := auth.Principal{Roles: []string{store.RoleAdmin}}
-	if got := callerRoles(ci, store.Access{Roles: []string{store.RoleMember}}); !slices.Equal(got, []string{store.RoleAdmin}) {
+	if got := CallerRoles(ci, store.Access{Roles: []string{store.RoleMember}}); !slices.Equal(got, []string{store.RoleAdmin}) {
 		t.Fatalf("automation token: %q", got)
 	}
 }

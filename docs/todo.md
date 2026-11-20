@@ -501,13 +501,57 @@ until URL elicitation lands.
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ## F08. Toolsets
-Status: Not started (server-level access per team came first, in F26 and ADR 0020)
+Status: In progress (first slice built and reviewed 2026-11-20, ported onto main as 0.14.0 on 2026-11-21; ADR 0026 proposed; the owner's walkthrough, `docs/manual-test.md` section 16, open)
+ADRs: 0020, 0026
 
-- [ ] Toolsets per user and group; hide unseen tools from lists
+Goal: an admin gives a team some of a server's tools rather than all of
+them, so each AI client lists what its person needs (less context, fewer
+tools the model may call).
+
+Acceptance:
+1. For each team on a server, an admin chooses all tools (the default) or a
+   list of tool names. Existing installs see no change.
+2. A person sees a tool when any of their teams that reaches the server
+   sees it. A team that sees all tools opens all of them.
+3. The gateway lists only the tools a person sees. A call on any other tool
+   is answered exactly like an unknown name. A change applies to the next
+   request.
+4. A new tool on a server is hidden from narrowed teams until chosen; a
+   chosen tool still needs review (pins).
+5. Removing a team from a server, or deleting the team, removes its list.
+   Each change is audited. Only those who manage servers change it; members
+   cannot read it.
+6. The server page shows, per team, "all tools" or the chosen ones, and lets
+   an admin choose them from the server's reviewed tools. Start shows each
+   person only the tools they see.
+
+Threat note:
+- Toolsets narrow visibility only: rules, approvals and pins still decide
+  every call on a visible tool, and a toolset never makes an unreviewed
+  definition visible.
+- Fail closed: a narrowed team sees nothing that is not chosen, new tools
+  included. An error reading toolsets fails the request.
+- No probing: a hidden tool answers like a name that does not exist.
+
+Tasks and the tests that name them:
+
+- [x] Spec (this section) and ADR 0026
+- [x] Store: migration `00013_server_team_tools.sql` (`server_teams.narrowed`, `server_team_tools` deleted with its `server_teams` row); `SetTeamTools` (nil means all), `TeamTools`; `Access` carries per-server tool sets (nil = all); removing a server's team and deleting a team or the server drop the list; saving a server's teams keeps the lists of the teams that stay
+  - tests: `TestTeamToolsNarrowAccess` (union across teams, all wins, an empty list hides all but still reaches the server, `everyone` narrowed, back to all, only a team on the server), `TestTeamToolsFollowTeamChanges`, `TestTeamToolsAreIsolatedPerOrg`
+- [x] Gateway: lists and resolve filter tools by `Access.SeesTool`; `/me/tools` counts only seen tools
+  - tests: in the acceptance test below (the list stage needs a live upstream)
+- [x] Admin API: `PATCH /api/v1/servers/{alias}/teams/{slug}` (`{"tools": [...]}` or `null` for all; `servers.manage`; audited); the server list shows `team_tools` to managers; `/me/tools` counts follow
+  - tests: `TestTeamToolsAPI` (repeats dropped and sorted, managers see `team_tools` and members do not, validation, a team not on the server and an unknown server are 404, none and back to all, audit); the counts on Start in the acceptance test
+- [x] App: on the server page, per team, "All tools" or "Only these" with the reviewed tools to tick
+  - tests (Vitest): `pages.test.tsx` toolsets (a saved name the server no longer offers is shown, choosing tools sends the list, back to all sends null); 48/48
+- [x] Acceptance: `TestToolsetsLimitWhatATeamSees` (a designer lists the one chosen tool while a developer lists both; a call on the hidden one answers like an unknown name; Start counts what the designer sees; a new choice applies once the client's short-lived list is refreshed; members cannot change it)
+- [x] Docs: README, `docs/manual-test.md` section 16, version 0.14.0
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f08-toolsets-security-review.md`): no findings at 0.8 or above. Acted on: the server list counts for members only the tools they see; a grant needs the requester to still see the tool; the server page says prompts and resources are not narrowed
+- [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
 
 ## F09. Policies
-Status: In progress (core done, reviewed)
-ADRs: 0001, 0011, 0014
+Status: In progress (core done, reviewed; second slice built 2026-11-20, ported onto main as 0.15.0 on 2026-11-21, ADR 0027 proposed)
+ADRs: 0001, 0011, 0014, 0027
 
 - [x] Allow, deny, ask rules by server alias, tool pattern, subject (`*`, `role:`, `token:`); priority, ties deny > ask > allow; expiring rules (`internal/policy`)
 - [x] Own glob matcher where `*` covers any characters, including `/`
@@ -516,11 +560,58 @@ ADRs: 0001, 0011, 0014
 - [x] Annotations tighten defaults only (explicit destructiveHint means ask)
 - [x] Admin API: list, create, delete rules, apply presets, set default; every change audited
 - [x] Rules removed with their server
-- [ ] Export and import as YAML
 - [ ] Cross-server flow rule (source and sink tags)
 - [ ] Admin overrides of annotations shown to clients
 - [ ] Cache rules per org with invalidation (now read per call)
-- [ ] Argument conditions in rules
+
+### Second slice: conditions on arguments, safer grants, YAML (2026-11-20)
+
+ADR 0027. Goal: rules about what a call does, not only which tool it is;
+grants that can never outrank a deny; rules kept in Git.
+
+Acceptance:
+1. A rule may carry up to 8 conditions on the call's arguments (`equals`,
+   `not_equals`, `in`, `matches` a glob, `exists`, `missing`), all of which
+   must hold. "Deny `delete_repo` when `repo` is `prod`" denies that call
+   and leaves `sandbox` to the other rules.
+2. Conditions read the canonical arguments, the ones sent upstream. A value
+   of another type or a missing path never satisfies `equals`, `in` or
+   `matches`.
+3. A grant (F10) turns an ask into allow and never a deny into allow,
+   whatever the deny's rank or conditions.
+4. Rules export as YAML and import back (`merge` or `replace`, `dry_run`),
+   refused whole when a rule is invalid or names something unknown.
+5. The Rules page shows each rule's conditions, lets an admin add them, and
+   offers export and import.
+
+Threat note:
+- Conditions read exactly what runs upstream. Numbers compare by exact value
+  at any length. An argument of another type than the rule's value is
+  unsure, since servers often read "1" as 1 or "yes" as true: an unsure
+  deny or ask applies, an unsure allow does not. Case-insensitive names need
+  the "any case" tests. Allow-lists fail closed by construction (security
+  review 2026-11-20).
+- No regular expressions: `matches` is the rules' own glob, so a rule
+  cannot be made to take unbounded time.
+- Import runs in one transaction and only for `policy.manage`. A replace
+  never deletes grants; the dry run changes nothing.
+
+Tasks and the tests that name them:
+
+- [x] Spec (this section) and ADR 0027
+- [x] Policy: `Condition` (`Valid`, `Holds`), `Request.Args`; grants evaluated after the rest and only over an ask
+  - tests: `TestConditions` (each operator, types never mix, numbers by value, a huge exponent compared as written, nested and missing paths), `TestConditionValidation`, `TestGrantOnlyReplacesAsk` (a conditioned deny tied with an ask still wins over a grant at any rank; no ask, nothing to replace; another member's grant does nothing), `TestUnreadableConditionsFailClosed`
+- [x] Store: migration `00014_rule_conditions.sql` (`policies.conditions` JSON, `policies.grant_of`); `ImportPolicies` (one transaction, replace keeps grants, default set with it)
+  - tests: `TestPolicyConditionsRoundTrip`, `TestImportPoliciesKeepsGrants` (a refused import changes neither rules nor default)
+- [x] Gateway: the canonical arguments go to the decision; a grant is checked against the approved call's own arguments
+  - tests: in the acceptance test below
+- [x] Admin API: `conditions` on create and list; F10 grants carry `grant_of`; `GET /api/v1/policies/export`, `POST /api/v1/policies/import`
+  - tests: `TestCreateRuleWithConditions`, `TestPoliciesExportImport` (a member's rule exports as `person:`, grants left out, dry run changes nothing, replace keeps grants, merge adds, unknown team, unknown person, bad condition, unknown field, bad version and bad YAML refuse all in dry run and for real, approvers refused, audited); `TestApproveWithGrant` and `TestGrantRefusedWhenRulesChanged` now check the grant mark instead of a rank
+- [x] App: conditions shown and added on Rules (a person's way of typing values: JSON when it is JSON, else text; a comma list for "is one of"); grants labelled; export and import with a check first
+  - tests (Vitest): `pages.test.tsx` rules (a condition shown and sent, import checked before applied); 50/50
+- [x] Acceptance: `TestRulesOnArguments` (a deny on `text = secret` refuses that call while others ask; a grant lets the others through and not that one; the rules survive a YAML round trip)
+- [x] Docs: README, `docs/manual-test.md` section 17, version 0.15.0
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f09-policies-security-review.md`): two Medium findings, both fixed. Long numbers were compared as text (`42.000…0` missed "42"): numbers now compare by exact value at any length and arguments refuse exponents beyond 9 digits (`TestConditions`, `TestCanonicalRefusesHugeExponents`). Servers coerce types and ignore case: an argument of another type is unsure and fails closed, and "any case" tests exist (`TestUnsureFailsClosed`). Also acted on: a grant lifts asks up to the rank it was made over, never a higher one (`TestGrantCoversItsRankOnly`); condition values keep exact numbers from JSON (`TestConditionNumbersStayExact`); grants made before migration 11 are marked (`TestMigrationMarksOldGrants`); the dry run checks members; an export leaves out rules for removed members
 
 ## F10. Approvals
 Status: In progress (core done, reviewed)
@@ -539,17 +630,84 @@ ADRs: 0005
 - [x] Web approval page with sessions and CSRF (F05 first slice, ADR 0016)
 - [ ] Step-up re-authentication before high-risk approvals (F05 later)
 - [ ] Slack with signing verification and linked identities; email
-- [ ] Scoped temporary grants from an approval, batching, approver dashboard
-- [ ] Withdraw endpoint for requesters
+- [ ] Batching of similar requests, approver dashboard (who approves everything)
+
+### Second slice: approvals people live with (2026-11-20)
+
+Goal (owner's plan, 2026-11-20): an approver is not asked the same thing
+all day, a person can take back a request they no longer want, and decided
+approvals can be looked back on.
+
+Acceptance:
+1. Approving can also allow the same tool on the same server for the
+   requester for 15 minutes, 1 hour or 8 hours ("scoped grant", ADR 0005).
+   It is an allow rule with that expiry, subject `user:<id>` (the
+   requester's member; `token:<id>` for a token of no member), named after
+   the approval, shown on Rules and removable there. It ranks one above the
+   rule that asked, so a deny that outranked the ask still wins.
+2. Only someone who may decide the approval can grant, never for longer than
+   8 hours, never for their own request, and only for that exact tool (not
+   a pattern). The approval and the grant are each audited.
+3. A person sees their own pending requests (Start page,
+   `GET /api/v1/me/approvals`) and withdraws one
+   (`POST /api/v1/me/approvals/{id}/withdraw`). A held call ends as refused;
+   a retry asks again. Nobody withdraws another person's request.
+4. Approvers page through waiting requests beyond the first page and see
+   the history of decided ones (approved, denied, withdrawn, used,
+   expired), newest first, without their arguments.
+5. Rules accept `user:<id>` for an existing member of the org only.
+
+Threat note:
+- A grant widens access, so it is narrow by construction: one tool by exact
+  name, one server, one person, at most 8 hours, from a person who could
+  have approved each call anyway. It never outranks a deny that already won.
+- Withdrawing is limited to the requester's own member, found by the
+  token's bound user (ADR 0022), so a request cannot be cancelled by
+  someone else.
+- History shows no arguments (they are purged once a call is decided or
+  used).
+- A grant is checked when it is made, against the rules and the requester
+  as they are then: it is made only when the call would still ask, ranks
+  above the rule that asks now, and is pinned to the reviewed definition.
+  Nobody grants for their own request, even where self-approval is allowed.
+  A grant covers all of the person's tokens (it is "for this person").
+
+Tasks and the tests that name them:
+
+- [x] Store: migration `00012_approval_rule.sql` (`approvals.rule_id`: the rule that asked); `ListApprovalsPage` (pending or history, newest first, a cursor); `MyApprovals` (by the member's tokens); `user:<id>` rules need a member of the org
+  - tests: `TestApprovalPages` (pages never repeat a row, including two asked in the same instant; a cursor from elsewhere is refused; other orgs' rows never show), `TestMyApprovalsAndWithdraw` (a token that only names the person is not theirs), `TestUserRuleNeedsAMember` (another org's member and a removed one are refused)
+- [x] Policy: subject `user:<id>` matched against the caller's member; `ExactTool` turns a name into a pattern that matches only it
+  - tests: `TestUserSubject` (another member, no member and another tool are not matched), `TestValidSubjectUser`, `TestValidation`
+- [x] Approval service: the rule that asked is kept; `Withdraw` by the requester's member only; a withdrawn request is its own outcome, and the AI client is told to call again rather than that a person denied it
+  - tests: `TestWithdrawOwnRequestOnly`, `TestHeldCallEndsWhenWithdrawn`
+- [x] Admin API: approve with `{"grant": "15m"|"1h"|"8h"}`; `GET /api/v1/approvals?status=pending|history&before=&limit=` with `next`; `GET /api/v1/me/approvals`; `POST /api/v1/me/approvals/{id}/withdraw`
+  - tests: `TestApproveWithGrant` (rule shape, one above the asking rule, expiry, the person named on Rules, audit; a bad grant decides nothing), `TestGrantFromTheDefaultAndRefusals` (rank 0 under the default; a refused self-approval grants nothing; a plain approve grants nothing), `TestApprovalHistoryAPI` (pages, history without arguments, bad cursor, members refused), `TestWithdrawAPI`
+- [x] App: Approvals has Waiting and History, with "Load more"; approving offers "also allow for…"; Start lists the person's waiting requests with Withdraw; Rules names a grant's person
+  - tests (Vitest): `pages.test.tsx` (approve with a grant, load more and history, withdraw from Start); 46/46
+- [x] Acceptance: `TestApprovalGrantAndWithdraw` (a grant lets the next calls through without asking and names the person on Rules; without it the call asks again; a withdrawn request cannot be approved and a retry asks anew; history lists both without arguments. A held call ending on withdrawal is `internal/approval` `TestHeldCallEndsWhenWithdrawn`)
+- [x] Docs: README, `docs/manual-test.md` section 15, version 0.13.0
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f10-approvals-security-review.md`): two Medium findings, both fixed. No grant for one's own request (`TestNoGrantForOneself`); a grant is checked against the current rules, requester and accepted definition before anything is decided, and pinned to that definition (`TestGrantRefusedWhenRulesChanged`, `TestGrantNeedsTheAcceptedDefinition`)
 
 ## F11. Manifest pinning and scanning
-Status: Not started
+Status: In progress (pins built with F02; the whole definition and its diff with F14 R-01 in 0.8.1; block, scan and opt-in choosing 2026-11-20, ported onto main 2026-11-21)
 
 ADRs: 0001, 0002
 
-- [ ] Per-tool canonical hash pins with scope keys; first pin reviewed
-- [ ] New tools hidden until accepted; changed tools blocked; diff view
-- [ ] Scan tool descriptions for hidden instructions
+Threat note: the scan is a hint for the reviewer, never a gate: it accepts,
+blocks and hides nothing by itself, and finding nothing proves nothing. The
+gate is still a person accepting an exact hash. Upstream text is shown only as
+text, with characters a person cannot see made visible (⟦U+200B⟧).
+
+- [x] Per-tool canonical hash pins; first pin reviewed (F02: `pins`, `RecordSeen`, `AcceptPins`, the gateway serves accepted definitions only)
+- [x] New tools hidden until accepted; changed tools hidden until the new definition is accepted (F02)
+- [x] Diff view: main's review (F14 R-01, 0.8.1) shows the whole definition with hidden characters made visible and a line diff against the accepted version; the API also returns that version as `previous`
+- [x] Block: `POST /api/v1/servers/{alias}/pins:block` (managers of servers; audited `pins.block:N`) blocks exactly the listed pending definitions; they leave the review, stay hidden, are never pruned, and can still be accepted (`AcceptPins` takes pending or blocked)
+- [x] Scan for hidden instructions (`internal/scan`): every string of a definition (description, titles, the schema's property names and descriptions, annotations) for characters a person cannot see, tags that address the model, overriding or concealing instructions, "before using this tool you must", secret files and exfiltration (warnings); secret words, long texts and encoded runs (notes). At most 50 findings; `findings` on every pin
+  - tests: `internal/scan` `TestScanFindsInstructionsAfterTheFirstLine`, `TestScanFindsHiddenCharacters`, `TestScanWalksSchemaAndAnnotations`, `TestScanNotesLongAndEncodedText`, `TestScanQuietOnOrdinaryTools` (no warning on GitHub, Notion and DeepWiki shapes), `TestScanUnreadableAndBounded`, `TestReveal`; `internal/store` `TestBlockPins`; `internal/control` `TestPinReviewShowsPreviousAndFindings`; acceptance `TestAdminUIFromScratch` (an honest tool has no findings); Vitest `review.test.ts`, `pages.test.tsx` (the whole description as text, nothing chosen by default, the diff and warnings, block)
+- [ ] Scope keys on pins (per team or per person), with toolsets (F08)
+- [ ] Phrases in other languages; a scan of resource contents and tool results (F02 result checks)
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-control-plane-1-security-review.md`, with F05 R-01, F07 R-02, R-03 and F24 R-01, R-02): no findings at 0.8 or above. Acted on: pin decisions are audited with each `kind/name@hash`
+- [ ] From that review: `previous` and "Available to AI clients" should follow the definition the gateway serves now, not the newest accepted one by time; route token events through `audit.Writer`; refuse refreshing a disabled server's grant
 
 ## F12. Audit log
 Status: In progress
@@ -655,7 +813,7 @@ Tasks and the tests that name them:
 - [x] R-01 (Medium): the tool review shows only the first line (at most 300 characters) of a description, while the hash that is accepted covers all of it, the input schema and the annotations. Show the whole description as text, the schema, and a diff for a changed definition **Fixed in 0.8.1:** the review shows the whole description as text, the full definition (schema and annotations) behind "Full definition (what is accepted)", and for a changed tool a line diff against the accepted version (`web/src/review.tsx`). Tests: `web/src/review.test.ts`, "the tool review (F14 R-01)" in `web/src/pages.test.tsx`. **Independent review of 2026-11-15, U-02 (Medium), fixed:** the browser drew invisible characters (Unicode tag characters, zero-width, bidi overrides, private use, unassigned, separators, variation selectors) as nothing, though the hash covers them, so a hidden instruction could pass review. Every one is now shown as `⟦U+XXXX⟧` in the description, the diff and the full definition, with a warning that names how many there are. Tests: `review.test.ts` "reveal", "shows hidden characters and warns about them" in `pages.test.tsx`
 - [x] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fix with F07 R-01 **Fixed in 0.7.0 (F27).** The field stays as a label and says so.
 - [ ] R-03 (Low): a refused or cross-site request still slides the session's idle timeout; touch the session only after every check passed
-- [ ] R-04 (Low): the review ticks everything by default, also items that arrive while the page polls; make ticking opt-in or mark new rows
+- [x] R-04 (Low): the review ticks everything by default, also items that arrive while the page polls. Fixed 2026-11-20: nothing is chosen until the reviewer chooses it ("Choose all N shown" chooses only what is on the page)
 - [ ] R-05 (Low): the UI build has no audit step (`web/.npmrc` has `audit=false` and `legacy-peer-deps=true`; `npm ci` runs lifecycle scripts; actions are pinned by tag): `npm ci --ignore-scripts`, `npm audit --omit=dev`, `npm audit signatures` in the `ui` job, actions by SHA
 - [ ] R-06 (Low): the bridge passes a body on GET and DELETE and accepts any content type with an empty body
 - [ ] R-07, R-08 (Info): a session can mint long-lived owner control tokens (consider a confirmation and an audit tag); a token shown once stays in the page's state until the person leaves
@@ -664,6 +822,7 @@ Tasks and the tests that name them:
 
 - [ ] Toolsets (F08), context-cost report (F17), policy presets in the page
 - [ ] Re-enabling a removed member; editing a server
+- [x] Home page (owner's request, 2026-11-20): `/` offered nothing but a link to privo.club, so people typed `/admin` by hand. It now has **Sign in** (to `/admin/`) when the admin site is set up, says so when it is not, and shows the MCP address from `PRIVO_PUBLIC_URL` for AI clients. Still static for a configuration: no script, nothing read from the request, the configured address escaped. Tests: `internal/server` `TestRootPage` (unchanged hardening checks), `TestHomeOffersSignInAndTheMCPAddress`, `TestHomeWithoutTheAdminSite`, `TestHomeEscapesItsConfiguration`
 
 ## F15. Coolify deployment
 Status: In progress (deployed on Coolify since 2026-10-29, guide in `docs/deploy-coolify.md`; snapshot backup, restore and the built-in schedule done; scheduled backups are off in production by the owner's choice)
@@ -799,9 +958,9 @@ person's AI client still can never approve or administer anything.
 - [x] App: People shows each person's roles with a **change** picker (checkboxes; owner and admin clear the others; Save disabled with none); admins see no change for owners and admins; the invite form takes a set; Approvals shows why one's own request cannot be decided, without buttons; the bar shows the roles; rules offer approvers and auditors; a member who also approves lands on Start
   - tests (Vitest): `roles.test.ts` (`pickRole`, `roleText`), `pages.test.tsx` (the invite sends a set, a member's roles change as a set, admins get no change for owners and admins, own approvals show the reason and no buttons); 38/38
 - [x] Acceptance through the real binary: `TestMemberWhoApproves` (a person with member and approver calls a tool that needs approval; their gateway token gets 401 on the admin API; their own request is marked and refused; they approve another member's call, which then runs; without approver they cannot list approvals; with auditor a `role:auditor` deny applies to their next call; as approver only their token lists nothing and calls are "not available", and they get no new token; every change is audited with the owner as actor). Mutation-checked: reading the token's role instead of the person's fails it
-- [x] Docs: README (Roles), `docs/manual-test.md` section 10, version 0.8.0
+- [x] Docs: README (Roles), `docs/manual-test.md` section 13, version 0.11.0
 - [x] Security review 2026-11-18 (`docs/reviews/2026-11-18-f20-roles-security-review.md`): no findings at 0.8 or above. Acted on: an admin could revoke an owner's or admin's own gateway token once those carry `member`; revoking is now protected by the person's roles (`TestAdminCannotRevokeAnOwnersOwnToken`). For the release: a `role:member` rule no longer matches an owner's or admin's own AI client token
-- [ ] Owner's walkthrough on app.privo.club: `docs/manual-test.md` section 10
+- [ ] Owner's walkthrough on app.privo.club: `docs/manual-test.md` section 13
 
 ### Later in F20
 
@@ -877,11 +1036,11 @@ Tasks (tests named first, per the workflow):
 - [ ] Coolify: watch paths on both apps, auto deploy on and a shared webhook secret are set (API, 2026-10-29) and verified with a signed test delivery (docs-only push skipped by both apps, bad signature rejected). Open: add the GitHub webhook (needs a GitHub sign-in), then confirm a `site/` push deploys only the landing page and an `internal/` push only the gateway
 - [x] Docs: `docs/deploy-coolify.md` first-run section and deploy setup; README variable table and token section
 - [x] Independent security review of the bootstrap change (auth, secrets): first pass 2026-10-29 (`docs/reviews/2026-10-29-independent-review-f24-cache-hints-result-type.md`, R-01 to R-11, all fixed, see the items below); second pass 2026-11-03 (`docs/reviews/2026-11-03-f24-bootstrap-independent-review.md`): approve with changes; 0 Critical, 0 High, 2 Medium, 4 Low, 1 Info, fixes parked by the owner and listed next. The self-review of 2026-10-29 is superseded by both
-- [ ] Second review R-01 (Medium): a bootstrap token still installs on an organisation that was set up with the setup link, because "needs a bootstrap" looks only at control tokens and a browser-only org has none. Count `users` in the same transaction in `InstallBootstrapToken` and `BootstrapNeeded`. (app.privo.club has had control tokens since 2026-10-29, so it is not affected; an install set up only in the browser is)
-- [ ] Second review R-02 (Medium): `privo token create` writes no audit row (the item "Discovered" below); write the token row and a `token.create` event with actor `cli` in one transaction, as `admin setup-link` and `admin invite` do
+- [x] Second review R-01 (Medium): a bootstrap token still installs on an organisation that was set up with the setup link, because "needs a bootstrap" looks only at control tokens and a browser-only org has none. Count `users` in the same transaction in `InstallBootstrapToken` and `BootstrapNeeded`. (app.privo.club has had control tokens since 2026-10-29, so it is not affected; an install set up only in the browser is). Fixed 2026-11-20: an org counts as administered when it has ever had a control token or a member (removed ones too), in `InstallBootstrapToken` and `BootstrapNeeded`. Test: `internal/store` `TestBootstrapRefusedOnceASetupLinkWasClaimed` (failed before the fix)
+- [x] Second review R-02 (Medium): `privo token create` writes no audit row (the item "Discovered" below); write the token row and a `token.create` event with actor `cli` in one transaction, as `admin setup-link` and `admin invite` do. Fixed 2026-11-20: `IssueToken` writes the token and its `token.create:<kind>:<role>:<name>` event in one transaction (`CreateTokenAudited`), for the CLI (actor, actor id and client `cli`) and for the API alike, so no token exists without its trace. Test: `cmd/privo` `TestTokenCreateIsAudited` (failed before the fix)
 - [ ] Second review R-03 to R-06 (Low): a live bootstrap token is not retired when a person claims the setup link; `token.Weak` passes patterns with 16 or more different symbols; a malformed leftover value stops `serve` on an org that no longer needs a token; a reused token id fails the first boot with an SQL conflict that does not name the variable
 - [ ] Second review R-07 (Info): unset the plain variable also when the file form was used; one line in the backup docs that restoring a backup older than the install lets the token install again
-- [ ] Discovered: tokens created by `privo token create` are not audited (the admin API audits its own); the second review rates it Medium (R-02 above) and gives the fix
+- [x] Discovered: tokens created by `privo token create` are not audited (the admin API audits its own); the second review rates it Medium (R-02 above) and gives the fix (closed with R-02)
 - [x] The bootstrap variables are read only by `serve` (R-03, Medium, independent review 2026-10-29): `config.Load` no longer reads them, so the healthcheck (run every 15 s by the image) and the break-glass `privo token create` cannot fail on a leftover variable, and a bootstrap file that was removed after use is a warning on an organisation that is set up already. A first boot that cannot read the file still refuses to start (exit 1, names the variable), and a value that is not a token still stops `serve` with exit 2. Tests: `TestLoadIgnoresBootstrapVariables`, `TestBootstrapTokenConfig`, `TestBootstrapNeeded`, `TestBootstrapAtStartup`, `TestHealthcheckAndTokenCreateIgnoreBootstrapVariables`, acceptance `TestBootstrapFileRemovedAfterUse` and `TestBootstrapFileMissingOnFirstBootRefusesToStart`.
 - [x] An upstream cannot make the gateway hold or do unbounded work (R-04, Medium, independent review 2026-10-29; the reviewer argued it from reading, the tests below measure it with small configured limits). Acceptance: (1) a reply of an HTTP or SSE upstream may not exceed `PRIVO_UPSTREAM_MAX_RESPONSE_BYTES` (default 16 MiB, 1024 to 1 GiB): a JSON body is counted after decompression and one that announces more is refused before it is read, an event stream is counted per event. A reply over the limit fails the call with the same fixed message as any upstream failure (R-02), and the connection is re-established, since the SDK fails a connection whose reply it cannot read. Stdio messages are capped by the SDK at 16 MiB each, which this setting does not change; (2) an upstream call has a deadline, `PRIVO_UPSTREAM_CALL_TIMEOUT` (default 10 min), and the caller is told that the server did not answer within it; (3) a list is walked for at most 100 pages, a repeated cursor ends it, and the definitions of one load may not exceed 8 MiB together: each failure puts that server `down` with the reason; (4) a refresh has the connect timeout as its deadline (a refresh that hung used to keep the refresh slot for good, and no later change of the server's lists was read), and one server gets at most one refresh per `PRIVO_UPSTREAM_REFRESH_GAP` (default 5 s, measured from the end of the last load) however often it announces changes; (5) after each load that listed everything, the pending pins the server no longer offers are deleted, so definitions that change on every refresh cannot fill the disk. Accepted and blocked pins are decisions and are never deleted. Threat: a registered upstream is untrusted input, and one process holds the replies of every tenant. Tests, written first: `internal/upstream` `TestEndlessPaginationBringsServerDown`, `TestPaginationWithinLimitsStaysUp`, `TestLoadStopsAtDefinitionBudget`, `TestRefreshHasADeadline`, `TestRefreshGap`, `TestLoadPrunesPendingPins`, `TestLimitBodies`, `TestEventCapAcrossReads`; `internal/store` `TestPrunePending`; `internal/config` `TestUpstreamLimitsConfig`; `internal/gateway` `TestCallUpstreamTimeout`; acceptance `TestOversizedUpstreamReplyIsRefused` (JSON and event-stream replies, each with a control run without the limit), `TestUpstreamCallTimeout`, `TestListChangedFloodIsRateLimited` (55 refreshes without the gap, 3 to 9 with it). Not covered here: in-flight limits and bulkheads per server (F02, still open), and the stdio message cap, which belongs to the SDK.
 - [x] SSE upstreams stay connected (found while testing R-04). The legacy SSE transport ties its event stream to the context given to `Connect`, and `connect` gave it the context of the handshake, which ended when `connect` returned: an `sse` server went up, was dropped at once ("connection closed") and was reconnected over and over, since the SSE transport was added. `connect` now gives it a context that lives as long as the connection; a timer applies `ConnectTimeout` to the handshake and the first load and is stopped once the connection is up. Tests: `internal/upstream` `TestSSEUpstreamStaysConnected`, acceptance `TestListChangedFloodIsRateLimited` (an SSE server is the only kind that delivers list-changed notifications over HTTP).

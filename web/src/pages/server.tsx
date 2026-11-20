@@ -5,7 +5,7 @@ import { invalidate, useData } from "../data";
 import { Link, navigate } from "../router";
 import { TeamPicker } from "../catalog";
 import type { Pin, ServerConnection, ServerView, Team } from "../types";
-import { Definition, previousOf } from "../review";
+import { Definition, Findings, previousOf, warnings } from "../review";
 import { Empty, ErrorLine, Loading, Status, firstLine, when, useAction } from "../ui";
 import { authLabel } from "./servers";
 
@@ -109,6 +109,7 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
         </section>
       )}
       {session.can.teams && <Access srv={current} />}
+      {session.can.servers && (current.teams ?? []).length > 0 && <Toolsets srv={current} tools={toolNames(accepted)} />}
       {(current.auth === "oauth" || current.auth === "key") && <Connected alias={alias} />}
       <Settings srv={current} />
     </>
@@ -116,16 +117,19 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
 }
 
 function Review({ alias, pending, all, loading }: { alias: string; pending: Pin[]; all: Pin[]; loading: boolean }) {
-  const [unticked, setUnticked] = useState<Set<string>>(new Set());
+  // Nothing is chosen until the reviewer chooses it, and items that arrive
+  // while the page polls arrive unchosen (the F14 review's R-04).
+  const [ticked, setTicked] = useState<Set<string>>(new Set());
   const [busy, run] = useAction();
   const key = (p: Pin) => p.kind + "|" + p.hash + "|" + p.name;
-  const chosen = pending.filter((p) => !unticked.has(key(p)));
-
-  const accept = () =>
+  const chosen = pending.filter((p) => ticked.has(key(p)));
+  const blocked = all.filter((p) => p.status === "blocked");
+  const decide = (verb: "accept" | "block", list: Pin[], done: string) =>
     void run(async () => {
-      await api("POST", "/v1/servers/" + seg(alias) + "/pins:accept", { pins: chosen.map((p) => ({ kind: p.kind, hash: p.hash, name: p.name })) });
+      await api("POST", "/v1/servers/" + seg(alias) + "/pins:" + verb, { pins: list.map((p) => ({ kind: p.kind, hash: p.hash, name: p.name })) });
+      setTicked(new Set());
       invalidate("/v1/servers");
-    }, "Accepted. Those tools are now available to AI clients.");
+    }, done);
 
   return (
     <section class="card">
@@ -136,51 +140,81 @@ function Review({ alias, pending, all, loading }: { alias: string; pending: Pin[
         <>
           <p class="meta">
             New or changed tools are hidden from AI clients until you accept them. Read all of what each one says it does: an AI client reads every word of it.
+            Block what you do not trust.
           </p>
           <div class="list-wrap">
             <table class="list">
               <thead>
                 <tr>
-                  <th>Accept</th>
+                  <th>Choose</th>
                   <th>Kind</th>
                   <th>Name</th>
                   <th>Description</th>
                 </tr>
               </thead>
               <tbody>
-                {pending.map((p) => (
-                  <tr key={key(p)}>
-                    <td>
-                      <input
-                        type="checkbox"
-                        checked={!unticked.has(key(p))}
-                        aria-label={"Accept " + p.name}
-                        onChange={(e) => {
-                          const next = new Set(unticked);
-                          if ((e.currentTarget as HTMLInputElement).checked) next.delete(key(p));
-                          else next.add(key(p));
-                          setUnticked(next);
-                        }}
-                      />
-                    </td>
-                    <td>{p.kind}</td>
-                    <td>
-                      <code>{p.name}</code>
-                    </td>
-                    <td>
-                      <Definition pin={p} previous={previousOf(p, all)} />
-                    </td>
-                  </tr>
-                ))}
+                {pending.map((p) => {
+                  const warn = warnings(p);
+                  return (
+                    <tr key={key(p)}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={ticked.has(key(p))}
+                          aria-label={"Choose " + p.name}
+                          onChange={(e) => {
+                            const next = new Set(ticked);
+                            if ((e.currentTarget as HTMLInputElement).checked) next.add(key(p));
+                            else next.delete(key(p));
+                            setTicked(next);
+                          }}
+                        />
+                      </td>
+                      <td>{p.kind}</td>
+                      <td>
+                        <code>{p.name}</code>
+                        {warn > 0 && <span class="badge warn">{warn === 1 ? "1 warning" : warn + " warnings"}</span>}
+                      </td>
+                      <td>
+                        <Findings list={p.findings ?? []} />
+                        <Definition pin={p} previous={previousOf(p, all)} />
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
           <div class="actions">
-            <button type="button" class="approve" disabled={busy || chosen.length === 0} onClick={accept}>
+            <button type="button" class="link" disabled={busy} onClick={() => setTicked(new Set(pending.map(key)))}>
+              Choose all {pending.length} shown
+            </button>
+            <button type="button" class="approve" disabled={busy || chosen.length === 0} onClick={() => decide("accept", chosen, "Accepted. Those tools are now available to AI clients.")}>
               Accept {chosen.length} {chosen.length === 1 ? "tool" : "tools"}
+            </button>
+            <button type="button" class="deny" disabled={busy || chosen.length === 0} onClick={() => decide("block", chosen, "Blocked. Those definitions stay hidden from AI clients.")}>
+              Block {chosen.length}
             </button>
           </div>
         </>
+      )}
+      {blocked.length > 0 && (
+        <details>
+          <summary>Blocked ({blocked.length})</summary>
+          <ul class="pins">
+            {blocked.map((p) => (
+              <li key={key(p)} class="pin">
+                <div class="row">
+                  <code>{p.name}</code> <small class="meta">{p.kind}</small>
+                  <button type="button" class="link" disabled={busy} onClick={() => decide("accept", [p], "Accepted. The tool is now available to AI clients.")}>
+                    Accept after all
+                  </button>
+                </div>
+                <Definition pin={p} />
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
     </section>
   );
@@ -216,6 +250,80 @@ function Access({ srv }: { srv: ServerView }) {
         </>
       )}
     </section>
+  );
+}
+
+/** toolNames are the distinct names of the accepted tools, sorted. */
+function toolNames(accepted: Pin[]): string[] {
+  return [...new Set(accepted.filter((p) => p.kind === "tool").map((p) => p.name))].sort();
+}
+
+// Toolsets (ADR 0026): per team, all of this server's tools or only some.
+function Toolsets({ srv, tools }: { srv: ServerView; tools: string[] }) {
+  const teams = useData<{ teams: Team[] }>("/v1/teams");
+  const names = new Map((teams.data?.teams ?? []).map((t) => [t.slug, t.name]));
+  return (
+    <section class="card">
+      <h2>Which tools each team sees</h2>
+      <p class="meta">
+        A team sees all of this server's tools unless you choose some. A person in several teams sees what any of them sees. New tools stay hidden from a
+        team that sees only some, until you choose them. Prompts and resources are not narrowed: every team on the server sees them.
+      </p>
+      {(srv.teams ?? []).map((slug) => (
+        <TeamToolset key={slug} alias={srv.alias} slug={slug} name={names.get(slug) ?? slug} saved={srv.team_tools?.[slug] ?? null} tools={tools} />
+      ))}
+    </section>
+  );
+}
+
+function TeamToolset({ alias, slug, name, saved, tools }: { alias: string; slug: string; name: string; saved: string[] | null; tools: string[] }) {
+  // null: all tools; a list: only those.
+  const [draft, setDraft] = useState<string[] | null | undefined>(undefined);
+  const [busy, run] = useAction();
+  const current = draft === undefined ? saved : draft;
+  const changed = draft !== undefined && JSON.stringify(draft === null ? null : [...draft].sort()) !== JSON.stringify(saved === null ? null : [...saved].sort());
+  const offered = [...new Set([...tools, ...(current ?? [])])].sort();
+  const save = () =>
+    void run(async () => {
+      await api("PATCH", "/v1/servers/" + seg(alias) + "/teams/" + seg(slug), { tools: current === null ? null : [...current].sort() });
+      invalidate("/v1/servers");
+      setDraft(undefined);
+    }, "Saved. " + name + " sees the change at its next request.");
+  return (
+    <fieldset>
+      <legend>{name}</legend>
+      <label class="inline">
+        <input type="radio" name={"toolset-" + slug} checked={current === null} onChange={() => setDraft(null)} /> All tools
+      </label>
+      <label class="inline">
+        <input type="radio" name={"toolset-" + slug} checked={current !== null} onChange={() => setDraft(current ?? [])} /> Only these
+      </label>
+      {current !== null && (
+        <div class="stack">
+          {offered.length === 0 && <p class="meta">This server has no reviewed tools yet.</p>}
+          {offered.map((tool) => (
+            <label class="inline" key={tool}>
+              <input
+                type="checkbox"
+                checked={current.includes(tool)}
+                aria-label={name + ": " + tool}
+                onChange={(e) =>
+                  setDraft((e.currentTarget as HTMLInputElement).checked ? [...current, tool] : current.filter((t) => t !== tool))
+                }
+              />{" "}
+              <code>{tool}</code>
+              {!tools.includes(tool) && <small class="meta"> not offered now</small>}
+            </label>
+          ))}
+          {current.length === 0 && <p class="flash warn">{name} will see none of this server's tools.</p>}
+        </div>
+      )}
+      <div class="actions">
+        <button type="button" class="primary small" aria-label={"Save the tools " + name + " sees"} disabled={busy || !changed} onClick={save}>
+          Save
+        </button>
+      </div>
+    </fieldset>
   );
 }
 

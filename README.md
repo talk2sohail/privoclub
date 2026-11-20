@@ -88,7 +88,7 @@ name a file with the `_file` form instead) stops the command with exit 2. The
 file is read once at start; restart to change a setting. In a container use
 `PRIVO_CONFIG_FILE`, so the image's healthcheck reads the same file.
 
-Endpoints: `/` (static landing page), `/mcp` (MCP gateway), `/api/v1/...`
+Endpoints: `/` (home page: **Sign in** to the admin site and the MCP address for AI clients), `/mcp` (MCP gateway), `/api/v1/...`
 (admin API), `/admin/...` (the admin site, with `/auth/...`, `/connect/...` and
 `/oauth/client-metadata.json`; see below), `/livez`, `/readyz`, `/version` (the
 semantic version, see `docs/versioning.md`).
@@ -126,7 +126,11 @@ People approve calls in a browser, with their GitHub account and no token
    tokens carry (default: your GitHub login in lowercase); self-approval is
    refused between tokens and sessions of the same person.
 3. `/admin/approvals` lists the calls waiting for a decision, with their
-   arguments. Owners, admins and approvers can approve or deny.
+   arguments. Owners, admins and approvers can approve or deny. Approving can
+   also allow the same tool for that person for 15 minutes, 1 hour or 8 hours
+   (a rule with that expiry, shown on Rules; it never outranks a deny that
+   already won). **History** lists decided requests. A person sees their own
+   waiting requests on Start and can withdraw one.
 
 Only people who were added can sign in; any other GitHub account sees a plain
 refusal. See `docs/deploy-coolify.md` for the Coolify steps.
@@ -228,12 +232,20 @@ Each team sees only the servers given to it (ADR 0020). On the admin site:
 - **A server's page → Who can use it**: the teams that reach it.
   **Everyone** is built in (every member is in it). A server with no team is
   reachable by nobody.
+- **A server's page → Which tools each team sees** (toolsets, ADR 0026): per
+  team, all of the server's tools or only the ones you tick. A person in
+  several teams sees what any of them sees; a new tool stays hidden from a
+  team that sees only some until you tick it. Rules, approvals and the tool
+  review still apply to every tool a person sees. API:
+  `PATCH /api/v1/servers/<alias>/teams/<slug>` with `{"tools": ["a", "b"]}`,
+  or `{"tools": null}` for all.
 - **Start** (where members land): their teams, their servers with a Connect
   link where their own account is needed, and the setup of Claude Code,
   Cursor, VS Code, Codex or Windsurf with a token made on the spot.
 
-The gateway lists only the tools of servers the caller's teams reach and
-answers a call on any other server as if the name did not exist. Rules can
+The gateway lists only the tools of servers the caller's teams reach, and of
+those only the ones their teams see, and answers a call on any other tool as
+if the name did not exist. Rules can
 name a team: subject `team:<slug>`. Existing servers, and servers added through
 the API without `"teams"`, are for everyone. API: `GET/POST /api/v1/teams`,
 `PATCH/DELETE /api/v1/teams/<slug>`, `POST /api/v1/teams/<slug>/members`
@@ -311,6 +323,22 @@ address on an internal network): `/metrics` there gives
 `privo_upstream_up{server}`, `privo_audit_events_lost_total`,
 `privo_telemetry_dropped_total` and `privo_build_info`. It has no sign-in, so
 it never shares the public port.
+
+## Rules on arguments, and rules as a file
+
+A rule can look at what a call does (ADR 0027): **Rules → Add a rule → Only
+when the call's arguments…**, for example deny `delete_repo` when `repo` is
+`prod`, or ask before `create_payment` when `amount` is one of a list. Tests
+are `equals`, `not_equals`, `in`, `matches` (a pattern like `release/*`),
+`exists` and `missing`, on a dotted path (`options.force`); all must hold.
+They read the arguments exactly as sent to the server, and `"1"` is not `1`.
+A grant from an approval only ever turns an "ask" into "allow", never a deny.
+
+**Rules as a file** exports every rule and the default as YAML, and imports a
+file after a check that says what would change (`merge` adds, `replace`
+replaces everything but grants; one bad rule refuses the whole file). API:
+`GET /api/v1/policies/export`, `POST /api/v1/policies/import` with
+`{"yaml": "...", "mode": "merge", "dry_run": true}`.
 
 ## Roles
 

@@ -4,6 +4,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -20,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"privo.club/privo/internal/approval"
 	"privo.club/privo/internal/audit"
 	"privo.club/privo/internal/auth"
@@ -31,6 +34,7 @@ import (
 	"privo.club/privo/internal/oauthserver"
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/runner"
+	"privo.club/privo/internal/scan"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/token"
@@ -94,12 +98,16 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("DELETE /api/v1/servers/{alias}/connections/{person}", wrap(auth.PermManageServers, a.deleteConnection))
 	mux.Handle("POST /api/v1/invites", wrap(auth.PermManageTokens, a.createInvite))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", wrap(auth.PermManageServers, a.acceptPins))
+	mux.Handle("POST /api/v1/servers/{alias}/pins:block", wrap(auth.PermManageServers, a.blockPins))
+	mux.Handle("PATCH /api/v1/servers/{alias}/teams/{slug}", wrap(auth.PermManageServers, a.patchTeamTools))
 	mux.Handle("GET /api/v1/tokens", wrap(auth.PermManageTokens, a.listTokens))
 	mux.Handle("POST /api/v1/tokens", wrap(auth.PermManageTokens, a.createToken))
 	mux.Handle("DELETE /api/v1/tokens/{id}", wrap(auth.PermManageTokens, a.revokeToken))
 	mux.Handle("GET /api/v1/policies", wrap(auth.PermManagePolicy, a.listPolicies))
 	mux.Handle("POST /api/v1/policies", wrap(auth.PermManagePolicy, a.createPolicy))
 	mux.Handle("DELETE /api/v1/policies/{id}", wrap(auth.PermManagePolicy, a.deletePolicy))
+	mux.Handle("GET /api/v1/policies/export", wrap(auth.PermManagePolicy, a.exportPolicies))
+	mux.Handle("POST /api/v1/policies/import", wrap(auth.PermManagePolicy, a.importPolicies))
 	mux.Handle("POST /api/v1/servers/{alias}/policy:preset", wrap(auth.PermManagePolicy, a.applyPreset))
 	mux.Handle("PATCH /api/v1/settings/policy", wrap(auth.PermManagePolicy, a.patchPolicySettings))
 	mux.Handle("GET /api/v1/approvals", wrap(auth.PermDecide, a.listApprovals))
@@ -186,6 +194,20 @@ func decode(r *http.Request, v any) error {
 	return nil
 }
 
+// decodeOptional is decode for a body that may be left out (empty, or
+// whitespace only), as on approve and deny.
+func decodeOptional(r *http.Request, v any) error {
+	b, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	if err != nil {
+		return errorf(http.StatusBadRequest, "could not read the body")
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	return decode(r, v)
+}
+
 func (a *API) adminEvent(ctx context.Context, p auth.Principal, action, server string) {
 	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(), Server: server, Action: action, Decision: "allow", Outcome: "ok"}
 	if err := a.Audit.Admin(ctx, p.OrgID, ev); err != nil {
@@ -216,11 +238,15 @@ type serverView struct {
 	// Teams that reach the server (ADR 0020); shown to admins only, and
 	// always to them, so an empty list ("nobody") is visible (F26 R-04).
 	Teams *[]string `json:"teams,omitempty"`
+	// TeamTools are the narrowed teams' tool lists (ADR 0026); admins only.
+	// A team on the server that is not in it sees all tools.
+	TeamTools map[string][]string `json:"team_tools,omitempty"`
 }
 
 // view describes a server. Members and auditors see neither the full target
 // (URLs often carry keys) nor connection errors (they can contain them).
-func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams []string) serverView {
+// acc is the caller's access when they do not manage servers, nil otherwise.
+func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams []string, acc *store.Access) serverView {
 	admin := p.Can(auth.PermManageServers)
 	v := serverView{ID: s.ID, Alias: s.Alias, Transport: s.Transport, Enabled: s.Enabled, Status: upstream.StatusConnecting, Items: map[string]int{}}
 	if admin {
@@ -252,8 +278,13 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams 
 		}
 		pins, _ := a.Store.PinStatuses(ctx, p.OrgID, s.ID)
 		for _, it := range st.Items {
+			// Others count only the tools their teams let them see (ADR 0026),
+			// so a narrowed team does not learn how many are hidden.
+			if acc != nil && it.Kind == upstream.KindTool && !acc.SeesTool(s.ID, it.Name) {
+				continue
+			}
 			v.Items[it.Kind]++
-			if pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinPending {
+			if admin && pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinPending {
 				v.Pending++
 			}
 		}
@@ -279,13 +310,79 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request, p auth.Princip
 			return err
 		}
 	}
+	var tt map[string]map[string][]string
+	if admin {
+		if tt, err = a.Store.TeamTools(r.Context(), p.OrgID); err != nil {
+			return err
+		}
+	}
 	out := make([]serverView, 0, len(servers))
 	for _, s := range servers {
 		if admin || acc.Reaches(s.ID) {
-			out = append(out, a.view(r.Context(), p, s, st[s.ID]))
+			var mine *store.Access
+			if !admin {
+				mine = &acc
+			}
+			v := a.view(r.Context(), p, s, st[s.ID], mine)
+			v.TeamTools = tt[s.ID]
+			out = append(out, v)
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": out})
+	return nil
+}
+
+// patchTeamTools sets which of a server's tools a team sees (ADR 0026):
+// {"tools": null} for all, {"tools": [names]} for exactly those.
+func (a *API) patchTeamTools(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	s, err := a.server(r, p)
+	if err != nil {
+		return err
+	}
+	team := r.PathValue("slug")
+	var req struct {
+		Tools json.RawMessage `json:"tools"`
+	}
+	if err := decode(r, &req); err != nil {
+		return err
+	}
+	var tools []string
+	switch raw := bytes.TrimSpace(req.Tools); {
+	case len(raw) == 0:
+		return errorf(http.StatusUnprocessableEntity, "tools must be null (all tools) or a list of tool names")
+	case string(raw) == "null":
+	default:
+		var list []string
+		if err := json.Unmarshal(raw, &list); err != nil {
+			return errorf(http.StatusUnprocessableEntity, "tools must be null (all tools) or a list of tool names")
+		}
+		tools = []string{}
+		for _, name := range list {
+			if name == "" || len(name) > 128 || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+				return errorf(http.StatusUnprocessableEntity, "a tool name must be 1 to 128 characters without control characters")
+			}
+			if !slices.Contains(tools, name) {
+				tools = append(tools, name)
+			}
+		}
+		if len(tools) > store.MaxTeamTools {
+			return errorf(http.StatusUnprocessableEntity, "at most %d tools per team", store.MaxTeamTools)
+		}
+		sort.Strings(tools)
+	}
+	what := "all"
+	if tools != nil {
+		what = strconv.Itoa(len(tools))
+	}
+	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(), Server: s.Alias,
+		Action: "server.team_tools:" + s.Alias + ":" + team + ":" + what, Decision: "allow", Outcome: "ok"}
+	if err := a.Store.SetTeamTools(r.Context(), p.OrgID, s.ID, team, tools, ev); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errorf(http.StatusNotFound, "%q is not a team of %q", team, s.Alias)
+		}
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": s.Alias, "team": team, "tools": tools})
 	return nil
 }
 
@@ -448,7 +545,7 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	// Report the first connection result, so the admin sees the status and
 	// how many items wait for review in the response.
 	a.Upstream.WaitSettled(ctx, srv.ID, ConnectWait)
-	writeJSON(w, http.StatusCreated, map[string]any{"server": a.view(ctx, p, srv, srv.Teams)})
+	writeJSON(w, http.StatusCreated, map[string]any{"server": a.view(ctx, p, srv, srv.Teams, nil)})
 	return nil
 }
 
@@ -523,7 +620,7 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if err != nil {
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": a.view(r.Context(), p, s, st[s.ID])})
+	writeJSON(w, http.StatusOK, map[string]any{"server": a.view(r.Context(), p, s, st[s.ID], nil)})
 	return nil
 }
 
@@ -558,17 +655,62 @@ func (a *API) listPins(w http.ResponseWriter, r *http.Request, p auth.Principal)
 	if err != nil {
 		return err
 	}
+	// The definition a pending or blocked one would replace: the newest
+	// accepted one of the same name (pins come newest first).
+	accepted := map[[2]string]store.Pin{}
+	for _, pin := range pins {
+		k := [2]string{pin.Kind, pin.Name}
+		if _, seen := accepted[k]; !seen && pin.Status == store.PinAccepted {
+			accepted[k] = pin
+		}
+	}
 	out := make([]map[string]any, 0, len(pins))
 	for _, pin := range pins {
-		out = append(out, map[string]any{"kind": pin.Kind, "name": pin.Name, "hash": pin.Hash, "status": pin.Status,
-			"definition": json.RawMessage(pin.Definition)})
+		v := map[string]any{"kind": pin.Kind, "name": pin.Name, "hash": pin.Hash, "status": pin.Status,
+			"definition": json.RawMessage(pin.Definition),
+			// F11: signs of hidden instructions, for the reviewer (a hint, never a decision).
+			"findings": scan.Scan([]byte(pin.Definition))}
+		if prev, ok := accepted[[2]string{pin.Kind, pin.Name}]; ok && pin.Status != store.PinAccepted {
+			v["previous"] = map[string]any{"hash": prev.Hash, "definition": json.RawMessage(prev.Definition)}
+		}
+		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pins": out})
 	return nil
 }
 
+// pinsAction names what a review decided: the count, then each definition as
+// kind/name@hash-prefix (at most 20), so the trail says which ones.
+func pinsAction(verb string, done []store.PinKey) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "pins.%s:%d", verb, len(done))
+	for i, k := range done {
+		if i == 20 {
+			b.WriteString(",…")
+			break
+		}
+		sep := ","
+		if i == 0 {
+			sep = ":"
+		}
+		b.WriteString(sep + k.Kind + "/" + k.Name + "@" + k.Hash[:min(len(k.Hash), 12)])
+	}
+	return b.String()
+}
+
 // acceptPins accepts exactly the reviewed definitions named in the request.
 func (a *API) acceptPins(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	return a.decidePins(w, r, p, "accept", a.Store.AcceptPins)
+}
+
+// blockPins blocks exactly the reviewed pending definitions named in the
+// request (F11): they stay hidden and leave the review list.
+func (a *API) blockPins(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	return a.decidePins(w, r, p, "block", a.Store.BlockPins)
+}
+
+func (a *API) decidePins(w http.ResponseWriter, r *http.Request, p auth.Principal, verb string,
+	decide func(context.Context, store.OrgID, string, []store.PinKey) ([]store.PinKey, error)) error {
 	s, err := a.server(r, p)
 	if err != nil {
 		return err
@@ -580,18 +722,18 @@ func (a *API) acceptPins(w http.ResponseWriter, r *http.Request, p auth.Principa
 		return err
 	}
 	if len(req.Pins) == 0 || len(req.Pins) > 5000 {
-		return errorf(http.StatusUnprocessableEntity, "list the reviewed pins (kind, name, hash) to accept")
+		return errorf(http.StatusUnprocessableEntity, "list the reviewed pins (kind, name, hash) to %s", verb)
 	}
 	keys := make([]store.PinKey, 0, len(req.Pins))
 	for _, pr := range req.Pins {
 		keys = append(keys, store.PinKey{Kind: pr.Kind, Name: pr.Name, Hash: pr.Hash})
 	}
-	accepted, err := a.Store.AcceptPins(r.Context(), p.OrgID, s.ID, keys)
+	done, err := decide(r.Context(), p.OrgID, s.ID, keys)
 	if err != nil {
 		return err
 	}
-	a.adminEvent(r.Context(), p, fmt.Sprintf("pins.accept:%d", len(accepted)), s.Alias)
-	writeJSON(w, http.StatusOK, map[string]any{"accepted": len(accepted), "requested": len(keys)})
+	a.adminEvent(r.Context(), p, pinsAction(verb, done), s.Alias)
+	writeJSON(w, http.StatusOK, map[string]any{verb + "ed": len(done), "requested": len(keys)})
 	return nil
 }
 
@@ -635,6 +777,10 @@ type TokenSpec struct {
 	Name, Role, Kind, Person string
 	UserID                   string
 	TTL                      time.Duration
+	// Event names who issues the token (Actor, ActorID, Client); IssueToken
+	// fills in the rest and writes it with the token, in one transaction
+	// (F24 second review R-02).
+	Event store.AuditEvent
 }
 
 // IssueToken creates a token and returns its plain text once. Shared with the CLI.
@@ -669,7 +815,10 @@ func IssueToken(ctx context.Context, s *store.Store, org store.OrgID, spec Token
 	now := time.Now()
 	rec := store.APIToken{OrgID: org, ID: tok.ID, Name: name, Role: role, Kind: spec.Kind, Person: person, UserID: spec.UserID, SecretHash: tok.SecretHash,
 		CreatedAt: now, ExpiresAt: now.Add(ttl)}
-	if err := s.CreateToken(ctx, rec); err != nil {
+	ev := spec.Event
+	ev.ID, ev.CallID, ev.Time = ids.New(), ids.New(), now
+	ev.Action, ev.Decision, ev.Outcome = "token.create:"+rec.Kind+":"+rec.Role+":"+rec.Name, "allow", "ok"
+	if err := s.CreateTokenAudited(ctx, rec, ev); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return "", rec, errorf(http.StatusConflict, "an active token named %q already exists", name)
 		}
@@ -702,11 +851,11 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	}
 	// No UserID: a token an administrator issues never belongs to a member,
 	// whatever person it names, so it cannot use anyone's accounts or teams.
-	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL})
+	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL,
+		Event: store.AuditEvent{Actor: p.Name, ActorID: p.ActorID()}})
 	if err != nil {
 		return err
 	}
-	a.adminEvent(r.Context(), p, "token.create:"+rec.Kind+":"+rec.Role+":"+rec.Name, "")
 	writeJSON(w, http.StatusCreated, map[string]any{"id": rec.ID, "token": plain, "name": rec.Name, "role": rec.Role, "kind": rec.Kind,
 		"person": rec.Person, "bound": false, "expires_at": rec.ExpiresAt})
 	return nil
@@ -922,11 +1071,18 @@ type policyView struct {
 	Note      string     `json:"note,omitempty"`
 	CreatedBy string     `json:"created_by"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// SubjectPerson names the member of a "user:" rule (F10 grants).
+	SubjectPerson string `json:"subject_person,omitempty"`
+	// Conditions on the call's arguments (ADR 0027).
+	Conditions []policy.Condition `json:"conditions,omitempty"`
+	// GrantOf is the approval a grant was made from (F10).
+	GrantOf string `json:"grant_of,omitempty"`
 }
 
 func viewPolicy(p store.Policy) policyView {
+	cs, _ := policy.RuleConditions(p)
 	return policyView{ID: p.ID, Server: p.Server, Tool: p.Tool, Subject: p.Subject, Action: p.Action, Priority: p.Priority,
-		Note: p.Note, CreatedBy: p.CreatedBy, ExpiresAt: p.ExpiresAt}
+		Note: p.Note, CreatedBy: p.CreatedBy, ExpiresAt: p.ExpiresAt, Conditions: cs, GrantOf: p.GrantOf}
 }
 
 func (a *API) listPolicies(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -934,9 +1090,21 @@ func (a *API) listPolicies(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err != nil {
 		return err
 	}
+	users, err := a.Store.ListUsers(r.Context(), p.OrgID)
+	if err != nil {
+		return err
+	}
+	person := map[string]string{}
+	for _, u := range users {
+		person[u.ID] = u.Person
+	}
 	out := make([]policyView, 0, len(ps))
 	for _, pol := range ps {
-		out = append(out, viewPolicy(pol))
+		v := viewPolicy(pol)
+		if id, ok := strings.CutPrefix(pol.Subject, "user:"); ok {
+			v.SubjectPerson = person[id]
+		}
+		out = append(out, v)
 	}
 	def, _ := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
 	writeJSON(w, http.StatusOK, map[string]any{"policies": out, "default": def})
@@ -944,57 +1112,31 @@ func (a *API) listPolicies(w http.ResponseWriter, r *http.Request, p auth.Princi
 }
 
 func (a *API) createPolicy(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-	var req struct {
-		Server    string `json:"server"`
-		Tool      string `json:"tool"`
-		Subject   string `json:"subject"`
-		Action    string `json:"action"`
-		Priority  int    `json:"priority"`
-		Note      string `json:"note"`
-		ExpiresIn string `json:"expires_in"`
-	}
+	var req ruleInput
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	if req.Subject == "" {
-		req.Subject = "*"
-	}
-	if req.Tool == "" {
-		req.Tool = "*"
-	}
-	switch {
-	case req.Server != "*" && !aliasRe.MatchString(req.Server):
-		return errorf(http.StatusUnprocessableEntity, "server must be a server alias or *")
-	case !policy.ValidGlob(req.Tool):
-		return errorf(http.StatusUnprocessableEntity, "tool must be a name or glob pattern")
-	case !policy.ValidSubject(req.Subject):
-		return errorf(http.StatusUnprocessableEntity, "subject must be *, role:<role>, team:<slug> or token:<id>")
-	case !policy.ValidAction(req.Action):
-		return errorf(http.StatusUnprocessableEntity, "action must be allow, ask or deny")
-	case req.Priority < -1000 || req.Priority > 1000:
-		return errorf(http.StatusUnprocessableEntity, "priority must be between -1000 and 1000")
-	case len(req.Note) > 500:
-		return errorf(http.StatusUnprocessableEntity, "note is too long")
-	}
-	pol := store.Policy{ID: ids.New(), Server: req.Server, Tool: req.Tool, Subject: req.Subject, Action: req.Action,
-		Priority: req.Priority, Note: req.Note, CreatedBy: p.Name, CreatedAt: time.Now()}
-	if req.ExpiresIn != "" {
-		d, err := time.ParseDuration(req.ExpiresIn)
-		if err != nil || d <= 0 || d > 90*24*time.Hour {
-			return errorf(http.StatusUnprocessableEntity, "expires_in must be a duration up to 2160h")
-		}
-		exp := time.Now().Add(d)
-		pol.ExpiresAt = &exp
+	pol, err := req.policy(p, time.Now())
+	if err != nil {
+		return err
 	}
 	if err := a.Store.CreatePolicies(r.Context(), p.OrgID, pol); err != nil {
-		if errors.Is(err, store.ErrUnknownTeam) {
-			return errorf(http.StatusUnprocessableEntity, "there is no team %q", strings.TrimPrefix(pol.Subject, "team:"))
-		}
-		return err
+		return ruleStoreError(err, pol)
 	}
 	a.adminEvent(r.Context(), p, fmt.Sprintf("policy.create:%s %s %s %s", pol.Action, pol.Server, pol.Tool, pol.Subject), pol.Server)
 	writeJSON(w, http.StatusCreated, map[string]any{"policy": viewPolicy(pol)})
 	return nil
+}
+
+// ruleStoreError turns the store's refusal of a rule into an answer.
+func ruleStoreError(err error, pol store.Policy) error {
+	switch {
+	case errors.Is(err, store.ErrUnknownTeam):
+		return errorf(http.StatusUnprocessableEntity, "there is no team %q", strings.TrimPrefix(pol.Subject, "team:"))
+	case errors.Is(err, store.ErrUnknownUser):
+		return errorf(http.StatusUnprocessableEntity, "there is no member %q", strings.TrimPrefix(pol.Subject, "user:"))
+	}
+	return err
 }
 
 func (a *API) deletePolicy(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
@@ -1110,29 +1252,44 @@ func markOwn(v map[string]any, ap store.Approval, p auth.Principal, allowSelf bo
 }
 
 func (a *API) listApprovals(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-	status := r.URL.Query().Get("status")
-	if status != "" && status != store.ApprovalPending && status != store.ApprovalApproved && status != store.ApprovalDenied &&
-		status != store.ApprovalConsumed && status != store.ApprovalWithdrawn {
-		return errorf(http.StatusUnprocessableEntity, "unknown status %q", status)
-	}
-	list, err := a.Store.ListApprovals(r.Context(), p.OrgID, status, 100)
-	if err != nil {
-		return err
-	}
+	q := r.URL.Query()
+	status := q.Get("status")
 	allowSelf, err := a.Store.Setting(r.Context(), p.OrgID, approval.SettingAllowSelf, "false")
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	out := make([]map[string]any, 0, len(list))
-	for _, ap := range list {
-		if status == store.ApprovalPending && ap.EffectiveStatus(now) != store.ApprovalPending {
-			continue
+	out := []map[string]any{}
+	resp := map[string]any{}
+	switch status {
+	case store.ViewPending, store.ViewHistory:
+		// Pages, newest first (F10): waiting requests with their arguments,
+		// or the history without them (they are purged once decided).
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		page, err := a.Store.ListApprovalsPage(r.Context(), p.OrgID, status, q.Get("before"), limit, time.Now())
+		if errors.Is(err, store.ErrBadCursor) {
+			return errorf(http.StatusBadRequest, "before must be the next value of a previous page")
 		}
-		out = append(out, markOwn(a.approvalView(r.Context(), p.OrgID, ap, true), ap, p, allowSelf == "true"))
+		if err != nil {
+			return err
+		}
+		for _, ap := range page.Approvals {
+			out = append(out, markOwn(a.approvalView(r.Context(), p.OrgID, ap, status == store.ViewPending), ap, p, allowSelf == "true"))
+		}
+		resp["next"] = page.Next
+	case "", store.ApprovalApproved, store.ApprovalDenied, store.ApprovalConsumed, store.ApprovalWithdrawn:
+		list, err := a.Store.ListApprovals(r.Context(), p.OrgID, status, 100)
+		if err != nil {
+			return err
+		}
+		for _, ap := range list {
+			out = append(out, markOwn(a.approvalView(r.Context(), p.OrgID, ap, true), ap, p, allowSelf == "true"))
+		}
+	default:
+		return errorf(http.StatusUnprocessableEntity, "unknown status %q", status)
 	}
 	a.adminEvent(r.Context(), p, "approvals.view:"+strconv.Itoa(len(out)), "")
-	writeJSON(w, http.StatusOK, map[string]any{"approvals": out})
+	resp["approvals"] = out
+	writeJSON(w, http.StatusOK, resp)
 	return nil
 }
 
@@ -1149,10 +1306,45 @@ func (a *API) getApproval(w http.ResponseWriter, r *http.Request, p auth.Princip
 	return nil
 }
 
+// grantLengths are the lengths a scoped grant may have (F10, ADR 0005).
+var grantLengths = map[string]time.Duration{"15m": 15 * time.Minute, "1h": time.Hour, "8h": 8 * time.Hour}
+
 func (a *API) decide(approve bool) handler {
 	return func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("id")
-		err := a.Approval.Decide(r.Context(), p.OrgID, id, approval.Decider{TokenID: p.TokenID, UserID: p.UserID, Name: p.Name, Person: p.Person}, approve)
+		var req struct {
+			Grant string `json:"grant"` // also allow the tool for the requester for this long
+		}
+		if err := decodeOptional(r, &req); err != nil {
+			return err
+		}
+		grant, ok := grantLengths[req.Grant]
+		switch {
+		case req.Grant != "" && !approve:
+			return errorf(http.StatusUnprocessableEntity, "only an approval grants anything")
+		case req.Grant != "" && !ok:
+			return errorf(http.StatusUnprocessableEntity, "grant must be 15m, 1h or 8h")
+		}
+		before, err := a.Store.GetApproval(r.Context(), p.OrgID, id)
+		if errors.Is(err, store.ErrNotFound) {
+			return errorf(http.StatusNotFound, "no approval %q", id)
+		}
+		if err != nil {
+			return err
+		}
+		decider := approval.Decider{TokenID: p.TokenID, UserID: p.UserID, Name: p.Name, Person: p.Person}
+		var planned store.Policy
+		if grant > 0 {
+			// Nobody allows a tool for themselves, even where they may approve
+			// their own calls: a grant takes the person out of every later call.
+			if approval.Own(decider, before) {
+				return errorf(http.StatusForbidden, "you cannot allow a tool for yourself; approve this call alone")
+			}
+			if planned, err = a.planGrant(r.Context(), p, before, grant); err != nil {
+				return err
+			}
+		}
+		err = a.Approval.Decide(r.Context(), p.OrgID, id, decider, approve)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			return errorf(http.StatusNotFound, "no approval %q", id)
@@ -1174,10 +1366,89 @@ func (a *API) decide(approve bool) handler {
 			verb = "approve"
 		}
 		a.adminEvent(r.Context(), p, "approval."+verb+":"+id, "")
+		resp := map[string]any{}
+		if grant > 0 {
+			if err := a.Store.CreatePolicies(r.Context(), p.OrgID, planned); err != nil {
+				a.Logger.Error("saving a grant after an approval", "approval", id, "err", err)
+				return errorf(http.StatusInternalServerError, "the call is approved, but allowing the tool for longer failed; add a rule on Rules instead")
+			}
+			a.adminEvent(r.Context(), p, fmt.Sprintf("policy.grant:%s:%s:%s/%s:%s", planned.ID, planned.Subject, planned.Server, before.Tool, grant), planned.Server)
+			resp["grant"] = viewPolicy(planned)
+		}
 		ap, _ := a.Store.GetApproval(r.Context(), p.OrgID, id)
-		writeJSON(w, http.StatusOK, map[string]any{"approval": a.approvalView(r.Context(), p.OrgID, ap, false)})
+		resp["approval"] = a.approvalView(r.Context(), p.OrgID, ap, false)
+		writeJSON(w, http.StatusOK, resp)
 		return nil
 	}
+}
+
+// planGrant builds the rule that allows an approved call's tool for its
+// requester for d (F10, ADR 0005 scoped grants): one server, the exact tool,
+// the reviewed definition that was asked about, the requester's member (or
+// their token when it belongs to no member). The rules are evaluated again for
+// the requester now: a grant is made only when the call would still ask. It
+// is marked with the approval (GrantOf), so it turns an ask into allow and
+// never a deny, whatever the deny's rank or conditions (ADR 0027).
+func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval, d time.Duration) (store.Policy, error) {
+	refuse := func(why string) (store.Policy, error) {
+		return store.Policy{}, errorf(http.StatusConflict, "%s Approve this call without allowing the tool for longer.", why)
+	}
+	tok, err := a.Store.TokenByID(ctx, ap.RequesterID)
+	if err != nil || tok.OrgID != p.OrgID || tok.RevokedAt != nil {
+		return refuse("The token that asked is gone.")
+	}
+	requester := auth.Principal{OrgID: p.OrgID, TokenID: tok.ID, Name: tok.Name, Roles: []string{tok.Role}, Kind: tok.Kind, Person: tok.Person, UserID: tok.UserID}
+	acc, err := gateway.Access(ctx, a.Store, requester)
+	if err != nil {
+		return store.Policy{}, err
+	}
+	if !acc.SeesTool(ap.ServerID, ap.Tool) || (tok.UserID != "" && !auth.RolesCan(acc.Roles, auth.PermUseGateway)) {
+		return refuse("The person who asked no longer sees this tool.")
+	}
+	pin, err := a.Store.PinDefinition(ctx, p.OrgID, ap.ServerID, store.PinKey{Kind: upstream.KindTool, Name: ap.Tool, Hash: ap.PinHash})
+	if errors.Is(err, store.ErrNotFound) || (err == nil && pin.Status != store.PinAccepted) {
+		return refuse("The tool's definition is no longer the accepted one.")
+	}
+	if err != nil {
+		return store.Policy{}, err
+	}
+	var def mcp.Tool
+	_ = json.Unmarshal([]byte(pin.Definition), &def) // annotations only tighten; none is the safe reading
+	rules, err := a.Store.ListPolicies(ctx, p.OrgID)
+	if err != nil {
+		return store.Policy{}, err
+	}
+	dflt, err := a.Store.Setting(ctx, p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
+	if err != nil {
+		return store.Policy{}, err
+	}
+	// The approved call's own arguments, for rules with conditions (ADR 0027).
+	args, err := a.Approval.Arguments(ctx, p.OrgID, ap)
+	if err != nil {
+		return refuse("The call's arguments can no longer be read.")
+	}
+	now := time.Now()
+	dec := policy.Evaluate(rules, policy.Request{Roles: gateway.CallerRoles(requester, acc), TokenID: tok.ID, UserID: tok.UserID, Teams: acc.Teams,
+		Server: ap.ServerAlias, Tool: ap.Tool, PinHash: ap.PinHash, Annotations: def.Annotations, Args: args}, dflt, now)
+	if dec.Action != store.ActionAsk {
+		return refuse("The rules changed while this request waited: this call would now be " + map[string]string{store.ActionAllow: "allowed", store.ActionDeny: "denied"}[dec.Action] + ".")
+	}
+	// The grant covers asks up to the rank of the one that asks now; the
+	// default's ask is below every rule (ADR 0027, security review 2026-11-20).
+	covers := -1000
+	for _, r := range rules {
+		if r.ID == dec.RuleID {
+			covers = r.Priority
+		}
+	}
+	subject := "token:" + tok.ID
+	if tok.UserID != "" {
+		subject = "user:" + tok.UserID
+	}
+	exp := now.Add(d)
+	return store.Policy{ID: ids.New(), Server: ap.ServerAlias, Tool: policy.ExactTool(ap.Tool), Subject: subject, Action: store.ActionAllow,
+		GrantOf: ap.ID, Priority: covers, PinHash: ap.PinHash, Note: fmt.Sprintf("Allowed for %s by %s from approval %s", ap.RequesterPerson, p.Name, ap.ID),
+		CreatedBy: p.Name, CreatedAt: now, ExpiresAt: &exp}, nil
 }
 
 func (a *API) patchApprovalSettings(w http.ResponseWriter, r *http.Request, p auth.Principal) error {

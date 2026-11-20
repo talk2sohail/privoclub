@@ -200,3 +200,86 @@ proxy that checks a header will do.
    them no new token. Put **member** back.
 7. **Activity → Admin changes**: `member.roles:<person>:<before>-><after>`,
    one per Save, with you as actor.
+
+## 14. Home page and tool review (needs 0.12.0+)
+
+1. Open the address itself (`https://app.privo.club/`), signed out. Expect:
+   **Sign in** (it goes to the admin site), the MCP address
+   `https://app.privo.club/mcp` for AI clients, and **About Privo**.
+2. Add a server whose tools you have not accepted (any catalog server, or
+   remove and add DeepWiki again). On its page, under **Waiting for
+   review**, expect each tool on its own card: its whole description as
+   text (more than the first line), its inputs with their descriptions, and
+   **The whole definition** to open. Expect **Accept 0 tools** disabled:
+   nothing is chosen until you choose it.
+3. Choose one tool → **Accept 1 tool**. Choose another → **Block 1**. Expect:
+   the blocked one under **Blocked (1)**, and it does not appear in your AI
+   client's tool list. **Accept after all** on it: it appears at the next
+   refresh.
+4. A tool that changes: if a server you use changes a tool's description,
+   its page shows the tool as **changed** with **What changed since the
+   accepted version** (old lines in red, new in green). Until you accept,
+   the AI client does not see the tool.
+5. Warnings: a tool whose description talks to the model ("<IMPORTANT>",
+   "do not tell the user", "~/.ssh") or hides characters shows a red
+   **N warnings** badge and the lines that triggered it; hidden characters
+   appear as ⟦U+200B⟧. No warnings on ordinary tools such as DeepWiki's.
+6. **Activity → Admin changes**: `pins.accept:1:tool/<name>@<hash>`,
+   `pins.block:1:…` and `pins.accept:1:…` again, each naming the tool and the
+   start of its hash, with the server.
+
+## 15. Approvals people live with (needs 0.13.0+ and the second account)
+
+1. Make sure a rule asks before a tool (as in 3). From the second account's
+   AI client, call it. As the second account, open **Start**: expect
+   **Waiting for approval** with that call. **Withdraw** it. Expect the AI
+   client's next identical call to ask again (a new request).
+2. As the owner, open **Approvals**. Next to **Approve**, choose **Allow:
+   this tool for 1 hour** → **Approve**. Expect "Approved, and <person> may
+   use this tool for 1 hour without asking." The AI client's call goes
+   through, and so do its next calls of that tool with other arguments.
+3. **Rules**: a new allow rule for that person, "until" an hour from now,
+   with the note "Allowed for … from approval …". Delete it: the next call
+   asks again.
+4. **Approvals → History**: the approved and the withdrawn requests, with
+   who decided, and no arguments. With more than 50 waiting, **Load more**
+   appears at the bottom of **Waiting**.
+5. **Activity → Admin changes**: `approval.withdraw:…` by the second
+   account, `approval.approve:…` and `policy.grant:…` by you.
+
+## 16. Toolsets (needs 0.14.0+ and the second account)
+
+1. Give a server with several tools to a team the second account is in (for
+   example GitHub to Developers). On the server's page, under **Which tools
+   each team sees**, that team shows **All tools**.
+2. Choose **Only these**, tick two tools → **Save**. Expect "Saved". In the
+   second account's AI client, after a refresh, the server lists only those
+   two tools; a call on another tool of that server says it is not
+   available, exactly as for a name that does not exist.
+3. As the second account, **Start** counts only those two tools for that
+   server.
+4. Untick both: expect the warning that the team sees none of the tools.
+   Choose **All tools** → **Save**: everything is back after a refresh.
+5. **Activity → Admin changes**: `server.team_tools:<alias>:<team>:2`, then
+   `…:0` if you saved with none, then `…:all`.
+
+## 17. Rules on arguments and rules as a file (needs 0.15.0+)
+
+1. **Rules → Add a rule**: server DeepWiki (or any), tool
+   `read_wiki_structure`, action **deny**, **Add a condition**: `repoName`
+   **is** `facebook/react` → **Add rule**. Expect the rule listed with
+   "when repoName is "facebook/react"".
+2. From an AI client, call that tool for `facebook/react`: denied. Call it for
+   `modelcontextprotocol/go-sdk`: it runs (or asks, if another rule says so).
+3. Add a rule **ask** for every tool of that server. Call it for another
+   repository: approval required. Approve with **Allow: this tool for 1
+   hour**. Calls for other repositories now run; `facebook/react` is still
+   denied: a grant never lifts a deny.
+4. **Rules as a file → Export**: a YAML file with both rules and the
+   condition. Paste it into **Import a rules file**, choose **Replace all
+   rules with these**, **Check**: expect "This adds 2 rules and deletes 2".
+   **Import**: the rules are the same as before, and the grant from step 3
+   is still listed.
+5. Paste a file with a mistake (for example `op: regex`) and **Check**:
+   expect a message naming the rule, and nothing changed.
+6. **Activity → Admin changes**: `policy.export:2`, `policy.import:replace:+2:-2`.

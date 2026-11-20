@@ -134,7 +134,7 @@ func openDB(ctx context.Context, dir string, lease bool) (*Store, error) {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	provider, err := goose.NewProvider(goose.DialectSQLite3, s.w, mustSub(migrations, "migrations"))
+	provider, err := goose.NewProvider(goose.DialectSQLite3, s.w, migrationFiles())
 	if err != nil {
 		return fmt.Errorf("store: migrations: %w", err)
 	}
