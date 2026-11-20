@@ -283,3 +283,28 @@ proxy that checks a header will do.
 5. Paste a file with a mistake (for example `op: regex`) and **Check**:
    expect a message naming the rule, and nothing changed.
 6. **Activity → Admin changes**: `policy.export:2`, `policy.import:replace:+2:-2`.
+
+## 18. The audit trail (needs 0.16.0+)
+
+1. Make a few calls from an AI client. **Activity → Tool calls → Check the record**:
+   expect "Intact: N blocks and M events checked; last sealed …" within a few
+   seconds of the calls.
+2. On the host: `docker exec <container> /privo audit verify`. Expect JSON
+   with `"ok": true` and exit code 0.
+3. **Filter and export**: filter by a server and a date → the list narrows;
+   **Export CSV** downloads the same rows (no recorded arguments).
+   **Load more** appears with more than 100 rows.
+4. As the owner: set **Keep events for** 10 days → **Save**: refused, at
+   least 30 days. Set 365 → **Save**. Erase the recorded arguments of a
+   person (only matters if recording is on); calls they made through an AI
+   client that signed in with OAuth are erased too. **Check the record**
+   again: still intact.
+5. `curl -H "Authorization: Bearer <owner control token>"
+   https://app.privo.club/api/v1/audit/checkpoints` lists signed block heads;
+   `/api/v1/audit/keys` lists the public key. Keep both outside Privo.
+6. **Activity → Admin changes**: `audit.verify:true`,
+   `audit.retention_days=365`, `audit.erase:<person>`, `audit.export:<n>`.
+7. Optional, on a copy of the database only (never production): with
+   `sqlite3` delete the oldest rows of `audit_events`, or add a row with an
+   old `ts`. **Check the record** must say "Not intact" and name the block,
+   event or prune record.

@@ -194,6 +194,13 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 		rec.Diagnose(o, store.Diagnostic{Level: store.LevelError, Category: store.CategoryAudit, Message: fmt.Sprintf("%d audit records could not be stored", n)})
 	}})
 	defer aw.Close()
+	// The tamper-evident chain (ADR 0006, 0028): seal new events every few
+	// seconds, signed with a key derived from the master key.
+	sealer := &audit.Sealer{Store: st, Keys: keys, Org: org.ID, Logger: logger}
+	sealCtx, stopSeal := context.WithCancel(ctx)
+	sealDone := make(chan struct{})
+	go func() { sealer.Run(sealCtx); close(sealDone) }()
+	defer func() { stopSeal(); <-sealDone }() // before the writer and the store close
 	authn := auth.New(st)
 
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ListenAddr)
@@ -213,7 +220,7 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 	approvals := &approval.Service{Store: st, Keys: kr, Hold: cfg.ApprovalHold}
 	gw := &gateway.Gateway{Store: st, Upstream: mgr, Keys: kr, Audit: aw, Auth: authn, Approval: approvals, Logger: logger,
 		ResourceMetadataURL: prm, BaseURL: base, CallTimeout: cfg.CallTimeout, Telemetry: rec}
-	api := &control.API{Store: st, Keys: kr, Auth: authn, Upstream: mgr, Audit: aw, Approval: approvals, Egress: policy, Logger: logger,
+	api := &control.API{Store: st, Keys: kr, AuditKeys: keys, Auth: authn, Upstream: mgr, Audit: aw, Approval: approvals, Egress: policy, Logger: logger,
 		TokenTTL: cfg.TokenTTL, OAuth: oauthClient, Grants: grantSvc, Telemetry: rec, TelemetryRetentionDays: cfg.TelemetryRetentionDays}
 	if grantSvc != nil {
 		api.PublicURL = cfg.PublicURL

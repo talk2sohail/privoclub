@@ -34,6 +34,7 @@ export function session(role: "owner" | "member" | "approver", over: Partial<Ses
       manage_tokens: owner,
       use_gateway: role !== "approver",
       activity: owner,
+      manage_audit: owner,
       connections: role !== "approver",
       oauth_servers: true,
     },

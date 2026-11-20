@@ -882,3 +882,47 @@ describe("rules", () => {
     expect(srv.writes()[1]!.body).toEqual({ yaml: "version: 1\nrules: []\n", mode: "replace" });
   });
 });
+
+describe("audit", () => {
+  // F12: filters, pages, the integrity check, retention and erasure.
+  it("filters, loads more, checks the record and erases arguments", async () => {
+    at("/admin/activity?view=calls");
+    const ev = (id: string) => ({ time: "2026-11-20T10:00:00Z", actor: "laptop", server: "github", item: "t-" + id, action: "tools/call", decision: "allow", outcome: "ok", approved_by: "" });
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/audit/events?limit=100": { events: [ev("1")], next: "c1" },
+      "GET /admin/api/v1/audit/events?limit=100&before=c1": { events: [ev("2")], next: "" },
+      "GET /admin/api/v1/audit/events?limit=100&server=linear&from=2026-11-01T00%3A00%3A00Z": { events: [ev("lin")], next: "" },
+      "GET /admin/api/v1/audit/integrity": { report: { ok: false, blocks: 3, events: 9, pruned_blocks: 0, unsealed: 1, problem: "block 2: an event was changed" }, retention_days: 30 },
+      "PATCH /admin/api/v1/settings/audit": { retention_days: 7 },
+      "POST /admin/api/v1/audit/erase": { person: "ada", erased: 4 },
+    });
+    await screen.findByText("t-1");
+    fireEvent.click(screen.getByRole("button", { name: "Load more" }));
+    await screen.findByText("t-2");
+    fireEvent.input(document.querySelector('input[name="server"]')!, { target: { value: "linear" } });
+    fireEvent.input(document.querySelector('input[name="from"]')!, { target: { value: "2026-11-01" } });
+    fireEvent.click(screen.getByRole("button", { name: "Filter" }));
+    await screen.findByText("t-lin");
+
+    fireEvent.click(screen.getByRole("button", { name: "Check the record" }));
+    await screen.findByText("Not intact: block 2: an event was changed");
+    expect((screen.getByLabelText("Days to keep") as HTMLInputElement).value).toBe("30");
+    fireEvent.input(screen.getByLabelText("Days to keep"), { target: { value: "7" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Save" }).at(-1)!);
+    fireEvent.input(screen.getByLabelText("Person to erase"), { target: { value: "ada" } });
+    fireEvent.click(screen.getByRole("button", { name: "Erase" }));
+    await waitFor(() => expect(srv.writes()).toHaveLength(2));
+    expect(srv.writes()[0]!.body).toEqual({ retention_days: 7 });
+    expect(srv.writes()[1]!.body).toEqual({ person: "ada" });
+  });
+
+  it("shows no retention or erasure to those who only read", async () => {
+    at("/admin/activity?view=calls");
+    await start(session("owner", { can: { ...session("owner").can, manage_audit: false } }), {
+      "GET /admin/api/v1/audit/events?limit=100": { events: [], next: "" },
+    });
+    await screen.findByText("Integrity");
+    expect(screen.queryByLabelText("Person to erase")).toBeNull();
+    expect(screen.queryByLabelText("Days to keep")).toBeNull();
+  });
+});

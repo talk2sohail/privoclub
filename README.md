@@ -340,6 +340,27 @@ replaces everything but grants; one bad rule refuses the whole file). API:
 `GET /api/v1/policies/export`, `POST /api/v1/policies/import` with
 `{"yaml": "...", "mode": "merge", "dry_run": true}`.
 
+## The audit trail
+
+Every call and every admin change is recorded before it runs (ADR 0006).
+Every few seconds Privo seals new records into blocks, each linked to the
+one before and signed with a key derived from the master key, which never
+touches the database (ADR 0028). A changed, deleted or reordered row, or a
+forged block, is found by:
+
+- **Activity → Check the record** (or `GET /api/v1/audit/integrity`);
+- `privo audit verify` on the host (exit 1 on a problem).
+
+Keep the signed checkpoints outside Privo (`GET /api/v1/audit/checkpoints`,
+public keys at `GET /api/v1/audit/keys`) to prove later that nothing was
+rewritten. **Activity** filters by person, server, action, decision and
+date, loads more, and exports CSV (`GET /api/v1/audit/export`, at most
+10,000 rows, without recorded arguments). Those who manage the audit set a
+retention in days (`PATCH /api/v1/settings/audit` with `retention_days`;
+whole sealed blocks go, the rest still checks) and erase a person's
+recorded arguments (`POST /api/v1/audit/erase`), which keeps the record
+checkable.
+
 ## Roles
 
 A person holds a set of roles (ADR 0021): **owner** or **admin** alone, or
