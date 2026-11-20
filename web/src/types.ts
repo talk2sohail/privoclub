@@ -46,6 +46,7 @@ export type Policy = {
   note: string;
   created_by: string;
   expires_at: string | null;
+  subject_person?: string; // the member of a "user:" rule (a grant from an approval)
 };
 
 export type Member = {
@@ -95,6 +96,8 @@ export type Approval = {
   expires_at: string;
   arguments?: unknown;
   arguments_error?: string;
+  decided_by?: string;
+  decided_at?: string | null;
   own?: boolean; // the viewer's own request
   decide_blocked?: string; // why the viewer cannot decide it
 };
@@ -159,3 +162,6 @@ export type MyTools = {
   teams: { slug: string; name: string }[];
   servers: MyServer[];
 };
+
+/** A person's own request that waits for a decision (F10). */
+export type MyApproval = { id: string; server: string; tool: string; requester: string; reason: string; created_at: string; expires_at: string };

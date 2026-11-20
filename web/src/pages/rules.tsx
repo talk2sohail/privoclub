@@ -4,8 +4,9 @@ import { invalidate, useData } from "../data";
 import type { Policy, ServerView } from "../types";
 import { Empty, ErrorLine, Loading, formValues, useAction, when } from "../ui";
 
-export function subjectLabel(sub: string): string {
+export function subjectLabel(sub: string, person?: string): string {
   if (sub === "*") return "everyone";
+  if (sub.startsWith("user:")) return person || "a removed member";
   if (sub.startsWith("role:")) return sub.slice(5) + "s";
   if (sub.startsWith("token:")) return "token " + sub.slice(6);
   return sub;
@@ -96,7 +97,7 @@ export function Rules(_: PageProps) {
                     <td>
                       <code>{r.tool}</code>
                     </td>
-                    <td>{subjectLabel(r.subject)}</td>
+                    <td>{subjectLabel(r.subject, r.subject_person)}</td>
                     <td>
                       <span class={"action " + r.action}>{actionLabel[r.action] ?? r.action}</span>
                     </td>

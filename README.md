@@ -120,7 +120,11 @@ People approve calls in a browser, with their GitHub account and no token
    Privo (default: your GitHub login in lowercase); self-approval is refused
    between your tokens and your sessions.
 3. `/admin/approvals` lists the calls waiting for a decision, with their
-   arguments. Owners, admins and approvers can approve or deny.
+   arguments. Owners, admins and approvers can approve or deny. Approving can
+   also allow the same tool for that person for 15 minutes, 1 hour or 8 hours
+   (a rule with that expiry, shown on Rules; it never outranks a deny that
+   already won). **History** lists decided requests. A person sees their own
+   waiting requests on Start and can withdraw one.
 
 Only people who were added can sign in; any other GitHub account sees a plain
 refusal. See `docs/deploy-coolify.md` for the Coolify steps.

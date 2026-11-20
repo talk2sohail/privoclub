@@ -470,18 +470,19 @@ Threat note:
 
 Tasks and the tests that name them:
 
-- [ ] Store: migration `00009_approval_rule.sql` (`approvals.rule_id`: the rule that asked); `ListApprovalsPage` (pending or history, newest first, a cursor); `MyApprovals` (by the member's tokens); `user:<id>` rules need a member of the org
-  - tests: `TestApprovalPages`, `TestMyApprovals`, `TestUserRuleNeedsAMember`
-- [ ] Policy: subject `user:<id>` matched against the caller's member
-  - tests: `TestEvaluate` (user subject), `TestValidSubjectUser`
-- [ ] Approval service: the rule that asked is kept; `Withdraw` by the requester's member only
+- [x] Store: migration `00009_approval_rule.sql` (`approvals.rule_id`: the rule that asked); `ListApprovalsPage` (pending or history, newest first, a cursor); `MyApprovals` (by the member's tokens); `user:<id>` rules need a member of the org
+  - tests: `TestApprovalPages` (pages never repeat a row, including two asked in the same instant; a cursor from elsewhere is refused; other orgs' rows never show), `TestMyApprovalsAndWithdraw` (a token that only names the person is not theirs), `TestUserRuleNeedsAMember` (another org's member and a removed one are refused)
+- [x] Policy: subject `user:<id>` matched against the caller's member; `ExactTool` turns a name into a pattern that matches only it
+  - tests: `TestUserSubject` (another member, no member and another tool are not matched), `TestValidSubjectUser`, `TestValidation`
+- [x] Approval service: the rule that asked is kept; `Withdraw` by the requester's member only; a withdrawn request is its own outcome, and the AI client is told to call again rather than that a person denied it
   - tests: `TestWithdrawOwnRequestOnly`, `TestHeldCallEndsWhenWithdrawn`
-- [ ] Admin API: approve with `{"grant": "15m"|"1h"|"8h"}`; `GET /api/v1/approvals?status=pending|history&before=&limit=` with `next`; `GET /api/v1/me/approvals`; `POST /api/v1/me/approvals/{id}/withdraw`
-  - tests: `TestApproveWithGrant` (rule shape, priority, expiry, audit; no grant above 8 hours; none on refusal), `TestApprovalHistoryAPI`, `TestWithdrawAPI`
-- [ ] App: Approvals has Waiting and History, with "Load more"; approving offers "also allow for…"; Start lists the person's waiting requests with Withdraw; Rules names a grant's person
-  - tests (Vitest): the grant is sent with the approval, history pages, withdraw from Start
-- [ ] Acceptance: `TestApprovalGrantAndWithdraw` (a grant lets the next calls through without asking, then expires; a withdrawn request ends the held call and a retry asks again; history lists both)
-- [ ] Docs: README, `docs/manual-test.md`, version 0.10.0; security review
+- [x] Admin API: approve with `{"grant": "15m"|"1h"|"8h"}`; `GET /api/v1/approvals?status=pending|history&before=&limit=` with `next`; `GET /api/v1/me/approvals`; `POST /api/v1/me/approvals/{id}/withdraw`
+  - tests: `TestApproveWithGrant` (rule shape, one above the asking rule, expiry, the person named on Rules, audit; a bad grant decides nothing), `TestGrantFromTheDefaultAndRefusals` (rank 0 under the default; a refused self-approval grants nothing; a plain approve grants nothing), `TestApprovalHistoryAPI` (pages, history without arguments, bad cursor, members refused), `TestWithdrawAPI`
+- [x] App: Approvals has Waiting and History, with "Load more"; approving offers "also allow for…"; Start lists the person's waiting requests with Withdraw; Rules names a grant's person
+  - tests (Vitest): `pages.test.tsx` (approve with a grant, load more and history, withdraw from Start); 46/46
+- [x] Acceptance: `TestApprovalGrantAndWithdraw` (a grant lets the next calls through without asking and names the person on Rules; without it the call asks again; a withdrawn request cannot be approved and a retry asks anew; history lists both without arguments. A held call ending on withdrawal is `internal/approval` `TestHeldCallEndsWhenWithdrawn`)
+- [x] Docs: README, `docs/manual-test.md` section 12, version 0.10.0
+- [ ] Security review
 
 ## F11. Manifest pinning and scanning
 Status: In progress (pins built with F02; review, diff, block and scan 2026-11-20)

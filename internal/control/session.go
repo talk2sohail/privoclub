@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"privo.club/privo/internal/approval"
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/store"
@@ -108,6 +109,45 @@ func (a *API) registerMembers(mux *http.ServeMux, wrap func(auth.Permission, han
 	mux.Handle("GET /api/v1/me/tokens", wrap(auth.PermUseGateway, a.listMyTokens))
 	mux.Handle("POST /api/v1/me/tokens", wrap(auth.PermUseGateway, a.createMyToken))
 	mux.Handle("DELETE /api/v1/me/tokens/{id}", wrap(auth.PermUseGateway, a.revokeMyToken))
+	mux.Handle("GET /api/v1/me/approvals", wrap(auth.PermUseGateway, a.listMyApprovals))
+	mux.Handle("POST /api/v1/me/approvals/{id}/withdraw", wrap(auth.PermUseGateway, a.withdrawMyApproval))
+}
+
+// listMyApprovals is a person's own requests that wait for a decision (F10).
+// Their arguments are not shown here: the person made them.
+func (a *API) listMyApprovals(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	if p.UserID == "" {
+		return errNotSignedIn
+	}
+	list, err := a.Store.MyApprovals(r.Context(), p.OrgID, p.UserID, time.Now())
+	if err != nil {
+		return err
+	}
+	out := make([]map[string]any, 0, len(list))
+	for _, ap := range list {
+		out = append(out, map[string]any{"id": ap.ID, "server": ap.ServerAlias, "tool": ap.Tool, "requester": ap.RequesterName,
+			"reason": ap.Reason, "created_at": ap.CreatedAt, "expires_at": ap.ExpiresAt})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"approvals": out})
+	return nil
+}
+
+// withdrawMyApproval takes back one of the person's own waiting requests.
+func (a *API) withdrawMyApproval(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	if p.UserID == "" {
+		return errNotSignedIn
+	}
+	id := r.PathValue("id")
+	err := a.Approval.Withdraw(r.Context(), p.OrgID, id, approval.Decider{TokenID: p.TokenID, UserID: p.UserID, Name: p.Name, Person: p.Person})
+	if errors.Is(err, approval.ErrNotYours) {
+		return errorf(http.StatusNotFound, "no waiting request %q of yours", id)
+	}
+	if err != nil {
+		return err
+	}
+	a.adminEvent(r.Context(), p, "approval.withdraw:"+id, "")
+	writeJSON(w, http.StatusOK, map[string]any{"withdrawn": id})
+	return nil
 }
 
 type memberView struct {

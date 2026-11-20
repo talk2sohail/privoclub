@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,7 @@ type Approval struct {
 	ArgsDigest      string
 	Args            []byte // encrypted
 	Reason          string
+	RuleID          string // the rule that asked; "" when the org default did
 	Status          string
 	DecidedBy       string
 	DecidedAt       *time.Time
@@ -56,10 +58,10 @@ type ApprovalBinding struct {
 // CreateApproval stores a pending approval.
 func (s *Store) CreateApproval(ctx context.Context, org OrgID, a Approval) error {
 	_, err := s.w.ExecContext(ctx, `
-		INSERT INTO approvals (org_id, id, requester_id, requester_name, requester_person, server_id, server_alias, tool, args_digest, args, reason, status, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+		INSERT INTO approvals (org_id, id, requester_id, requester_name, requester_person, server_id, server_alias, tool, args_digest, args, reason, rule_id, status, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
 		ON CONFLICT DO NOTHING`,
-		org, a.ID, a.RequesterID, a.RequesterName, a.RequesterPerson, a.ServerID, a.ServerAlias, a.Tool, a.ArgsDigest, a.Args, a.Reason,
+		org, a.ID, a.RequesterID, a.RequesterName, a.RequesterPerson, a.ServerID, a.ServerAlias, a.Tool, a.ArgsDigest, a.Args, a.Reason, a.RuleID,
 		ts(a.CreatedAt), ts(a.ExpiresAt))
 	return mapErr(err)
 }
@@ -91,7 +93,7 @@ func (s *Store) RestoreApproval(ctx context.Context, org OrgID, id string) error
 	return err
 }
 
-const approvalCols = `id, requester_id, requester_name, requester_person, server_id, server_alias, tool, args_digest, args, reason, status,
+const approvalCols = `id, requester_id, requester_name, requester_person, server_id, server_alias, tool, args_digest, args, reason, rule_id, status,
 	decided_by, decided_at, created_at, expires_at, consumed_at`
 
 func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
@@ -99,7 +101,7 @@ func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	var decidedAt, consumedAt sql.NullString
 	var created, expires string
 	err := sc.Scan(&a.ID, &a.RequesterID, &a.RequesterName, &a.RequesterPerson, &a.ServerID, &a.ServerAlias, &a.Tool, &a.ArgsDigest, &a.Args,
-		&a.Reason, &a.Status, &a.DecidedBy, &decidedAt, &created, &expires, &consumedAt)
+		&a.Reason, &a.RuleID, &a.Status, &a.DecidedBy, &decidedAt, &created, &expires, &consumedAt)
 	if err != nil {
 		return a, err
 	}
@@ -206,4 +208,117 @@ func (s *Store) ListApprovals(ctx context.Context, org OrgID, status string, lim
 func (s *Store) PurgeArguments(ctx context.Context, org OrgID, id string) error {
 	_, err := s.w.ExecContext(ctx, `UPDATE approvals SET args = x'' WHERE org_id = ? AND id = ? AND status <> 'pending' AND status <> 'approved'`, org, id)
 	return err
+}
+
+// Approval views for ListApprovalsPage.
+const (
+	ViewPending = "pending" // waiting for a decision and not expired
+	ViewHistory = "history" // everything else: decided, withdrawn, used or expired
+)
+
+// ApprovalPage is one page of approvals, newest first. Next is the cursor of
+// the following page, "" on the last.
+type ApprovalPage struct {
+	Approvals []Approval
+	Next      string
+}
+
+// ListApprovalsPage returns a page of an org's pending approvals or of its
+// history. before is the Next of the previous page ("" for the first);
+// limit is 1 to 200 (default 50).
+func (s *Store) ListApprovalsPage(ctx context.Context, org OrgID, view, before string, limit int, now time.Time) (ApprovalPage, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	q := `SELECT ` + approvalCols + ` FROM approvals WHERE org_id = ?`
+	args := []any{org}
+	switch view {
+	case ViewPending:
+		q += ` AND status = 'pending' AND expires_at > ?`
+	case ViewHistory:
+		q += ` AND NOT (status = 'pending' AND expires_at > ?)`
+	default:
+		return ApprovalPage{}, errors.New("store: unknown approval view")
+	}
+	args = append(args, ts(now))
+	if before != "" {
+		at, id, ok := strings.Cut(before, "|")
+		if !ok || id == "" || parseTS(at).IsZero() {
+			return ApprovalPage{}, ErrBadCursor
+		}
+		q += ` AND (julianday(created_at) < julianday(?) OR (julianday(created_at) = julianday(?) AND id < ?))`
+		args = append(args, at, at, id)
+	}
+	q += ` ORDER BY julianday(created_at) DESC, id DESC LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := s.r.QueryContext(ctx, q, args...)
+	if err != nil {
+		return ApprovalPage{}, err
+	}
+	defer func() { _ = rows.Close() }()
+	var page ApprovalPage
+	for rows.Next() {
+		a, err := scanApproval(rows)
+		if err != nil {
+			return ApprovalPage{}, err
+		}
+		page.Approvals = append(page.Approvals, a)
+	}
+	if err := rows.Err(); err != nil {
+		return ApprovalPage{}, err
+	}
+	if len(page.Approvals) > limit {
+		page.Approvals = page.Approvals[:limit]
+		last := page.Approvals[limit-1]
+		page.Next = ts(last.CreatedAt) + "|" + last.ID
+	}
+	return page, nil
+}
+
+// ErrBadCursor is returned for a page cursor this store did not make.
+var ErrBadCursor = errors.New("store: unknown page cursor")
+
+// MyApprovals returns the pending, unexpired approvals asked for with any
+// token bound to the member userID, newest first (at most 50).
+func (s *Store) MyApprovals(ctx context.Context, org OrgID, userID string, now time.Time) ([]Approval, error) {
+	if userID == "" {
+		return nil, nil
+	}
+	rows, err := s.r.QueryContext(ctx, `
+		SELECT `+approvalCols+` FROM approvals
+		WHERE org_id = ? AND status = 'pending' AND expires_at > ?
+		  AND requester_id IN (SELECT id FROM api_tokens WHERE org_id = ? AND user_id = ?)
+		ORDER BY julianday(created_at) DESC, id DESC LIMIT 50`, org, ts(now), org, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Approval
+	for rows.Next() {
+		a, err := scanApproval(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// WithdrawApproval withdraws a pending, unexpired approval that was asked for
+// with a token bound to the member userID, records by and drops its
+// arguments. It returns false when there is no such approval.
+func (s *Store) WithdrawApproval(ctx context.Context, org OrgID, id, userID, by string, now time.Time) (bool, error) {
+	if userID == "" {
+		return false, nil
+	}
+	res, err := s.w.ExecContext(ctx, `
+		UPDATE approvals SET status = 'withdrawn', decided_by = ?, decided_at = ?, args = x''
+		WHERE org_id = ? AND id = ? AND status = 'pending' AND expires_at > ?
+		  AND requester_id IN (SELECT id FROM api_tokens WHERE org_id = ? AND user_id = ?)`,
+		by, ts(now), org, id, ts(now), org, userID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
 }

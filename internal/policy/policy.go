@@ -2,7 +2,8 @@
 // approval, or is denied (ADR 0001 decision stage).
 //
 // Rules match a server alias (or "*"), an upstream tool name glob and a
-// subject ("*", "role:<role>", "team:<slug>" or "token:<id>"; ADR 0020). Among the matching rules the
+// subject ("*", "role:<role>", "team:<slug>", "user:<id>" or "token:<id>";
+// ADR 0020; "user:" for one member, F10 scoped grants). Among the matching rules the
 // highest priority wins; within that priority deny beats ask beats allow.
 // When no rule matches, the org default applies, tightened (never relaxed)
 // by the tool's reviewed annotations: a tool that declares itself
@@ -24,6 +25,7 @@ import (
 type Request struct {
 	Roles       []string // the caller's roles: a member's current ones (ADR 0021), or a token's own
 	TokenID     string
+	UserID      string   // the caller's member: a signed-in person or a member's own token (ADR 0022)
 	Teams       []string // the caller's teams, "everyone" included when they are in it
 	Server      string   // alias
 	Tool        string   // upstream name (tool, prompt, or resource URI)
@@ -55,6 +57,8 @@ func ValidSubject(s string) bool {
 		return t == store.TeamEveryone || store.ValidTeamSlug(t)
 	case strings.HasPrefix(s, "token:"):
 		return len(s) > len("token:")
+	case strings.HasPrefix(s, "user:"):
+		return len(s) > len("user:") && len(s) <= 128
 	}
 	return false
 }
@@ -91,6 +95,8 @@ func matches(r store.Policy, req Request, now time.Time) bool {
 		return slices.Contains(req.Teams, strings.TrimPrefix(r.Subject, "team:"))
 	case strings.HasPrefix(r.Subject, "token:"):
 		return strings.TrimPrefix(r.Subject, "token:") == req.TokenID
+	case strings.HasPrefix(r.Subject, "user:"):
+		return req.UserID != "" && strings.TrimPrefix(r.Subject, "user:") == req.UserID
 	}
 	return false
 }
@@ -166,6 +172,9 @@ func PresetRules(preset, server string, tools []PresetTool) ([]store.Policy, err
 }
 
 // escapeGlob makes a literal tool name safe to use as a pattern.
+// ExactTool is a tool pattern that matches only name.
+func ExactTool(name string) string { return escapeGlob(name) }
+
 func escapeGlob(name string) string {
 	r := strings.NewReplacer(`\`, `\\`, `*`, `\*`, `?`, `\?`, `[`, `\[`)
 	return r.Replace(name)

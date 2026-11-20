@@ -247,3 +247,80 @@ func TestRestoreAfterFailedStart(t *testing.T) {
 		t.Fatalf("restored approval not usable: %+v", out)
 	}
 }
+
+// F10: a person takes back their own request; nobody else can.
+func TestWithdrawOwnRequestOnly(t *testing.T) {
+	s, st, org := setup(t)
+	ctx := context.Background()
+	now := time.Now()
+	for _, tok := range []store.APIToken{
+		{OrgID: org, ID: "tokA", Name: "ada-laptop", Role: store.RoleMember, Kind: store.KindGateway, Person: "ada", UserID: "u-ada", SecretHash: "h1", CreatedAt: now, ExpiresAt: now.Add(time.Hour)},
+	} {
+		if err := st.CreateToken(ctx, tok); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := req(org, "w1")
+	r.RuleID = "rule-ask"
+	out, err := s.Gate(ctx, r)
+	if err != nil || out.Result != Pending {
+		t.Fatalf("gate: %+v %v", out, err)
+	}
+	if a, _ := st.GetApproval(ctx, org, out.ID); a.RuleID != "rule-ask" {
+		t.Fatalf("the asking rule is not kept: %+v", a)
+	}
+	for _, other := range []Decider{{UserID: "u-bob", Name: "bob", Person: "bob"}, {TokenID: "tokA", Name: "ada-laptop", Person: "ada"}, {Name: "x"}} {
+		if err := s.Withdraw(ctx, org, out.ID, other); !errors.Is(err, ErrNotYours) {
+			t.Fatalf("withdrawn by %+v: %v", other, err)
+		}
+	}
+	ada := Decider{UserID: "u-ada", Name: "ada", Person: "ada"}
+	if err := s.Withdraw(ctx, org, out.ID, ada); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Withdraw(ctx, org, out.ID, ada); !errors.Is(err, ErrNotYours) {
+		t.Fatalf("withdrawn twice: %v", err)
+	}
+	if err := s.Decide(ctx, org, out.ID, approver, true); !errors.Is(err, ErrNotPending) {
+		t.Fatalf("approved after it was withdrawn: %v", err)
+	}
+	// The same call asks again.
+	again, _ := s.Gate(ctx, r)
+	if again.Result != Pending || again.ID == out.ID {
+		t.Fatalf("retry after withdrawing: %+v", again)
+	}
+}
+
+func TestHeldCallEndsWhenWithdrawn(t *testing.T) {
+	s, st, org := setup(t)
+	s.Hold = 5 * time.Second
+	ctx := context.Background()
+	now := time.Now()
+	if err := st.CreateToken(ctx, store.APIToken{OrgID: org, ID: "tokA", Name: "ada-laptop", Role: store.RoleMember, Kind: store.KindGateway,
+		Person: "ada", UserID: "u-ada", SecretHash: "h1", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan Outcome, 1)
+	go func() {
+		out, _ := s.Gate(ctx, req(org, "w2"))
+		done <- out
+	}()
+	var id string
+	for i := 0; i < 200 && id == ""; i++ {
+		if mine, _ := st.MyApprovals(ctx, org, "u-ada", time.Now()); len(mine) == 1 {
+			id = mine[0].ID
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := s.Withdraw(ctx, org, id, Decider{UserID: "u-ada", Name: "ada"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case out := <-done:
+		if out.Result != Withdrawn {
+			t.Fatalf("held call ended with %+v", out)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the held call did not end when the request was withdrawn")
+	}
+}
