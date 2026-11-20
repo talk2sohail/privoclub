@@ -321,9 +321,12 @@ func (a *API) removeMember(w http.ResponseWriter, r *http.Request, p auth.Princi
 	}
 	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(),
 		Action: "member.remove:" + u.Person, Decision: "allow", Outcome: "ok"}
+	// Their grants are revoked at each provider too, once removed (F07 R-04).
+	revoke := a.userRevocations(r.Context(), p.OrgID, u.ID)
 	if err := a.Store.DisableUser(r.Context(), p.OrgID, u.ID, time.Now(), ev); err != nil {
 		return err
 	}
+	a.revokeLater(r.Context(), revoke)
 	toks, err := a.Store.ListTokens(r.Context(), p.OrgID)
 	if err != nil {
 		return err

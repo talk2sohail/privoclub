@@ -674,3 +674,81 @@ func TestNoRefreshForAServerTurnedOff(t *testing.T) {
 		t.Fatalf("the grant was dropped: %v", err)
 	}
 }
+
+func (f *fakeAS) revokedTokens() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.revoked...)
+}
+
+func eventually(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// F07 R-04: grants deleted for any reason are revoked at the provider too,
+// after the deletion: tokens read first, revoked once it is done.
+func TestRevocationsAreReadBeforeAndSentAfter(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "at-a", RefreshToken: "rt-ada", Expiry: t0.Add(time.Hour)})
+	e.connect(t, e.boss, upstreamauth.Token{AccessToken: "at-b", Expiry: t0.Add(time.Hour)}) // no refresh token: the access token is revoked
+	gs, err := e.st.ListServerGrants(ctx, e.org, e.srv.ID)
+	if err != nil || len(gs) != 2 {
+		t.Fatalf("grants: %v %v", gs, err)
+	}
+	rs := e.svc.Revocations(ctx, e.org, e.srv, gs)
+	if len(rs) != 2 {
+		t.Fatalf("%d revocations read, want 2", len(rs))
+	}
+	// Deleted first (here: the whole server), revoked after.
+	if err := e.st.DeleteServer(ctx, e.org, e.srv.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.svc.RevokeLater(ctx, rs)
+	eventually(t, "both revoked at the provider "+fmt.Sprint(e.as.revokedTokens()), func() bool {
+		got := e.as.revokedTokens()
+		return slices.Contains(got, "rt-ada") && slices.Contains(got, "at-b")
+	})
+	// The provider is told with the client the tokens were issued to.
+	e.as.mu.Lock()
+	for _, by := range e.as.revokedBy {
+		if by != "client-1" {
+			t.Errorf("revoked as client %q", by)
+		}
+	}
+	e.as.mu.Unlock()
+}
+
+// Connecting again replaces the grant without revoking the old one: same
+// client, same person, and a provider that revokes the whole authorization
+// would end the new grant too (security review of F07 R-04).
+func TestReconnectDoesNotRevoke(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "at-1", RefreshToken: "rt-first", Expiry: t0.Add(time.Hour)})
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "at-2", RefreshToken: "rt-second", Expiry: t0.Add(time.Hour)})
+	time.Sleep(100 * time.Millisecond)
+	if got := e.as.revokedTokens(); len(got) != 0 {
+		t.Fatalf("revoked on reconnect: %v", got)
+	}
+	if at, err := e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID); err != nil || at != "at-2" {
+		t.Fatalf("the new grant: %q %v", at, err)
+	}
+}
+
+// Keys cannot be revoked at a provider; nothing is sent for them.
+func TestRevocationsSkipKeys(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	g := store.Grant{ServerID: e.srv.ID, UserID: e.ada.ID, Credential: store.Credential{Purpose: store.PurposeKeyGrant}}
+	if rs := e.svc.Revocations(ctx, e.org, e.srv, []store.Grant{g}); len(rs) != 0 {
+		t.Fatalf("revocations for a key: %d", len(rs))
+	}
+}

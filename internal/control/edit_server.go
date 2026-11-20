@@ -9,6 +9,7 @@ import (
 
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/egress"
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/store"
 )
 
@@ -188,12 +189,19 @@ func (a *API) editServer(ctx context.Context, p auth.Principal, s store.Server, 
 		return nil, nil // the same address again: nothing changes
 	}
 	edit.Config, edit.Version = cfg, s.UpdatedAt
+	// Connections an edit ends are revoked at the provider with the settings
+	// they were given under, read before the edit (F07 R-04).
+	var revoke []grants.Revocation
+	if edit.EndConnections {
+		revoke = a.serverRevocations(ctx, p.OrgID, s)
+	}
 	if _, err := a.Store.EditServer(ctx, p.OrgID, s.ID, edit, evs); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return nil, errorf(http.StatusConflict, "%s changed since this edit was started; reload it and edit again", s.Alias)
 		}
 		return nil, err
 	}
+	a.revokeLater(ctx, revoke)
 	// The connection restarts with the new settings (Sync sees updated_at);
 	// pooled per-person sessions close with it.
 	if err := a.Upstream.Sync(ctx, p.OrgID); err != nil {
