@@ -380,20 +380,15 @@ func TestExchangeFailureAndGitHubDown(t *testing.T) {
 	}
 }
 
-func TestStartCapReturns503(t *testing.T) {
+// F05 R-01: anonymous sign-ins at the cap drop the oldest; a new one is never
+// refused, and a setup link still works.
+func TestStartAtTheCapKeepsWorking(t *testing.T) {
 	e := newEnv(t, func(o *Options) { o.StateCap = 3 })
 	b := e.browser()
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 10; i++ {
 		if res := b.post("/auth/github/start", nil); res.StatusCode != http.StatusSeeOther {
 			t.Fatalf("start %d: %d", i, res.StatusCode)
 		}
-	}
-	if res := b.post("/auth/github/start", nil); res.StatusCode != http.StatusServiceUnavailable {
-		t.Errorf("start over the cap: %d, want 503", res.StatusCode)
-	}
-	e.clock.advance(11 * time.Minute)
-	if res := b.post("/auth/github/start", nil); res.StatusCode != http.StatusSeeOther {
-		t.Errorf("start after they expired: %d", res.StatusCode)
 	}
 }
 

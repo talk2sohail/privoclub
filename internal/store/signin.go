@@ -431,12 +431,29 @@ type OAuthState struct {
 	ExpiresAt time.Time
 }
 
-// CreateOAuthState stores a sign-in in flight. It first deletes expired rows,
-// then refuses with ErrTooManyStates when limit unexpired ones exist, so
-// unauthenticated requests cannot fill the disk.
+// CreateOAuthState stores a sign-in in flight. Each kind has its own room, so
+// the kind anyone can start cannot lock out the others (F05 R-01, F07 R-03):
+//
+//   - signin: anyone can start one. With limit of them in flight the oldest
+//     is dropped, never the new one refused, so a flood only shortens how long
+//     an unfinished sign-in lives.
+//   - setup and invite need a valid secret, connect a signed-in session. Each
+//     link and each person keeps one sign-in in flight: a new start replaces
+//     the older one, whose cookie the browser has overwritten anyway. Together
+//     they are refused with ErrTooManyStates at limit.
+//
+// Expired rows are deleted first.
 func (s *Store) CreateOAuthState(ctx context.Context, org OrgID, st OAuthState, now time.Time, limit int) error {
+	var replace string
+	var key any
 	switch st.Purpose {
-	case PurposeSignIn, PurposeSetup, PurposeInvite, PurposeConnect:
+	case PurposeSignIn:
+	case PurposeSetup:
+		replace, key = `setup_link_id = ?`, st.SetupLinkID
+	case PurposeInvite:
+		replace, key = `invite_id = ?`, st.InviteID
+	case PurposeConnect:
+		replace, key = `user_id = ?`, st.UserID
 	default:
 		return errors.New("store: unknown sign-in purpose")
 	}
@@ -444,12 +461,25 @@ func (s *Store) CreateOAuthState(ctx context.Context, org OrgID, st OAuthState, 
 		if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_states WHERE org_id = ? AND expires_at <= ?`, org, ts(now)); err != nil {
 			return err
 		}
-		var n int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM oauth_states WHERE org_id = ?`, org).Scan(&n); err != nil {
-			return err
-		}
-		if n >= limit {
-			return ErrTooManyStates
+		if st.Purpose == PurposeSignIn {
+			// Keep the newest limit-1, making room for this one.
+			if _, err := tx.ExecContext(ctx, `
+				DELETE FROM oauth_states WHERE org_id = ? AND purpose = 'signin' AND state_hash IN (
+					SELECT state_hash FROM oauth_states WHERE org_id = ? AND purpose = 'signin'
+					ORDER BY created_at DESC, state_hash DESC LIMIT -1 OFFSET ?)`, org, org, max(limit-1, 0)); err != nil {
+				return err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM oauth_states WHERE org_id = ? AND purpose = ? AND `+replace, org, st.Purpose, key); err != nil {
+				return err
+			}
+			var n int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM oauth_states WHERE org_id = ? AND purpose <> 'signin'`, org).Scan(&n); err != nil {
+				return err
+			}
+			if n >= limit {
+				return ErrTooManyStates
+			}
 		}
 		_, err := tx.ExecContext(ctx, `
 			INSERT INTO oauth_states (org_id, state_hash, purpose, setup_link_id, invite_id, verifier, user_id, session_id, server_id, issuer, return_to, created_at, expires_at)

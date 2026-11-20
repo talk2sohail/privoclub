@@ -409,28 +409,77 @@ func TestOAuthStateSingleUse(t *testing.T) {
 func TestOAuthStateCap(t *testing.T) {
 	ctx := context.Background()
 	s, org := signinOrg(t)
+	signin := func(hash string, at time.Time) error {
+		return s.CreateOAuthState(ctx, org, OAuthState{Hash: hash, Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: at.Add(10 * time.Minute)}, at, 5)
+	}
 	for i := 0; i < 5; i++ {
-		if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: fmt.Sprint("s", i), Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(10 * time.Minute)}, t0, 5); err != nil {
+		if err := signin(fmt.Sprint("s", i), t0.Add(time.Duration(i)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "s5", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(10 * time.Minute)}, t0, 5)
-	if !errors.Is(err, ErrTooManyStates) {
-		t.Fatalf("sixth state: %v, want ErrTooManyStates", err)
+	// At the cap the oldest anonymous sign-in makes room; the new one is kept.
+	if err := signin("s5", t0.Add(5*time.Second)); err != nil {
+		t.Fatalf("sixth state: %v", err)
 	}
-	// Used states do not count against the cap, and neither do expired ones.
-	if _, err := s.UseOAuthState(ctx, org, "s0", t0); err != nil {
-		t.Fatal(err)
+	if _, err := s.UseOAuthState(ctx, org, "s0", t0.Add(6*time.Second)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("the oldest was kept: %v", err)
 	}
-	if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "s6", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(20 * time.Minute)}, t0, 5); err != nil {
-		t.Errorf("after one was used: %v", err)
+	for _, h := range []string{"s1", "s5"} {
+		if _, err := s.UseOAuthState(ctx, org, h, t0.Add(6*time.Second)); err != nil {
+			t.Fatalf("%s: %v", h, err)
+		}
 	}
-	if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "s7", Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: t0.Add(40 * time.Minute)}, t0.Add(11*time.Minute), 5); err != nil {
-		t.Errorf("after the others expired: %v", err)
+}
+
+// F05 R-01, F07 R-03: a flood of anonymous sign-ins locks out no setup link,
+// invite or account connection, and those keep one sign-in each.
+func TestSignInFloodLocksOutNothingElse(t *testing.T) {
+	ctx := context.Background()
+	s, org := signinOrg(t)
+	exp := t0.Add(10 * time.Minute)
+	for i := 0; i < 50; i++ {
+		if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: fmt.Sprint("flood", i), Purpose: PurposeSignIn, Verifier: "v", ExpiresAt: exp}, t0, 5); err != nil {
+			t.Fatal(err)
+		}
 	}
-	// An invalid purpose is refused.
-	if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "s8", Purpose: "mystery", Verifier: "v", ExpiresAt: t0.Add(time.Hour)}, t0, 50); err == nil {
-		t.Error("an unknown purpose was accepted")
+	others := []OAuthState{
+		{Hash: "setup-1", Purpose: PurposeSetup, SetupLinkID: "link", Verifier: "v", ExpiresAt: exp},
+		{Hash: "invite-1", Purpose: PurposeInvite, InviteID: "inv", Verifier: "v", ExpiresAt: exp},
+		{Hash: "connect-1", Purpose: PurposeConnect, UserID: "u1", ServerID: "srv", Verifier: "v", ExpiresAt: exp},
+	}
+	for _, st := range others {
+		if err := s.CreateOAuthState(ctx, org, st, t0, 5); err != nil {
+			t.Fatalf("%s during a flood: %v", st.Purpose, err)
+		}
+	}
+	// One in flight per link and per person: a new start replaces the older.
+	for i := 2; i < 10; i++ {
+		for _, st := range others {
+			st.Hash = fmt.Sprintf("%s-%d", st.Purpose, i)
+			if err := s.CreateOAuthState(ctx, org, st, t0, 5); err != nil {
+				t.Fatalf("%s again: %v", st.Purpose, err)
+			}
+		}
+	}
+	for _, h := range []string{"setup-1", "invite-1", "connect-1"} {
+		if _, err := s.UseOAuthState(ctx, org, h, t0); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%s was not replaced: %v", h, err)
+		}
+	}
+	for _, h := range []string{"setup-9", "invite-9", "connect-9"} {
+		if _, err := s.UseOAuthState(ctx, org, h, t0); err != nil {
+			t.Errorf("%s: %v", h, err)
+		}
+	}
+	// Setups, invites and connections together are still bounded.
+	for i := 0; i < 5; i++ {
+		err := s.CreateOAuthState(ctx, org, OAuthState{Hash: fmt.Sprint("c", i), Purpose: PurposeConnect, UserID: fmt.Sprint("user", i), Verifier: "v", ExpiresAt: exp}, t0, 5)
+		if i < 5 && err != nil {
+			t.Fatalf("connect %d: %v", i, err)
+		}
+	}
+	if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: "c5", Purpose: PurposeConnect, UserID: "user5", Verifier: "v", ExpiresAt: exp}, t0, 5); !errors.Is(err, ErrTooManyStates) {
+		t.Fatalf("over the bound: %v", err)
 	}
 }
 
