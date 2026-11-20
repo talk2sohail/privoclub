@@ -256,7 +256,8 @@ func tokenCreate(args []string, stdout, stderr io.Writer, getenv func(string) st
 		_, _ = fmt.Fprintf(stderr, "privo: %v\n", err)
 		return 1
 	}
-	plain, _, err := control.IssueToken(ctx, st, org.ID, control.TokenSpec{Name: name, Role: role, Kind: kind, Person: person, TTL: cfg.TokenTTL})
+	plain, _, err := control.IssueToken(ctx, st, org.ID, control.TokenSpec{Name: name, Role: role, Kind: kind, Person: person, TTL: cfg.TokenTTL,
+		Event: store.AuditEvent{Actor: "cli", ActorID: "cli", Client: "cli"}})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "privo: %v\n", err)
 		return 1

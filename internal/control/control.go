@@ -610,6 +610,9 @@ type TokenSpec struct {
 	// token is bound to no one and may not act as a member (F07 R-01).
 	UserID string
 	TTL    time.Duration
+	// Event names who issues the token (Actor, ActorID, Client); IssueToken
+	// fills in the rest and writes it with the token, in one transaction.
+	Event store.AuditEvent
 }
 
 func viewToken(t store.APIToken) tokenView {
@@ -660,7 +663,10 @@ func IssueToken(ctx context.Context, s *store.Store, org store.OrgID, spec Token
 	now := time.Now()
 	rec := store.APIToken{OrgID: org, ID: tok.ID, Name: name, Role: role, Kind: spec.Kind, Person: person, UserID: spec.UserID, SecretHash: tok.SecretHash,
 		CreatedAt: now, ExpiresAt: now.Add(ttl)}
-	if err := s.CreateToken(ctx, rec); err != nil {
+	ev := spec.Event
+	ev.ID, ev.CallID, ev.Time = ids.New(), ids.New(), now
+	ev.Action, ev.Decision, ev.Outcome = "token.create:"+rec.Kind+":"+rec.Role+":"+rec.Name, "allow", "ok"
+	if err := s.CreateTokenAudited(ctx, rec, ev); err != nil {
 		if errors.Is(err, store.ErrConflict) {
 			return "", rec, errorf(http.StatusConflict, "an active token named %q already exists", name)
 		}
@@ -688,11 +694,11 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if (req.Role == store.RoleOwner || req.Role == store.RoleAdmin) && !p.Has(store.RoleOwner) {
 		return errorf(http.StatusForbidden, "only owners can issue owner or admin tokens")
 	}
-	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL})
+	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL,
+		Event: store.AuditEvent{Actor: p.Name, ActorID: p.ActorID()}})
 	if err != nil {
 		return err
 	}
-	a.adminEvent(r.Context(), p, "token.create:"+rec.Kind+":"+rec.Role+":"+rec.Name, "")
 	writeJSON(w, http.StatusCreated, map[string]any{"id": rec.ID, "token": plain, "name": rec.Name, "role": rec.Role, "kind": rec.Kind,
 		"person": rec.Person, "personal": false, "expires_at": rec.ExpiresAt})
 	return nil

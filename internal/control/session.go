@@ -310,11 +310,11 @@ func (a *API) createMyToken(w http.ResponseWriter, r *http.Request, p auth.Princ
 		return err
 	}
 	name := strings.TrimSpace(req.Name)
-	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: name, Role: store.RoleMember, Kind: store.KindGateway, Person: p.Person, UserID: p.UserID, TTL: a.TokenTTL})
+	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: name, Role: store.RoleMember, Kind: store.KindGateway, Person: p.Person, UserID: p.UserID, TTL: a.TokenTTL,
+		Event: store.AuditEvent{Actor: p.Name, ActorID: p.ActorID()}})
 	if err != nil {
 		return err
 	}
-	a.adminEvent(r.Context(), p, "token.create:gateway:"+rec.Role+":"+rec.Name, "")
 	writeJSON(w, http.StatusCreated, map[string]any{"id": rec.ID, "token": plain, "name": rec.Name, "role": rec.Role, "kind": rec.Kind,
 		"person": rec.Person, "personal": true, "expires_at": rec.ExpiresAt})
 	return nil
