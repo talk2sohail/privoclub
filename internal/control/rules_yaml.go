@@ -122,15 +122,23 @@ func (a *API) exportPolicies(w http.ResponseWriter, r *http.Request, p auth.Prin
 	}
 	person := map[string]string{}
 	for _, u := range users {
-		person[u.ID] = u.Person
+		if u.DisabledAt == nil {
+			person[u.ID] = u.Person
+		}
 	}
 	def, err := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
 	if err != nil {
 		return err
 	}
 	f := rulesFile{Version: 1, Default: def, Rules: []ruleInput{}}
+	skipped := 0
 	for _, pol := range rules {
 		if pol.GrantOf != "" {
+			continue
+		}
+		// A rule for a removed member matches nobody and would not import.
+		if id, ok := strings.CutPrefix(pol.Subject, "user:"); ok && person[id] == "" {
+			skipped++
 			continue
 		}
 		cs, err := policy.RuleConditions(pol)
@@ -139,9 +147,7 @@ func (a *API) exportPolicies(w http.ResponseWriter, r *http.Request, p auth.Prin
 		}
 		subject := pol.Subject
 		if id, ok := strings.CutPrefix(subject, "user:"); ok {
-			if name, known := person[id]; known {
-				subject = "person:" + name
-			}
+			subject = "person:" + person[id]
 		}
 		f.Rules = append(f.Rules, ruleInput{Server: pol.Server, Tool: pol.Tool, Subject: subject, Action: pol.Action, Priority: pol.Priority,
 			Note: pol.Note, ExpiresAt: pol.ExpiresAt, PinHash: pol.PinHash, Conditions: cs})
@@ -153,7 +159,7 @@ func (a *API) exportPolicies(w http.ResponseWriter, r *http.Request, p auth.Prin
 		return err
 	}
 	a.adminEvent(r.Context(), p, fmt.Sprintf("policy.export:%d", len(f.Rules)), "")
-	writeJSON(w, http.StatusOK, map[string]any{"yaml": b.String(), "rules": len(f.Rules)})
+	writeJSON(w, http.StatusOK, map[string]any{"yaml": b.String(), "rules": len(f.Rules), "skipped": skipped})
 	return nil
 }
 
@@ -256,6 +262,11 @@ func (a *API) checkImport(ctx context.Context, p auth.Principal, pols []store.Po
 	for i, pol := range pols {
 		if slug, ok := strings.CutPrefix(pol.Subject, "team:"); ok && !known[slug] {
 			return errorf(http.StatusUnprocessableEntity, "rule %d: there is no team %q", i+1, slug)
+		}
+		if id, ok := strings.CutPrefix(pol.Subject, "user:"); ok {
+			if u, err := a.Store.UserByID(ctx, p.OrgID, id); err != nil || u.DisabledAt != nil {
+				return errorf(http.StatusUnprocessableEntity, "rule %d: there is no member %q", i+1, id)
+			}
 		}
 	}
 	return nil

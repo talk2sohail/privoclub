@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 )
 
 // MaxArgumentBytes bounds tool arguments.
@@ -91,6 +92,13 @@ func decodeValue(dec *json.Decoder, depth int) (any, error) {
 				arr = []any{}
 			}
 			return arr, nil
+		}
+	}
+	// A number's exponent of more than 9 digits has no honest use, and rules
+	// on arguments compare numbers exactly only up to that (ADR 0024).
+	if n, ok := tok.(json.Number); ok {
+		if i := strings.IndexAny(string(n), "eE"); i >= 0 && len(strings.TrimLeft(string(n)[i+1:], "+-")) > 9 {
+			return nil, fmt.Errorf("%w: a number's exponent is too large", ErrBadArguments)
 		}
 	}
 	return tok, nil // string, json.Number, bool or nil

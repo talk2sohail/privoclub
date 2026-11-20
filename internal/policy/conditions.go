@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"strconv"
 	"strings"
 )
@@ -22,6 +21,23 @@ const (
 	OpMatches   = "matches" // the rules' own glob, on a string
 	OpExists    = "exists"
 	OpMissing   = "missing"
+	// Strings compared ignoring case: for names that a server reads without
+	// case (repositories, hosts, accounts).
+	OpEqualsAnyCase  = "equals_any_case"
+	OpInAnyCase      = "in_any_case"
+	OpMatchesAnyCase = "matches_any_case"
+)
+
+// verdict is what a condition says about a call. Unsure means the argument
+// has another type than the rule's value: a server may read "1" as 1 or
+// "yes" as true, so the gateway cannot tell. A deny or ask counts unsure as
+// holding, an allow as not holding (security review 2026-11-20).
+type verdict int
+
+const (
+	no verdict = iota
+	yes
+	unsure
 )
 
 // Limits on conditions.
@@ -71,22 +87,33 @@ func (c Condition) valid() error {
 	}
 	switch c.Op {
 	case OpEquals, OpNotEquals:
-	case OpIn:
+	case OpEqualsAnyCase:
+		if _, ok := c.Value.(string); !ok {
+			return fmt.Errorf("%w: %q needs a text value", errCondition, c.Op)
+		}
+	case OpIn, OpInAnyCase:
 		list, ok := c.Value.([]any)
 		if !ok || len(list) == 0 || len(list) > maxInValues {
-			return fmt.Errorf("%w: \"in\" needs a list of 1 to %d values", errCondition, maxInValues)
+			return fmt.Errorf("%w: %q needs a list of 1 to %d values", errCondition, c.Op, maxInValues)
 		}
-	case OpMatches:
+		if c.Op == OpInAnyCase {
+			for _, x := range list {
+				if _, ok := x.(string); !ok {
+					return fmt.Errorf("%w: %q needs text values", errCondition, c.Op)
+				}
+			}
+		}
+	case OpMatches, OpMatchesAnyCase:
 		s, ok := c.Value.(string)
 		if !ok || !ValidGlob(s) {
-			return fmt.Errorf("%w: \"matches\" needs a pattern (* and ? and [a-z])", errCondition)
+			return fmt.Errorf("%w: %q needs a pattern (* and ? and [a-z])", errCondition, c.Op)
 		}
 	case OpExists, OpMissing:
 		if c.Value != nil {
 			return fmt.Errorf("%w: %q takes no value", errCondition, c.Op)
 		}
 	default:
-		return fmt.Errorf("%w: op must be equals, not_equals, in, matches, exists or missing", errCondition)
+		return fmt.Errorf("%w: op must be equals, not_equals, in, matches, exists, missing, equals_any_case, in_any_case or matches_any_case", errCondition)
 	}
 	return nil
 }
@@ -118,64 +145,198 @@ func decodeArgs(b []byte) (any, error) {
 	return v, nil
 }
 
-// holds tests the condition against decoded arguments (nil when there are
-// none). Values of another type, and missing paths, never satisfy equals,
-// in or matches (ADR 0024 point 3).
-func (c Condition) holds(args any) bool {
+// UnmarshalJSON reads a condition keeping numbers exact (no float64), so a
+// rule tests the number its author wrote (security review 2026-11-20).
+func (c *Condition) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		Arg   string          `json:"arg"`
+		Op    string          `json:"op"`
+		Value json.RawMessage `json:"value"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&raw); err != nil {
+		return err
+	}
+	c.Arg, c.Op, c.Value = raw.Arg, raw.Op, nil
+	if len(bytes.TrimSpace(raw.Value)) > 0 {
+		v, err := decodeArgs(raw.Value)
+		if err != nil {
+			return err
+		}
+		c.Value = v
+	}
+	return nil
+}
+
+// eval tests the condition against decoded arguments (nil when there are
+// none). A missing path is a plain no for equals, in and matches. A value of
+// another type than the rule's is unsure, never a no (ADR 0024, security
+// review 2026-11-20).
+func (c Condition) eval(args any) verdict {
 	v, found := lookup(args, c.Arg)
 	switch c.Op {
-	case OpEquals:
-		return found && equalJSON(v, c.Value)
+	case OpExists:
+		return bool2v(found)
+	case OpMissing:
+		return bool2v(!found)
 	case OpNotEquals:
-		return !found || !equalJSON(v, c.Value)
-	case OpIn:
 		if !found {
-			return false
+			return yes
+		}
+		switch equal(v, c.Value) {
+		case yes:
+			return no
+		case no:
+			return yes
+		}
+		return unsure
+	}
+	if !found {
+		return no
+	}
+	switch c.Op {
+	case OpEquals:
+		return equal(v, c.Value)
+	case OpIn:
+		list, _ := c.Value.([]any)
+		out := no
+		for _, x := range list {
+			switch equal(v, x) {
+			case yes:
+				return yes
+			case unsure:
+				out = unsure
+			}
+		}
+		if out == unsure {
+			// Unsure only when no value of the list shares the argument's type.
+			for _, x := range list {
+				if kind(x) == kind(v) {
+					return no
+				}
+			}
+		}
+		return out
+	case OpMatches, OpMatchesAnyCase:
+		str, ok := v.(string)
+		p, _ := c.Value.(string)
+		if !ok {
+			return unsure
+		}
+		if c.Op == OpMatchesAnyCase {
+			str, p = strings.ToLower(str), strings.ToLower(p)
+		}
+		m, err := globMatch(p, str)
+		return bool2v(err == nil && m)
+	case OpEqualsAnyCase:
+		str, ok := v.(string)
+		want, _ := c.Value.(string)
+		if !ok {
+			return unsure
+		}
+		return bool2v(strings.EqualFold(str, want))
+	case OpInAnyCase:
+		str, ok := v.(string)
+		if !ok {
+			return unsure
 		}
 		list, _ := c.Value.([]any)
 		for _, x := range list {
-			if equalJSON(v, x) {
-				return true
+			if want, _ := x.(string); strings.EqualFold(str, want) {
+				return yes
 			}
 		}
-		return false
-	case OpMatches:
-		s, ok := v.(string)
-		p, _ := c.Value.(string)
-		if !found || !ok {
-			return false
+		return no
+	}
+	return no
+}
+
+func bool2v(b bool) verdict {
+	if b {
+		return yes
+	}
+	return no
+}
+
+// kind names a decoded JSON value's type.
+func kind(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "bool"
+	case string:
+		return "string"
+	case json.Number:
+		return "number"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	}
+	return "other"
+}
+
+// equal compares an argument with a rule's value: unsure when their types
+// differ or a number cannot be read, otherwise yes or no.
+func equal(v, want any) verdict {
+	if kind(v) != kind(want) {
+		return unsure
+	}
+	return equalJSON(v, want)
+}
+
+// equalNumbers compares two JSON numbers by exact value, at any length,
+// without expanding them: each becomes a sign, its significant digits and an
+// exponent. A number it cannot read is unsure (security review 2026-11-20:
+// 42.000…0 is 42).
+func equalNumbers(a, b string) verdict {
+	na, oka := decimal(a)
+	nb, okb := decimal(b)
+	if !oka || !okb {
+		return unsure
+	}
+	return bool2v(na == nb)
+}
+
+type dec struct {
+	neg    bool
+	digits string // significant digits, no leading or trailing zeros; "" for zero
+	exp    int    // value = digits × 10^exp
+}
+
+func decimal(s string) (dec, bool) {
+	var d dec
+	if strings.HasPrefix(s, "-") {
+		d.neg, s = true, s[1:]
+	}
+	mant, expPart, hasExp := strings.Cut(strings.ToLower(s), "e")
+	intPart, frac, _ := strings.Cut(mant, ".")
+	if intPart == "" || strings.Trim(intPart+frac, "0123456789") != "" {
+		return d, false
+	}
+	exp := 0
+	if hasExp {
+		e := strings.TrimPrefix(expPart, "+")
+		if len(strings.TrimPrefix(e, "-")) == 0 || len(strings.TrimPrefix(e, "-")) > 9 {
+			return d, false
 		}
-		m, err := globMatch(p, s)
-		return err == nil && m
-	case OpExists:
-		return found
-	case OpMissing:
-		return !found
+		var err error
+		if exp, err = strconv.Atoi(e); err != nil {
+			return d, false
+		}
 	}
-	return false
-}
-
-// equalNumbers compares two JSON numbers by value. Numbers that are long or
-// have a large exponent (which big.Rat would expand at great cost, and which
-// an AI client controls) compare as written.
-func equalNumbers(a, b string) bool {
-	if !smallNumber(a) || !smallNumber(b) {
-		return a == b
+	digits := strings.TrimLeft(intPart+frac, "0")
+	exp -= len(frac)
+	trimmed := strings.TrimRight(digits, "0")
+	exp += len(digits) - len(trimmed)
+	d.digits = trimmed
+	if d.digits == "" {
+		return dec{}, true // zero, whatever its sign
 	}
-	ra, oka := new(big.Rat).SetString(a)
-	rb, okb := new(big.Rat).SetString(b)
-	return oka && okb && ra.Cmp(rb) == 0
-}
-
-func smallNumber(s string) bool {
-	if len(s) > 64 {
-		return false
-	}
-	if i := strings.IndexAny(s, "eE"); i >= 0 {
-		exp, err := strconv.Atoi(strings.TrimPrefix(s[i+1:], "+"))
-		return err == nil && exp >= -400 && exp <= 400
-	}
-	return true
+	d.exp = exp
+	return d, true
 }
 
 func lookup(args any, path string) (any, bool) {
@@ -192,47 +353,64 @@ func lookup(args any, path string) (any, bool) {
 	return cur, true
 }
 
-// equalJSON compares decoded JSON values; numbers by value (1 equals 1.0),
-// never across types ("1" is not 1).
-func equalJSON(a, b any) bool {
+// equalJSON compares decoded JSON values of the same kind; numbers by exact
+// value at any length (1 equals 1.0 equals 1e0).
+func equalJSON(a, b any) verdict {
 	switch x := a.(type) {
 	case nil:
-		return b == nil
+		return bool2v(b == nil)
 	case bool:
 		y, ok := b.(bool)
-		return ok && x == y
+		return bool2v(ok && x == y)
 	case string:
 		y, ok := b.(string)
-		return ok && x == y
+		return bool2v(ok && x == y)
 	case json.Number:
 		y, ok := b.(json.Number)
 		if !ok {
-			return false
+			return unsure
 		}
 		return equalNumbers(x.String(), y.String())
 	case []any:
 		y, ok := b.([]any)
-		if !ok || len(x) != len(y) {
-			return false
+		if !ok {
+			return unsure
 		}
+		if len(x) != len(y) {
+			return no
+		}
+		out := yes
 		for i := range x {
-			if !equalJSON(x[i], y[i]) {
-				return false
+			switch equal(x[i], y[i]) {
+			case no:
+				return no
+			case unsure:
+				out = unsure
 			}
 		}
-		return true
+		return out
 	case map[string]any:
 		y, ok := b.(map[string]any)
-		if !ok || len(x) != len(y) {
-			return false
+		if !ok {
+			return unsure
 		}
+		if len(x) != len(y) {
+			return no
+		}
+		out := yes
 		for k, xv := range x {
 			yv, ok := y[k]
-			if !ok || !equalJSON(xv, yv) {
-				return false
+			if !ok {
+				return no
+			}
+			switch equal(xv, yv) {
+			case no:
+				return no
+			case unsure:
+				out = unsure
 			}
 		}
-		return true
+		return out
 	}
-	return false
+	return unsure
 }

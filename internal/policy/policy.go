@@ -118,17 +118,23 @@ func RuleConditions(r store.Policy) ([]Condition, error) {
 	return cs, nil
 }
 
-// conditionsHold reports whether all of a rule's conditions hold. A rule whose
-// stored conditions cannot be read fails closed: a deny or ask still
-// matches, an allow does not.
+// conditionsHold reports whether all of a rule's conditions hold. Doubt
+// fails closed: a rule whose stored conditions cannot be read, or whose
+// condition is unsure about an argument of another type, still matches when
+// it denies or asks, and does not when it allows.
 func conditionsHold(r store.Policy, args func() any) bool {
 	cs, err := RuleConditions(r)
 	if err != nil || ValidConditions(cs) != nil {
 		return r.Action != store.ActionAllow
 	}
 	for _, c := range cs {
-		if !c.holds(args()) {
+		switch c.eval(args()) {
+		case no:
 			return false
+		case unsure:
+			if r.Action == store.ActionAllow {
+				return false
+			}
 		}
 	}
 	return true
@@ -136,21 +142,23 @@ func conditionsHold(r store.Policy, args func() any) bool {
 
 // Evaluate decides a request against rules and the org default action.
 // Grants (rules made from an approval) are weighed last: one that matches
-// turns an ask into allow, and nothing else (ADR 0024).
+// turns an ask into allow, and nothing else (ADR 0024). A grant's priority is
+// that of the rule it was made over: it lifts an ask of that rank or lower,
+// or the default's, never a higher ask the approver did not see.
 func Evaluate(rules []store.Policy, req Request, defaultAction string, now time.Time) Decision {
-	d := evaluate(rules, req, defaultAction, now)
+	d, askRank, byRule := evaluate(rules, req, defaultAction, now)
 	if d.Action != store.ActionAsk {
 		return d
 	}
 	for _, g := range rules {
-		if g.GrantOf != "" && g.Action == store.ActionAllow && matches(g, req, now) {
+		if g.GrantOf != "" && g.Action == store.ActionAllow && (!byRule || askRank <= g.Priority) && matches(g, req, now) {
 			return Decision{Action: store.ActionAllow, RuleID: g.ID, Reason: fmt.Sprintf("grant %s from approval %s, over %s", g.ID, g.GrantOf, d.Reason)}
 		}
 	}
 	return d
 }
 
-func evaluate(rules []store.Policy, req Request, defaultAction string, now time.Time) Decision {
+func evaluate(rules []store.Policy, req Request, defaultAction string, now time.Time) (Decision, int, bool) {
 	var decoded bool
 	var args any
 	argsOf := func() any {
@@ -175,15 +183,15 @@ func evaluate(rules []store.Policy, req Request, defaultAction string, now time.
 	}
 	if best != nil {
 		return Decision{Action: best.Action, RuleID: best.ID,
-			Reason: fmt.Sprintf("rule %s (%s %s on %s for %s)", best.ID, best.Action, best.Tool, best.Server, best.Subject)}
+			Reason: fmt.Sprintf("rule %s (%s %s on %s for %s)", best.ID, best.Action, best.Tool, best.Server, best.Subject)}, best.Priority, true
 	}
 	if !ValidAction(defaultAction) {
 		defaultAction = store.ActionAllow
 	}
 	if defaultAction == store.ActionAllow && declaresDestructive(req.Annotations) {
-		return Decision{Action: store.ActionAsk, Reason: "default: the tool declares itself destructive"}
+		return Decision{Action: store.ActionAsk, Reason: "default: the tool declares itself destructive"}, 0, false
 	}
-	return Decision{Action: defaultAction, Reason: "default for this organisation"}
+	return Decision{Action: defaultAction, Reason: "default for this organisation"}, 0, false
 }
 
 // declaresDestructive is true only on an explicit declaration. Annotations

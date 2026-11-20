@@ -477,8 +477,12 @@ Acceptance:
    offers export and import.
 
 Threat note:
-- Conditions read exactly what runs upstream, so the shape of an argument
-  cannot make a deny miss while the call still goes through.
+- Conditions read exactly what runs upstream. Numbers compare by exact value
+  at any length. An argument of another type than the rule's value is
+  unsure, since servers often read "1" as 1 or "yes" as true: an unsure
+  deny or ask applies, an unsure allow does not. Case-insensitive names need
+  the "any case" tests. Allow-lists fail closed by construction (security
+  review 2026-11-20).
 - No regular expressions: `matches` is the rules' own glob, so a rule
   cannot be made to take unbounded time.
 - Import runs in one transaction and only for `policy.manage`. A replace
@@ -499,7 +503,7 @@ Tasks and the tests that name them:
   - tests (Vitest): `pages.test.tsx` rules (a condition shown and sent, import checked before applied); 50/50
 - [x] Acceptance: `TestRulesOnArguments` (a deny on `text = secret` refuses that call while others ask; a grant lets the others through and not that one; the rules survive a YAML round trip)
 - [x] Docs: README, `docs/manual-test.md` section 14, version 0.12.0
-- [ ] Security review
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f09-policies-security-review.md`): two Medium findings, both fixed. Long numbers were compared as text (`42.000…0` missed "42"): numbers now compare by exact value at any length and arguments refuse exponents beyond 9 digits (`TestConditions`, `TestCanonicalRefusesHugeExponents`). Servers coerce types and ignore case: an argument of another type is unsure and fails closed, and "any case" tests exist (`TestUnsureFailsClosed`). Also acted on: a grant lifts asks up to the rank it was made over, never a higher one (`TestGrantCoversItsRankOnly`); condition values keep exact numbers from JSON (`TestConditionNumbersStayExact`); grants made before migration 11 are marked (`TestMigrationMarksOldGrants`); the dry run checks members; an export leaves out rules for removed members
 
 ## F10. Approvals
 Status: In progress (core done, reviewed)

@@ -7,9 +7,12 @@ import { Copy, Empty, ErrorLine, Loading, formValues, useAction, when } from "..
 
 const opLabel: Record<string, string> = {
   equals: "is",
+  equals_any_case: "is (any case)",
   not_equals: "is not",
   in: "is one of",
+  in_any_case: "is one of (any case)",
   matches: "matches",
+  matches_any_case: "matches (any case)",
   exists: "is given",
   missing: "is not given",
 };
@@ -33,7 +36,8 @@ export function parseValue(op: string, raw: string): unknown {
   };
   if (op === "exists" || op === "missing") return undefined;
   if (op === "in") return raw.split(",").map(one);
-  if (op === "matches") return raw.trim();
+  if (op === "in_any_case") return raw.split(",").map((x) => x.trim());
+  if (op === "matches" || op === "matches_any_case" || op === "equals_any_case") return raw.trim();
   return one(raw);
 }
 
@@ -228,7 +232,11 @@ export function Rules(_: PageProps) {
                 Add a condition
               </button>
             )}
-            <p class="meta">All conditions must hold. They read the arguments exactly as sent to the server: "1" and 1 differ. The tool's page lists its inputs.</p>
+            <p class="meta">
+              All conditions must hold. They read the arguments as sent to the server. When an argument has another type than your value ("1" for 1),
+              a deny or ask still applies and an allow does not, since many servers read them alike. For names a server reads without case (a
+              repository, a host), use an "any case" test. The tool's page lists its inputs.
+            </p>
           </fieldset>
           <label>
             Note <small class="meta">optional, why this rule exists</small>

@@ -1358,13 +1358,21 @@ func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval
 	if dec.Action != store.ActionAsk {
 		return refuse("The rules changed while this request waited: this call would now be " + map[string]string{store.ActionAllow: "allowed", store.ActionDeny: "denied"}[dec.Action] + ".")
 	}
+	// The grant covers asks up to the rank of the one that asks now; the
+	// default's ask is below every rule (ADR 0024, security review 2026-11-20).
+	covers := -1000
+	for _, r := range rules {
+		if r.ID == dec.RuleID {
+			covers = r.Priority
+		}
+	}
 	subject := "token:" + tok.ID
 	if tok.UserID != "" {
 		subject = "user:" + tok.UserID
 	}
 	exp := now.Add(d)
 	return store.Policy{ID: ids.New(), Server: ap.ServerAlias, Tool: policy.ExactTool(ap.Tool), Subject: subject, Action: store.ActionAllow,
-		GrantOf: ap.ID, PinHash: ap.PinHash, Note: fmt.Sprintf("Allowed for %s by %s from approval %s", ap.RequesterPerson, p.Name, ap.ID),
+		GrantOf: ap.ID, Priority: covers, PinHash: ap.PinHash, Note: fmt.Sprintf("Allowed for %s by %s from approval %s", ap.RequesterPerson, p.Name, ap.ID),
 		CreatedBy: p.Name, CreatedAt: now, ExpiresAt: &exp}, nil
 }
 
