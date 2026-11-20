@@ -431,8 +431,57 @@ ADRs: 0005
 - [x] Web approval page with sessions and CSRF (F05 first slice, ADR 0016)
 - [ ] Step-up re-authentication before high-risk approvals (F05 later)
 - [ ] Slack with signing verification and linked identities; email
-- [ ] Scoped temporary grants from an approval, batching, approver dashboard
-- [ ] Withdraw endpoint for requesters
+- [ ] Batching of similar requests, approver dashboard (who approves everything)
+
+### Second slice: approvals people live with (2026-11-20)
+
+Goal (owner's plan, 2026-11-20): an approver is not asked the same thing
+all day, a person can take back a request they no longer want, and decided
+approvals can be looked back on.
+
+Acceptance:
+1. Approving can also allow the same tool on the same server for the
+   requester for 15 minutes, 1 hour or 8 hours ("scoped grant", ADR 0005).
+   It is an allow rule with that expiry, subject `user:<id>` (the
+   requester's member; `token:<id>` for a token of no member), named after
+   the approval, shown on Rules and removable there. It ranks one above the
+   rule that asked, so a deny that outranked the ask still wins.
+2. Only someone who may decide the approval can grant, never for longer than
+   8 hours, never for their own request, and only for that exact tool (not
+   a pattern). The approval and the grant are each audited.
+3. A person sees their own pending requests (Start page,
+   `GET /api/v1/me/approvals`) and withdraws one
+   (`POST /api/v1/me/approvals/{id}/withdraw`). A held call ends as refused;
+   a retry asks again. Nobody withdraws another person's request.
+4. Approvers page through waiting requests beyond the first page and see
+   the history of decided ones (approved, denied, withdrawn, used,
+   expired), newest first, without their arguments.
+5. Rules accept `user:<id>` for an existing member of the org only.
+
+Threat note:
+- A grant widens access, so it is narrow by construction: one tool by exact
+  name, one server, one person, at most 8 hours, from a person who could
+  have approved each call anyway. It never outranks a deny that already won.
+- Withdrawing is limited to the requester's own member, found by the
+  token's bound user (ADR 0022), so a request cannot be cancelled by
+  someone else.
+- History shows no arguments (they are purged once a call is decided or
+  used).
+
+Tasks and the tests that name them:
+
+- [ ] Store: migration `00009_approval_rule.sql` (`approvals.rule_id`: the rule that asked); `ListApprovalsPage` (pending or history, newest first, a cursor); `MyApprovals` (by the member's tokens); `user:<id>` rules need a member of the org
+  - tests: `TestApprovalPages`, `TestMyApprovals`, `TestUserRuleNeedsAMember`
+- [ ] Policy: subject `user:<id>` matched against the caller's member
+  - tests: `TestEvaluate` (user subject), `TestValidSubjectUser`
+- [ ] Approval service: the rule that asked is kept; `Withdraw` by the requester's member only
+  - tests: `TestWithdrawOwnRequestOnly`, `TestHeldCallEndsWhenWithdrawn`
+- [ ] Admin API: approve with `{"grant": "15m"|"1h"|"8h"}`; `GET /api/v1/approvals?status=pending|history&before=&limit=` with `next`; `GET /api/v1/me/approvals`; `POST /api/v1/me/approvals/{id}/withdraw`
+  - tests: `TestApproveWithGrant` (rule shape, priority, expiry, audit; no grant above 8 hours; none on refusal), `TestApprovalHistoryAPI`, `TestWithdrawAPI`
+- [ ] App: Approvals has Waiting and History, with "Load more"; approving offers "also allow for…"; Start lists the person's waiting requests with Withdraw; Rules names a grant's person
+  - tests (Vitest): the grant is sent with the approval, history pages, withdraw from Start
+- [ ] Acceptance: `TestApprovalGrantAndWithdraw` (a grant lets the next calls through without asking, then expires; a withdrawn request ends the held call and a retry asks again; history lists both)
+- [ ] Docs: README, `docs/manual-test.md`, version 0.10.0; security review
 
 ## F11. Manifest pinning and scanning
 Status: In progress (pins built with F02; review, diff, block and scan 2026-11-20)
