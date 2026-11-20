@@ -1,4 +1,4 @@
-import type { Pin } from "./types";
+import type { Finding, Pin } from "./types";
 
 // F14 R-01: what is accepted is the whole definition (its hash covers the
 // description, the input schema and the annotations), so the review shows the
@@ -115,4 +115,24 @@ export function Definition({ pin, previous }: { pin: Pin; previous?: Pin }) {
 /** previousOf finds the accepted version of a pending pin, if it changed. */
 export function previousOf(pin: Pin, all: Pin[]): Pin | undefined {
   return all.find((p) => p.status === "accepted" && p.kind === pin.kind && p.name === pin.name && p.hash !== pin.hash);
+}
+
+/** warnings counts the scan's warnings on a definition. */
+export function warnings(p: Pin): number {
+  return (p.findings ?? []).filter((f) => f.severity === "warn").length;
+}
+
+/** Findings lists what the scan found (F11): a hint for the reviewer, never a decision. */
+export function Findings({ list }: { list: Finding[] }) {
+  if (list.length === 0) return null;
+  return (
+    <ul class="findings">
+      {list.map((f, i) => (
+        <li key={i} class={f.severity}>
+          <strong>{f.severity === "warn" ? "Warning" : "Note"}:</strong> {f.message} <small class="meta">in {f.path || "the definition"}</small>
+          {f.excerpt && <code class="excerpt">{f.excerpt}</code>}
+        </li>
+      ))}
+    </ul>
+  );
 }

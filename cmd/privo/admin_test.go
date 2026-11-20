@@ -335,3 +335,36 @@ func TestInviteNeedsPersonAndValidRole(t *testing.T) {
 		t.Errorf("a second invite for a person who has not joined yet replaces the first: exit %d %s", code, errb.String())
 	}
 }
+
+// F24 second review R-02: the break-glass token command leaves a trace, in
+// the same transaction as the token.
+func TestTokenCreateIsAudited(t *testing.T) {
+	getenv, dir := adminEnv(t, nil)
+	var out, errb bytes.Buffer
+	if code := run([]string{"token", "create", "--name", "break-glass", "--role", "owner", "--kind", "control"}, &out, &errb, getenv); code != 0 {
+		t.Fatal(errb.String())
+	}
+	ctx := context.Background()
+	st, err := store.Open(ctx, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	org, _ := st.EnsureOrg(ctx, DefaultOrgSlug, "Default")
+	evs, err := st.RecentAdminEvents(ctx, org.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		if ev.Action == "token.create:control:owner:break-glass" {
+			if ev.Actor != "cli" || ev.ActorID != "cli" || ev.Client != "cli" || ev.Outcome != "ok" {
+				t.Fatalf("audited as %+v", ev)
+			}
+			if strings.Contains(ev.Action, strings.TrimSpace(out.String())) {
+				t.Fatal("the secret is in the audit")
+			}
+			return
+		}
+	}
+	t.Fatalf("no token.create event in %+v", evs)
+}

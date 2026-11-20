@@ -42,28 +42,43 @@ func (s *Store) RecordSeen(ctx context.Context, org OrgID, pins []Pin) error {
 	})
 }
 
-// AcceptPins accepts exactly the listed pending definitions of a server, so a
-// definition that arrives after the admin reviewed the list is never accepted
-// by accident. It returns the keys that were accepted.
+// AcceptPins accepts exactly the listed definitions of a server that are
+// pending or blocked, so a definition that arrives after the admin reviewed
+// the list is never accepted by accident, and a block can be undone. It
+// returns the keys that were accepted.
 func (s *Store) AcceptPins(ctx context.Context, org OrgID, serverID string, keys []PinKey) ([]PinKey, error) {
-	var accepted []PinKey
+	return s.decidePins(ctx, org, serverID, keys, PinAccepted, PinPending, PinBlocked)
+}
+
+// BlockPins blocks exactly the listed pending definitions of a server: they
+// stay hidden from AI clients and leave the review list, and are kept as a
+// decision (PrunePending never deletes them). It returns the keys blocked.
+func (s *Store) BlockPins(ctx context.Context, org OrgID, serverID string, keys []PinKey) ([]PinKey, error) {
+	return s.decidePins(ctx, org, serverID, keys, PinBlocked, PinPending)
+}
+
+func (s *Store) decidePins(ctx context.Context, org OrgID, serverID string, keys []PinKey, to string, from ...string) ([]PinKey, error) {
+	var done []PinKey
 	err := s.tx(ctx, func(tx *sql.Tx) error {
+		done = nil
 		now := ts(time.Now())
 		for _, k := range keys {
-			res, err := tx.ExecContext(ctx, `
-				UPDATE pins SET status = 'accepted', updated_at = ?
-				WHERE org_id = ? AND server_id = ? AND kind = ? AND name = ? AND hash = ? AND status = 'pending'`,
-				now, org, serverID, k.Kind, k.Name, k.Hash)
-			if err != nil {
-				return err
-			}
-			if n, _ := res.RowsAffected(); n == 1 {
-				accepted = append(accepted, k)
+			for _, f := range from {
+				res, err := tx.ExecContext(ctx, `
+					UPDATE pins SET status = ?, updated_at = ?
+					WHERE org_id = ? AND server_id = ? AND kind = ? AND name = ? AND hash = ? AND status = ?`, to, now, org, serverID, k.Kind, k.Name, k.Hash, f)
+				if err != nil {
+					return err
+				}
+				if n, _ := res.RowsAffected(); n == 1 {
+					done = append(done, k)
+					break
+				}
 			}
 		}
 		return nil
 	})
-	return accepted, err
+	return done, err
 }
 
 // ListPins returns every recorded definition of a server, newest first.

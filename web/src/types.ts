@@ -23,7 +23,10 @@ export type Pin = {
   hash: string;
   status: string;
   definition: { description?: string; title?: string; [key: string]: unknown } | null;
+  findings?: Finding[]; // signs of hidden instructions (F11 scan); a hint, never a decision
 };
+
+export type Finding = { path: string; rule: string; severity: "warn" | "note"; message: string; excerpt?: string };
 
 export type ServerConnection = {
   person: string;
