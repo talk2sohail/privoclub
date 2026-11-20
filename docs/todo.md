@@ -780,7 +780,7 @@ ADRs: 0007
 - [ ] Isolated network; egress allow-list proxy
 
 ## F14. Admin UI
-Status: In progress (the Preact admin app is deployed, app.privo.club runs 0.6.0; independent review done 2026-11-03, its findings are open below)
+Status: In progress (the Preact admin app is deployed; third slice, the admin gaps, built and reviewed 2026-11-21 as 0.17.0; independent review of 2026-11-03: R-03, R-05 to R-08 open below)
 ADRs: 0016, 0017, 0018 (superseded), 0019
 
 ### First slice: goal
@@ -867,10 +867,50 @@ Tasks and the tests that name them:
 - [ ] R-06 (Low): the bridge passes a body on GET and DELETE and accepts any content type with an empty body
 - [ ] R-07, R-08 (Info): a session can mint long-lived owner control tokens (consider a confirmation and an audit tag); a token shown once stays in the page's state until the person leaves
 
+### Third slice: the admin gaps (2026-11-21)
+
+Goal: an admin fixes a server or a removal without starting over, and a
+failure says what failed, where. ADR 0029 (editing a server).
+
+Acceptance:
+
+1. A server's page edits its address, its static headers and, for an OAuth
+   server whose client was entered by hand, its client id and secret. Header
+   values and secrets are never shown or returned; the form says which
+   headers are set.
+2. A new address ends every person's connection, drops static header values
+   not given again in the same edit, and puts every accepted tool back into
+   review. An OAuth server cannot change its address. A new client id ends
+   every person's connection. One transaction, audited without values.
+3. A removed member can be restored by whoever could change their roles;
+   they sign in again with the same account and roles, with no tokens,
+   sessions or connections from before.
+4. Two people can each have a token named `claude-code`; names stay unique
+   per person, and service tokens stay unique among service tokens.
+5. A failure adding a server shows next to the form that failed, not only at
+   the top of the page.
+6. A provider that does not answer in time is named, with the step and the
+   seconds waited, never "context deadline exceeded".
+
+Tasks and the tests that name them:
+
+- [x] Spec (this section) and ADR 0029
+- [x] Store: `EditServer` (config, credentials set and removed, connections ended, review again, audit; one transaction); `RestoreUser`; migration `00016_token_names_per_person.sql`
+  - tests: `TestEditServerIsOneTransaction`, `TestEditServerEndsConnectionsAndCredentials`, `TestEditServerSendsToolsBackToReview`, `TestRestoreUser`, `TestTokenNamesAreUniquePerPerson`
+- [x] API: `PATCH /api/v1/servers/{alias}` takes `url`, `headers`, `oauth_client` (ADR 0029); `POST /api/v1/members/{person}/restore`; timeouts named in plain words
+  - tests: `TestEditServerAddress`, `TestEditServerAddressNeedsHeadersAgain`, `TestEditServerHeaders`, `TestEditServerRefusesOAuthAddress`, `TestEditServerOAuthClient`, `TestEditServerNeverReturnsSecrets`, `TestEditServerAddressEndsPeoplesKeys`, `TestRestoreMemberRules`, `TestTimeoutNamesTheHostAndStep`; upstreamauth `TestTimeoutNamesTheHostOnly`
+- [x] App: "Edit" on a server's page; "Restore" on People for removed members; add-server errors next to the form
+  - tests (Vitest): edit sends only what changed and warns before an address change; restore; the error shows beside the catalog form
+- [x] Acceptance: `TestEditServerEndToEnd` (a new address is reviewed again before any tool is served)
+- [x] Security review 2026-11-21 (`docs/reviews/2026-11-21-f14-admin-gaps-security-review.md`): one Medium, three Low, all fixed
+  - M1: a concurrent edit could leave a header credential the configuration no longer names, sent to a new address: stale edits refused (409), a new address clears every static header, only named secrets are sent (`TestEditServerRefusesAStaleEdit`, `TestNewAddressDropsEveryStaticHeader`, `TestSecretsSendOnlyWhatTheConfigurationNames`)
+  - L1: a pooled per-person session of an older version is never reused (`TestPooledSessionOfAnOlderVersionIsNotReused`); L2: teams checked before anything is written (`TestRefusedEditChangesNothing`); L3: restoring revokes tokens removal did not get to (`TestRestoreRevokesLeftoverTokens`)
+- [x] Docs: README, `docs/manual-test.md` section 19, version 0.17.0
+
 ### Later in F14
 
 - [ ] Toolsets (F08), context-cost report (F17), policy presets in the page
-- [ ] Re-enabling a removed member; editing a server
+- [x] Re-enabling a removed member; editing a server (third slice above, 0.17.0)
 - [x] Home page (owner's request, 2026-11-20): `/` offered nothing but a link to privo.club, so people typed `/admin` by hand. It now has **Sign in** (to `/admin/`) when the admin site is set up, says so when it is not, and shows the MCP address from `PRIVO_PUBLIC_URL` for AI clients. Still static for a configuration: no script, nothing read from the request, the configured address escaped. Tests: `internal/server` `TestRootPage` (unchanged hardening checks), `TestHomeOffersSignInAndTheMCPAddress`, `TestHomeWithoutTheAdminSite`, `TestHomeEscapesItsConfiguration`
 
 ## F15. Coolify deployment
@@ -1190,9 +1230,9 @@ Tasks and the tests that name them:
 - [ ] R-10 (Info): approvers and auditors now list only the servers their teams reach; `/me/tools` reads pins once per server; batch later if it shows
 - [x] Local browser walkthrough (Chrome, 2026-11-04, 0.6.0 against a fake GitHub and the real DeepWiki): owner sign-in; Teams (create from a profile, suggested servers); catalog add of DeepWiki for Designers only (status up, 3 tools reviewed and accepted); "Who can use it" on the server page; an invited member lands on Start with no servers, sees DeepWiki once added to Designers, makes a token and every client tab fills it in; no console errors. Found and fixed: a duplicated "Who can use it" heading
 - [ ] Owner's walkthrough on Coolify with real GitHub sign-in and an OAuth catalog server (`docs/manual-test.md` section 9). Done in Chrome on app.privo.club, 2026-11-04, after the 0.6.0 deploy (the migration gave deepwiki to Everyone): 9.1, 9.3 (with Miro: dynamic registration ok, "needs an administrator's connected account" as expected), 9.4, 9.7 and 9.8 pass; Miro removed afterwards. Open: 9.2, 9.5 and 9.6 need a second GitHub account; connecting an OAuth server and accepting its tools needs an account at a provider the owner uses (Linear, Notion…)
-- [ ] Adding a server: a failure is shown in the flash at the top of the page, out of view of a catalog form lower down, so "Add" looks like it did nothing (seen with Figma on app.privo.club, 2026-11-04). Show the error next to the form that failed
-- [ ] Adding a server whose provider is slow waits about 10 s on "Adding…" and ends in "context deadline exceeded"; say which step timed out at which host in plain words (Figma's authorization server metadata answered 503 or hung most of the time on 2026-11-04 while its status page was green)
-- [ ] Discovered: token names are unique in the whole org, so two people cannot both call their token `claude-code`; make them unique per person (with the person in the name shown to admins)
+- [x] Adding a server: a failure is shown in the flash at the top of the page, out of view of a catalog form lower down, so "Add" looks like it did nothing (seen with Figma on app.privo.club, 2026-11-04). Show the error next to the form that failed **Fixed in 0.17.0 (F14 third slice).**
+- [x] Adding a server whose provider is slow waits about 10 s on "Adding…" and ends in "context deadline exceeded"; say which step timed out at which host in plain words (Figma's authorization server metadata answered 503 or hung most of the time on 2026-11-04 while its status page was green) **Fixed in 0.17.0 (F14 third slice).**
+- [x] Discovered: token names are unique in the whole org, so two people cannot both call their token `claude-code`; make them unique per person (with the person in the name shown to admins) **Fixed in 0.17.0 (F14 third slice).**
 - [ ] Later: tool-level toolsets inside a server (F08); a team's own rule presets; identity provider groups mapped onto teams (F20)
 
 ## F27. A token belongs to a member by user id

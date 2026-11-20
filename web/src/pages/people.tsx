@@ -40,6 +40,12 @@ export function People({ session }: PageProps) {
       invalidate("/v1/members");
     }, "Roles changed. They apply to " + person + "'s next request.");
 
+  const restore = (person: string) =>
+    void run(async () => {
+      await api("POST", "/v1/members/" + seg(person) + "/restore");
+      invalidate("/v1/members");
+    }, person + " is back, with the roles they had. They sign in again and make new tokens.");
+
   const remove = (person: string) =>
     void run(async () => {
       await api("POST", "/v1/members/" + seg(person) + "/remove");
@@ -127,6 +133,11 @@ export function People({ session }: PageProps) {
                         )}
                       </td>
                       <td>
+                        {m.removed && (ownerEditor || !elevated(m.roles)) && (
+                          <button type="button" class="link" disabled={busy} onClick={() => restore(m.person)}>
+                            Restore {m.person}
+                          </button>
+                        )}
                         {!m.removed &&
                           !me &&
                           (removing === m.person ? (
@@ -151,7 +162,10 @@ export function People({ session }: PageProps) {
             </table>
           </div>
         )}
-        <p class="meta">Removing someone signs them out, deletes their connected accounts and revokes every token with their name.</p>
+        <p class="meta">
+          Removing someone signs them out, deletes their connected accounts and revokes every token with their name. Restoring them brings back their account
+          and roles, nothing else.
+        </p>
       </section>
       <section class="card">
         <h2>Invite someone</h2>

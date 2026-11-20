@@ -7,7 +7,7 @@ import { api } from "./api";
 import { invalidate } from "./data";
 import { navigate } from "./router";
 import type { CatalogEntry, Team } from "./types";
-import { Copy, formValues, useAction } from "./ui";
+import { Copy, ErrorLine, formValues, useAction } from "./ui";
 
 export function signInLabel(e: CatalogEntry): string {
   if (e.auth === "none") return "no sign-in";
@@ -60,7 +60,7 @@ export function CatalogAdd({
   onCancel: () => void;
 }) {
   const [chosen, setChosen] = useState<string[]>(initialTeams);
-  const [busy, run] = useAction();
+  const [busy, run, error] = useAction();
   const ownApp = entry.auth === "oauth" && entry.registration === "own_app";
   const blocked = entry.auth === "oauth" && !oauthAvailable;
 
@@ -121,6 +121,7 @@ export function CatalogAdd({
       )}
       {entry.auth === "oauth" && !ownApp && <p class="meta">Privo registers itself with {entry.name}. Each person connects their own account once.</p>}
       {entry.auth === "none" && <p class="meta">No sign-in: everyone who can use it shares it.</p>}
+      <ErrorLine text={error} />
       <div class="actions">
         {!ready && <p class="meta">Loading teams…</p>}
         <button type="submit" class="primary" disabled={busy || blocked || !ready}>

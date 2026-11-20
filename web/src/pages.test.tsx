@@ -926,3 +926,96 @@ describe("audit", () => {
     expect(screen.queryByLabelText("Days to keep")).toBeNull();
   });
 });
+
+describe("the admin gaps (F14 third slice)", () => {
+  const kit = { alias: "kit", status: "up", transport: "http", target: "https://kit.example/mcp", enabled: true, items: {}, pending_review: 0, teams: ["everyone"], header_names: ["Authorization"] };
+
+  it("edits a header without touching the address, and never shows a value", async () => {
+    at("/admin/servers/kit");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [kit] },
+      "GET /admin/api/v1/servers/kit/pins": { pins: [] },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "PATCH /admin/api/v1/servers/kit": { server: kit },
+    });
+    await screen.findByText("Headers sent with every request");
+    const save = screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true); // nothing changed yet
+    fireEvent.input(screen.getByLabelText("New value of Authorization"), { target: { value: "Bearer new" } });
+    fireEvent.input(screen.getByLabelText("New header name"), { target: { value: "X-Team" } });
+    fireEvent.input(screen.getByLabelText("New header value"), { target: { value: "t1" } });
+    fireEvent.click(save);
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]).toMatchObject({ method: "PATCH", url: "/admin/api/v1/servers/kit", body: { headers: { Authorization: "Bearer new", "X-Team": "t1" } } });
+    expect((srv.writes()[0]!.body as Record<string, unknown>).url).toBeUndefined();
+  });
+
+  it("asks before an address change and says what it ends", async () => {
+    at("/admin/servers/kit");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [kit] },
+      "GET /admin/api/v1/servers/kit/pins": { pins: [] },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "PATCH /admin/api/v1/servers/kit": { server: kit, headers_dropped: ["Authorization"] },
+    });
+    const address = (await screen.findByLabelText("Address")) as HTMLInputElement;
+    fireEvent.input(address, { target: { value: "https://kit.example/v2/mcp" } });
+    const warning = screen.getByRole("alert");
+    expect(warning.textContent).toContain("every tool goes back to review");
+    expect(warning.textContent).toContain("Authorization");
+    const save = screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    fireEvent.click(within(warning).getByRole("checkbox"));
+    fireEvent.click(save);
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]!.body).toEqual({ url: "https://kit.example/v2/mcp" });
+    await screen.findByText(/Enter these headers again for the new address: Authorization/);
+  });
+
+  it("does not offer a new address for a server that uses each person's account", async () => {
+    at("/admin/servers/linear");
+    const linear = { ...kit, alias: "linear", auth: "oauth", registration: "manual", header_names: undefined, client_id: "c-1", has_client_secret: true };
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [linear] },
+      "GET /admin/api/v1/servers/linear/pins": { pins: [] },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "GET /admin/api/v1/servers/linear/connections": { connections: [] },
+      "PATCH /admin/api/v1/servers/linear": { server: linear },
+    });
+    expect(((await screen.findByLabelText("Address")) as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByText("Headers sent with every request")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Remove the stored secret" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]!.body).toEqual({ oauth_client: { client_id: "c-1", client_secret: "" } });
+  });
+
+  it("restores a removed member", async () => {
+    at("/admin/people");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/members": {
+        members: [{ person: "gone", name: "Gone", roles: ["member"], github_login: "gone", created_at: "2026-11-01T00:00:00Z", removed: true }],
+      },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "POST /admin/api/v1/members/gone/restore": { restored: "gone", roles: ["member"] },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Restore gone" }));
+    await waitFor(() => expect(srv.writes()).toMatchObject([{ method: "POST", url: "/admin/api/v1/members/gone/restore" }]));
+    await screen.findByText(/gone is back, with the roles they had/);
+  });
+
+  it("shows a failure beside the catalog form that failed", async () => {
+    at("/admin/servers");
+    await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [] },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "GET /admin/api/v1/catalog": catalogAnswer,
+      "POST /admin/api/v1/servers": () => [422, { error: "finding the server's sign-in failed: mcp.figma.com did not answer within 10 seconds" }],
+    });
+    await screen.findByText("Figma");
+    fireEvent.click(screen.getAllByRole("button", { name: "Add" })[0]!);
+    const form = await screen.findByRole("form", { name: "Add Figma" });
+    fireEvent.click(within(form).getByRole("button", { name: "Add Figma" }));
+    await waitFor(() => expect(within(form).getByText(/mcp.figma.com did not answer within 10 seconds/)).toBeTruthy());
+  });
+});

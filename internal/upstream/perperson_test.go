@@ -410,3 +410,36 @@ func TestConcurrentFirstCallsShareOneConnection(t *testing.T) {
 		}
 	}
 }
+
+// Security review of the third slice, L1: a pooled session made before the
+// server was edited is never used again, even if it slipped into the pool
+// after the edit closed the others.
+func TestPooledSessionOfAnOlderVersionIsNotReused(t *testing.T) {
+	b := newBearerServer(t)
+	b.allow("tok-ada", "ada")
+	g := &fakeGrants{tokens: map[string]string{"u-ada": "tok-ada"}}
+	m := oauthManager(t, b, g)
+	ctx := context.Background()
+	first, err := m.PersonSession(ctx, "o", "s1", "u-ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := m.PersonSession(ctx, "o", "s1", "u-ada"); again != first {
+		t.Fatal("the same version should reuse the pooled session")
+	}
+	// The server is now another version, but the old session is still pooled
+	// (as if it was added just after the edit closed the pool).
+	m.mu.Lock()
+	m.entries["s1"].srv.UpdatedAt = time.Now().Add(time.Minute)
+	m.mu.Unlock()
+	next, err := m.PersonSession(ctx, "o", "s1", "u-ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next == first {
+		t.Fatal("a session made for an older version of the server was reused")
+	}
+	if whoami(t, next) != "ada" {
+		t.Fatal("the new session does not work")
+	}
+}

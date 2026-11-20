@@ -16,6 +16,10 @@ export type ServerView = {
   key_header?: string;
   teams?: string[];
   team_tools?: Record<string, string[]>; // narrowed teams' tools (ADR 0026); admins only
+  // For editing (ADR 0029), admins only: never a value or a secret.
+  header_names?: string[];
+  client_id?: string;
+  has_client_secret?: boolean;
 };
 
 export type Pin = {

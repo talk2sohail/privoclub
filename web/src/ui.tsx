@@ -42,22 +42,31 @@ export function FlashBar() {
 
 // ---- running an action: a busy button, and the API's message on failure
 
-export function useAction(): [boolean, (fn: () => Promise<unknown>, ok?: string) => Promise<boolean>] {
+/**
+ * useAction runs a change: busy while it runs, the outcome in the flash, and
+ * the last error also returned, so a form can show it beside itself (a form
+ * low on a page is out of view of the flash).
+ */
+export function useAction(): [boolean, (fn: () => Promise<unknown>, ok?: string) => Promise<boolean>, string] {
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   const run = async (fn: () => Promise<unknown>, ok?: string): Promise<boolean> => {
     setBusy(true);
+    setError("");
     try {
       await fn();
       if (ok) flash("ok", ok);
       return true;
     } catch (e) {
-      flash("warn", (e as Error).message);
+      const msg = (e as Error).message;
+      setError(msg);
+      flash("warn", msg);
       return false;
     } finally {
       setBusy(false);
     }
   };
-  return [busy, run];
+  return [busy, run, error];
 }
 
 /** formValues reads a submitted form as strings. */

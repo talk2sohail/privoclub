@@ -57,6 +57,10 @@ type pooled struct {
 	session  *mcp.ClientSession
 	cancel   context.CancelFunc
 	lastUsed atomic.Int64
+	// version is the server's updated_at when the session was made: a
+	// session to a server since edited (another address, ADR 0029) is
+	// never used again.
+	version time.Time
 }
 
 type pending struct {
@@ -83,9 +87,14 @@ func (m *Manager) PersonSession(ctx context.Context, org store.OrgID, serverID, 
 	key := poolKey{serverID, userID}
 	m.poolMu.Lock()
 	if p, ok := m.pool[key]; ok {
-		p.lastUsed.Store(time.Now().UnixNano())
-		m.poolMu.Unlock()
-		return p.session, nil
+		if p.version.Equal(e.srv.UpdatedAt) {
+			p.lastUsed.Store(time.Now().UnixNano())
+			m.poolMu.Unlock()
+			return p.session, nil
+		}
+		// Made for an older version of the server: never reuse it.
+		delete(m.pool, key)
+		_ = p.session.Close()
 	}
 	if w, ok := m.connecting[key]; ok {
 		m.poolMu.Unlock()
@@ -109,6 +118,16 @@ func (m *Manager) PersonSession(ctx context.Context, org store.OrgID, serverID, 
 
 	w.p, w.err = m.connectPerson(e, userID) //nolint:contextcheck // the connection outlives this call and must not carry the caller's values
 
+	// The server may have been edited while this connected: a session made
+	// for the old settings is not pooled or used.
+	m.mu.Lock()
+	cur, ok := m.entries[serverID]
+	m.mu.Unlock()
+	if w.err == nil && (!ok || cur != e) {
+		_ = w.p.session.Close()
+		w.p.cancel()
+		w.p, w.err = nil, ErrUnavailable
+	}
 	m.poolMu.Lock()
 	delete(m.connecting, key)
 	if w.err == nil {
@@ -172,7 +191,7 @@ func (m *Manager) connectPerson(e *entry, userID string) (*pooled, error) {
 		}
 		return nil, fmt.Errorf("connect: %w", err)
 	}
-	p := &pooled{session: session, cancel: cancel}
+	p := &pooled{session: session, cancel: cancel, version: srv.UpdatedAt}
 	p.lastUsed.Store(time.Now().UnixNano())
 	return p, nil
 }

@@ -161,7 +161,7 @@ export function FromCatalog({
 function AddServer({ canOAuth, teams, ready }: { canOAuth: boolean; teams: Team[]; ready: boolean }) {
   const [authMode, setAuthMode] = useState("none");
   const [chosen, setChosen] = useState<string[]>(["everyone"]);
-  const [busy, run] = useAction();
+  const [busy, run, error] = useAction();
 
   const submit = (e: Event) => {
     const f = formValues(e);
@@ -302,6 +302,7 @@ function AddServer({ canOAuth, teams, ready }: { canOAuth: boolean; teams: Team[
         )}
         {teams.length > 0 && <TeamPicker teams={teams} chosen={chosen} onChange={setChosen} />}
         {!ready && <p class="meta">Loading teams…</p>}
+        <ErrorLine text={error} />
         <div class="actions">
           <button type="submit" class="primary" disabled={busy || !ready}>
             {busy ? "Adding…" : "Add server"}

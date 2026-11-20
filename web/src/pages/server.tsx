@@ -6,7 +6,7 @@ import { Link, navigate } from "../router";
 import { TeamPicker } from "../catalog";
 import type { Pin, ServerConnection, ServerView, Team } from "../types";
 import { Definition, Findings, previousOf, warnings } from "../review";
-import { Empty, ErrorLine, Loading, Status, firstLine, when, useAction } from "../ui";
+import { Empty, ErrorLine, Loading, Status, firstLine, flash, when, useAction } from "../ui";
 import { authLabel } from "./servers";
 
 // A new server takes a moment to connect and list its tools: the page asks
@@ -111,6 +111,7 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
       {session.can.teams && <Access srv={current} />}
       {session.can.servers && (current.teams ?? []).length > 0 && <Toolsets srv={current} tools={toolNames(accepted)} />}
       {(current.auth === "oauth" || current.auth === "key") && <Connected alias={alias} />}
+      {current.transport !== "stdio" && <Edit key={current.alias + current.target} srv={current} />}
       <Settings srv={current} />
     </>
   );
@@ -378,6 +379,184 @@ function Connected({ alias }: { alias: string }) {
           </table>
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * editBody is what an edit sends (ADR 0029): only what changed. headers maps
+ * a name to its new value, or "" to remove it; secret undefined keeps the
+ * client secret, "" removes it.
+ */
+export function editBody(
+  srv: ServerView,
+  f: { url: string; headers: Record<string, string>; clientID?: string; secret?: string },
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  const url = f.url.trim();
+  if (url && url !== srv.target) body.url = url;
+  const headers: Record<string, string> = {};
+  for (const [k, v] of Object.entries(f.headers)) {
+    const name = k.trim();
+    if (name && (v !== "" || (srv.header_names ?? []).includes(name))) headers[name] = v;
+  }
+  if (Object.keys(headers).length > 0) body.headers = headers;
+  if (srv.client_id !== undefined) {
+    const id = (f.clientID ?? "").trim();
+    if ((id && id !== srv.client_id) || f.secret !== undefined) {
+      const c: Record<string, string> = { client_id: id || srv.client_id };
+      if (f.secret !== undefined) c.client_secret = f.secret;
+      body.oauth_client = c;
+    }
+  }
+  return body;
+}
+
+// Edit changes a server's address, static headers or hand-entered OAuth
+// client (ADR 0029). Values are never shown: a header is set or not.
+function Edit({ srv }: { srv: ServerView }) {
+  const [busy, run, error] = useAction();
+  const [url, setURL] = useState(srv.target);
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [removed, setRemoved] = useState<Set<string>>(new Set());
+  const [newName, setNewName] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [clientID, setClientID] = useState(srv.client_id ?? "");
+  const [secret, setSecret] = useState<string | undefined>(undefined);
+  const [sure, setSure] = useState(false);
+  const oauth = srv.auth === "oauth";
+  const staticHeaders = !srv.auth;
+  const names = srv.header_names ?? [];
+  const headers: Record<string, string> = {};
+  for (const n of names) {
+    if (removed.has(n)) headers[n] = "";
+    else if (values[n]) headers[n] = values[n];
+  }
+  if (newName.trim() && newValue) headers[newName.trim()] = newValue;
+  const body = editBody(srv, { url, headers, clientID: srv.client_id !== undefined ? clientID : undefined, secret });
+  const moving = body.url !== undefined;
+  const lost = moving ? names.filter((n) => !(n in headers) || headers[n] === "") : [];
+
+  const save = (e: Event) => {
+    e.preventDefault();
+    void run(async () => {
+      const out = await api<{ headers_dropped?: string[] }>("PATCH", "/v1/servers/" + seg(srv.alias), body);
+      setValues({});
+      setRemoved(new Set());
+      setNewName("");
+      setNewValue("");
+      setSecret(undefined);
+      setSure(false);
+      invalidate("/v1/servers");
+      invalidate("/v1/servers/" + seg(srv.alias) + "/pins");
+      const done = moving ? "Saved. Everyone connects again, and every tool waits for your review." : "Saved.";
+      if (out.headers_dropped?.length) flash("warn", done + " Enter these headers again for the new address: " + out.headers_dropped.join(", ") + ".");
+      else flash("ok", done);
+    });
+  };
+
+  return (
+    <section class="card">
+      <h2>Edit</h2>
+      <form class="stack" onSubmit={save}>
+        <label>
+          Address
+          <input name="url" type="url" required value={url} disabled={oauth} onInput={(e) => setURL((e.currentTarget as HTMLInputElement).value)} />
+        </label>
+        {oauth && <p class="meta">This server uses each person's own account, set up for this address. To use another address, delete it and add it again.</p>}
+        {moving && (
+          <div class="flash warn" role="alert">
+            <p>A new address is a new server to trust:</p>
+            <ul>
+              <li>everyone's connection to it ends, and they connect again;</li>
+              <li>every tool goes back to review, and AI clients see none until you accept them;</li>
+              {lost.length > 0 && <li>header values are not sent to the new address unless you enter them again: {lost.join(", ")}.</li>}
+            </ul>
+            <label class="inline">
+              <input type="checkbox" checked={sure} onChange={(e) => setSure((e.currentTarget as HTMLInputElement).checked)} /> Change the address anyway
+            </label>
+          </div>
+        )}
+        {staticHeaders && (
+          <fieldset>
+            <legend>Headers sent with every request</legend>
+            {names.length === 0 && <p class="meta">None.</p>}
+            {names.map((n) => (
+              <div class="row" key={n}>
+                <code>{n}</code> <small class="meta">set</small>
+                <input
+                  type="password"
+                  autocomplete="off"
+                  aria-label={"New value of " + n}
+                  placeholder="new value (blank keeps it)"
+                  disabled={removed.has(n)}
+                  value={values[n] ?? ""}
+                  onInput={(e) => setValues({ ...values, [n]: (e.currentTarget as HTMLInputElement).value })}
+                />
+                <label class="inline">
+                  <input
+                    type="checkbox"
+                    checked={removed.has(n)}
+                    onChange={(e) => {
+                      const next = new Set(removed);
+                      if ((e.currentTarget as HTMLInputElement).checked) next.add(n);
+                      else next.delete(n);
+                      setRemoved(next);
+                    }}
+                  />{" "}
+                  remove
+                </label>
+              </div>
+            ))}
+            <div class="row">
+              <input aria-label="New header name" placeholder="X-Api-Key" autocomplete="off" value={newName} onInput={(e) => setNewName((e.currentTarget as HTMLInputElement).value)} />
+              <input
+                type="password"
+                aria-label="New header value"
+                autocomplete="off"
+                placeholder="value"
+                value={newValue}
+                onInput={(e) => setNewValue((e.currentTarget as HTMLInputElement).value)}
+              />
+            </div>
+          </fieldset>
+        )}
+        {srv.client_id !== undefined && (
+          <fieldset>
+            <legend>OAuth client</legend>
+            <label>
+              Client id <input autocomplete="off" value={clientID} onInput={(e) => setClientID((e.currentTarget as HTMLInputElement).value)} />
+            </label>
+            {clientID.trim() && clientID.trim() !== srv.client_id && <p class="meta">A new client id ends everyone's connection: they connect again.</p>}
+            <label>
+              Client secret <small class="meta">{srv.has_client_secret ? "a secret is stored" : "none stored"}</small>
+              <input
+                type="password"
+                autocomplete="off"
+                aria-label="New client secret"
+                placeholder="new secret (blank keeps it)"
+                value={secret ?? ""}
+                onInput={(e) => {
+                  const v = (e.currentTarget as HTMLInputElement).value;
+                  setSecret(v === "" ? undefined : v);
+                }}
+              />
+            </label>
+            {srv.has_client_secret && (
+              <button type="button" class="link" onClick={() => setSecret("")}>
+                Remove the stored secret
+              </button>
+            )}
+            {secret === "" && <p class="meta">The secret will be removed.</p>}
+          </fieldset>
+        )}
+        <ErrorLine text={error} />
+        <div class="actions">
+          <button type="submit" class="primary" disabled={busy || Object.keys(body).length === 0 || (moving && !sure)}>
+            Save changes
+          </button>
+        </div>
+      </form>
     </section>
   );
 }

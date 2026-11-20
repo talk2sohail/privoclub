@@ -410,6 +410,31 @@ func (s *Store) DisableUser(ctx context.Context, org OrgID, userID string, now t
 	})
 }
 
+// RestoreUser brings back a removed member with the account and roles they
+// had, and writes ev. Their sessions, tokens and connections are not
+// restored: they sign in again and connect again. It is ErrNotFound for a
+// member of another org or one who was not removed.
+func (s *Store) RestoreUser(ctx context.Context, org OrgID, userID string, ev AuditEvent) error {
+	ev.Phase = "admin"
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var person string
+		err := tx.QueryRowContext(ctx, `UPDATE users SET disabled_at = NULL WHERE org_id = ? AND id = ? AND disabled_at IS NOT NULL RETURNING person`, org, userID).Scan(&person)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		// Tokens from before stay gone, also any the removal did not get to
+		// revoke (security review of the third slice, L3).
+		if _, err := tx.ExecContext(ctx, `UPDATE api_tokens SET revoked_at = ? WHERE org_id = ? AND revoked_at IS NULL AND (user_id = ? OR (user_id = '' AND person = ?))`,
+			ts(time.Now()), org, userID, person); err != nil {
+			return err
+		}
+		return insertAudit(ctx, tx, org, []AuditEvent{ev})
+	})
+}
+
 // ConnectState is a connection to an upstream account in flight (ADR 0017):
 // who started it, from which session, for which server, and the authorization
 // server expected to answer. Hash is the hex SHA-256 of the state value sent
