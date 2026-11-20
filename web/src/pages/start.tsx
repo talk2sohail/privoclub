@@ -7,7 +7,7 @@ import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
 import { Link } from "../router";
 import { ClientSetup } from "../setup";
-import type { MyTools, Token } from "../types";
+import type { MyApproval, MyTools, Token } from "../types";
 import { Copy, Empty, ErrorLine, Loading, Status, formValues, useAction, when } from "../ui";
 
 export function Start({ session }: PageProps) {
@@ -51,6 +51,8 @@ export function Start({ session }: PageProps) {
           ))}
         </p>
       )}
+
+      <MyRequests />
 
       <section class="card">
         <h2>1. Your tools</h2>
@@ -144,5 +146,39 @@ export function Start({ session }: PageProps) {
         {!created?.token && <p class="meta">Create a token above and it is filled in for you.</p>}
       </section>
     </>
+  );
+}
+
+// MyRequests lists the person's own calls that wait for a person's decision,
+// and lets them take one back (F10). Hidden when there are none.
+function MyRequests() {
+  const res = useData<{ approvals: MyApproval[] }>("/v1/me/approvals");
+  const [busy, run] = useAction();
+  const list = res.data?.approvals ?? [];
+  if (list.length === 0) return null;
+  const withdraw = (a: MyApproval) =>
+    void run(async () => {
+      await api("POST", "/v1/me/approvals/" + encodeURIComponent(a.id) + "/withdraw");
+      invalidate("/v1/me/approvals");
+    }, "Withdrawn. If your AI client calls again, it asks again.");
+  return (
+    <section class="card">
+      <h2>Waiting for approval</h2>
+      <p class="meta">Calls from your AI client that a person has to approve. Withdraw one you no longer want.</p>
+      <ul class="catalog">
+        {list.map((a) => (
+          <li key={a.id}>
+            <div class="catalog-head">
+              <span>
+                <code>{a.tool}</code> <small class="meta">on {a.server}, from “{a.requester}”, expires {when(a.expires_at)}</small>
+              </span>
+              <button type="button" class="link" disabled={busy} onClick={() => withdraw(a)}>
+                Withdraw
+              </button>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"time"
 )
@@ -29,6 +30,10 @@ type Policy struct {
 	ExpiresAt *time.Time
 }
 
+// ErrUnknownUser is returned for a rule naming a person who is not an active
+// member of the org.
+var ErrUnknownUser = errors.New("store: no such member")
+
 // CreatePolicies inserts rules atomically. A rule for "team:<slug>" needs the
 // team to exist (ErrUnknownTeam), checked in the same transaction, so a team
 // created later never inherits a rule written for a name (F26 review R-02).
@@ -37,6 +42,17 @@ func (s *Store) CreatePolicies(ctx context.Context, org OrgID, ps ...Policy) err
 		for _, p := range ps {
 			if team, ok := strings.CutPrefix(p.Subject, "team:"); ok {
 				if err := checkTeams(ctx, tx, org, []string{team}); err != nil {
+					return err
+				}
+			}
+			// A rule for one person needs an active member of this org (F10).
+			if user, ok := strings.CutPrefix(p.Subject, "user:"); ok {
+				var one int
+				err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE org_id = ? AND id = ? AND disabled_at IS NULL`, org, user).Scan(&one)
+				if errors.Is(err, sql.ErrNoRows) {
+					return ErrUnknownUser
+				}
+				if err != nil {
 					return err
 				}
 			}

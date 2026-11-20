@@ -4,6 +4,7 @@
 package control
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/json"
@@ -19,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"privo.club/privo/internal/approval"
 	"privo.club/privo/internal/audit"
@@ -186,6 +189,20 @@ func decode(r *http.Request, v any) error {
 		return errorf(http.StatusBadRequest, "invalid JSON body: unexpected data after the object")
 	}
 	return nil
+}
+
+// decodeOptional is decode for a body that may be left out (empty, or
+// whitespace only), as on approve and deny.
+func decodeOptional(r *http.Request, v any) error {
+	b, err := io.ReadAll(io.LimitReader(r.Body, 1<<16))
+	if err != nil {
+		return errorf(http.StatusBadRequest, "could not read the body")
+	}
+	if len(bytes.TrimSpace(b)) == 0 {
+		return nil
+	}
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	return decode(r, v)
 }
 
 func (a *API) adminEvent(ctx context.Context, p auth.Principal, action, server string) {
@@ -976,6 +993,8 @@ type policyView struct {
 	Note      string     `json:"note,omitempty"`
 	CreatedBy string     `json:"created_by"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// SubjectPerson names the member of a "user:" rule (F10 grants).
+	SubjectPerson string `json:"subject_person,omitempty"`
 }
 
 func viewPolicy(p store.Policy) policyView {
@@ -988,9 +1007,21 @@ func (a *API) listPolicies(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err != nil {
 		return err
 	}
+	users, err := a.Store.ListUsers(r.Context(), p.OrgID)
+	if err != nil {
+		return err
+	}
+	person := map[string]string{}
+	for _, u := range users {
+		person[u.ID] = u.Person
+	}
 	out := make([]policyView, 0, len(ps))
 	for _, pol := range ps {
-		out = append(out, viewPolicy(pol))
+		v := viewPolicy(pol)
+		if id, ok := strings.CutPrefix(pol.Subject, "user:"); ok {
+			v.SubjectPerson = person[id]
+		}
+		out = append(out, v)
 	}
 	def, _ := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
 	writeJSON(w, http.StatusOK, map[string]any{"policies": out, "default": def})
@@ -1022,7 +1053,7 @@ func (a *API) createPolicy(w http.ResponseWriter, r *http.Request, p auth.Princi
 	case !policy.ValidGlob(req.Tool):
 		return errorf(http.StatusUnprocessableEntity, "tool must be a name or glob pattern")
 	case !policy.ValidSubject(req.Subject):
-		return errorf(http.StatusUnprocessableEntity, "subject must be *, role:<role>, team:<slug> or token:<id>")
+		return errorf(http.StatusUnprocessableEntity, "subject must be *, role:<role>, team:<slug>, user:<id> or token:<id>")
 	case !policy.ValidAction(req.Action):
 		return errorf(http.StatusUnprocessableEntity, "action must be allow, ask or deny")
 	case req.Priority < -1000 || req.Priority > 1000:
@@ -1043,6 +1074,9 @@ func (a *API) createPolicy(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err := a.Store.CreatePolicies(r.Context(), p.OrgID, pol); err != nil {
 		if errors.Is(err, store.ErrUnknownTeam) {
 			return errorf(http.StatusUnprocessableEntity, "there is no team %q", strings.TrimPrefix(pol.Subject, "team:"))
+		}
+		if errors.Is(err, store.ErrUnknownUser) {
+			return errorf(http.StatusUnprocessableEntity, "there is no member %q", strings.TrimPrefix(pol.Subject, "user:"))
 		}
 		return err
 	}
@@ -1164,29 +1198,44 @@ func markOwn(v map[string]any, ap store.Approval, p auth.Principal, allowSelf bo
 }
 
 func (a *API) listApprovals(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
-	status := r.URL.Query().Get("status")
-	if status != "" && status != store.ApprovalPending && status != store.ApprovalApproved && status != store.ApprovalDenied &&
-		status != store.ApprovalConsumed && status != store.ApprovalWithdrawn {
-		return errorf(http.StatusUnprocessableEntity, "unknown status %q", status)
-	}
-	list, err := a.Store.ListApprovals(r.Context(), p.OrgID, status, 100)
-	if err != nil {
-		return err
-	}
+	q := r.URL.Query()
+	status := q.Get("status")
 	allowSelf, err := a.Store.Setting(r.Context(), p.OrgID, approval.SettingAllowSelf, "false")
 	if err != nil {
 		return err
 	}
-	now := time.Now()
-	out := make([]map[string]any, 0, len(list))
-	for _, ap := range list {
-		if status == store.ApprovalPending && ap.EffectiveStatus(now) != store.ApprovalPending {
-			continue
+	out := []map[string]any{}
+	resp := map[string]any{}
+	switch status {
+	case store.ViewPending, store.ViewHistory:
+		// Pages, newest first (F10): waiting requests with their arguments,
+		// or the history without them (they are purged once decided).
+		limit, _ := strconv.Atoi(q.Get("limit"))
+		page, err := a.Store.ListApprovalsPage(r.Context(), p.OrgID, status, q.Get("before"), limit, time.Now())
+		if errors.Is(err, store.ErrBadCursor) {
+			return errorf(http.StatusBadRequest, "before must be the next value of a previous page")
 		}
-		out = append(out, markOwn(a.approvalView(r.Context(), p.OrgID, ap, true), ap, p, allowSelf == "true"))
+		if err != nil {
+			return err
+		}
+		for _, ap := range page.Approvals {
+			out = append(out, markOwn(a.approvalView(r.Context(), p.OrgID, ap, status == store.ViewPending), ap, p, allowSelf == "true"))
+		}
+		resp["next"] = page.Next
+	case "", store.ApprovalApproved, store.ApprovalDenied, store.ApprovalConsumed, store.ApprovalWithdrawn:
+		list, err := a.Store.ListApprovals(r.Context(), p.OrgID, status, 100)
+		if err != nil {
+			return err
+		}
+		for _, ap := range list {
+			out = append(out, markOwn(a.approvalView(r.Context(), p.OrgID, ap, true), ap, p, allowSelf == "true"))
+		}
+	default:
+		return errorf(http.StatusUnprocessableEntity, "unknown status %q", status)
 	}
 	a.adminEvent(r.Context(), p, "approvals.view:"+strconv.Itoa(len(out)), "")
-	writeJSON(w, http.StatusOK, map[string]any{"approvals": out})
+	resp["approvals"] = out
+	writeJSON(w, http.StatusOK, resp)
 	return nil
 }
 
@@ -1203,10 +1252,45 @@ func (a *API) getApproval(w http.ResponseWriter, r *http.Request, p auth.Princip
 	return nil
 }
 
+// grantLengths are the lengths a scoped grant may have (F10, ADR 0005).
+var grantLengths = map[string]time.Duration{"15m": 15 * time.Minute, "1h": time.Hour, "8h": 8 * time.Hour}
+
 func (a *API) decide(approve bool) handler {
 	return func(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 		id := r.PathValue("id")
-		err := a.Approval.Decide(r.Context(), p.OrgID, id, approval.Decider{TokenID: p.TokenID, UserID: p.UserID, Name: p.Name, Person: p.Person}, approve)
+		var req struct {
+			Grant string `json:"grant"` // also allow the tool for the requester for this long
+		}
+		if err := decodeOptional(r, &req); err != nil {
+			return err
+		}
+		grant, ok := grantLengths[req.Grant]
+		switch {
+		case req.Grant != "" && !approve:
+			return errorf(http.StatusUnprocessableEntity, "only an approval grants anything")
+		case req.Grant != "" && !ok:
+			return errorf(http.StatusUnprocessableEntity, "grant must be 15m, 1h or 8h")
+		}
+		before, err := a.Store.GetApproval(r.Context(), p.OrgID, id)
+		if errors.Is(err, store.ErrNotFound) {
+			return errorf(http.StatusNotFound, "no approval %q", id)
+		}
+		if err != nil {
+			return err
+		}
+		decider := approval.Decider{TokenID: p.TokenID, UserID: p.UserID, Name: p.Name, Person: p.Person}
+		var planned store.Policy
+		if grant > 0 {
+			// Nobody allows a tool for themselves, even where they may approve
+			// their own calls: a grant takes the person out of every later call.
+			if approval.Own(decider, before) {
+				return errorf(http.StatusForbidden, "you cannot allow a tool for yourself; approve this call alone")
+			}
+			if planned, err = a.planGrant(r.Context(), p, before, grant); err != nil {
+				return err
+			}
+		}
+		err = a.Approval.Decide(r.Context(), p.OrgID, id, decider, approve)
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			return errorf(http.StatusNotFound, "no approval %q", id)
@@ -1228,10 +1312,82 @@ func (a *API) decide(approve bool) handler {
 			verb = "approve"
 		}
 		a.adminEvent(r.Context(), p, "approval."+verb+":"+id, "")
+		resp := map[string]any{}
+		if grant > 0 {
+			if err := a.Store.CreatePolicies(r.Context(), p.OrgID, planned); err != nil {
+				a.Logger.Error("saving a grant after an approval", "approval", id, "err", err)
+				return errorf(http.StatusInternalServerError, "the call is approved, but allowing the tool for longer failed; add a rule on Rules instead")
+			}
+			a.adminEvent(r.Context(), p, fmt.Sprintf("policy.grant:%s:%s:%s/%s:%s", planned.ID, planned.Subject, planned.Server, before.Tool, grant), planned.Server)
+			resp["grant"] = viewPolicy(planned)
+		}
 		ap, _ := a.Store.GetApproval(r.Context(), p.OrgID, id)
-		writeJSON(w, http.StatusOK, map[string]any{"approval": a.approvalView(r.Context(), p.OrgID, ap, false)})
+		resp["approval"] = a.approvalView(r.Context(), p.OrgID, ap, false)
+		writeJSON(w, http.StatusOK, resp)
 		return nil
 	}
+}
+
+// planGrant builds the rule that allows an approved call's tool for its
+// requester for d (F10, ADR 0005 scoped grants): one server, the exact tool,
+// the reviewed definition that was asked about, the requester's member (or
+// their token when it belongs to no member). The rules are evaluated again for
+// the requester now: a grant is made only when the call would still ask, and
+// ranks one above the rule that asks now, so a deny that wins today, added
+// while the request waited included, still wins (security review 2026-11-20).
+func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval, d time.Duration) (store.Policy, error) {
+	refuse := func(why string) (store.Policy, error) {
+		return store.Policy{}, errorf(http.StatusConflict, "%s Approve this call without allowing the tool for longer.", why)
+	}
+	tok, err := a.Store.TokenByID(ctx, ap.RequesterID)
+	if err != nil || tok.OrgID != p.OrgID || tok.RevokedAt != nil {
+		return refuse("The token that asked is gone.")
+	}
+	requester := auth.Principal{OrgID: p.OrgID, TokenID: tok.ID, Name: tok.Name, Roles: []string{tok.Role}, Kind: tok.Kind, Person: tok.Person, UserID: tok.UserID}
+	acc, err := gateway.Access(ctx, a.Store, requester)
+	if err != nil {
+		return store.Policy{}, err
+	}
+	if !acc.Reaches(ap.ServerID) || (tok.UserID != "" && !auth.RolesCan(acc.Roles, auth.PermUseGateway)) {
+		return refuse("The person who asked no longer reaches this server.")
+	}
+	pin, err := a.Store.PinDefinition(ctx, p.OrgID, ap.ServerID, store.PinKey{Kind: upstream.KindTool, Name: ap.Tool, Hash: ap.PinHash})
+	if errors.Is(err, store.ErrNotFound) || (err == nil && pin.Status != store.PinAccepted) {
+		return refuse("The tool's definition is no longer the accepted one.")
+	}
+	if err != nil {
+		return store.Policy{}, err
+	}
+	var def mcp.Tool
+	_ = json.Unmarshal([]byte(pin.Definition), &def) // annotations only tighten; none is the safe reading
+	rules, err := a.Store.ListPolicies(ctx, p.OrgID)
+	if err != nil {
+		return store.Policy{}, err
+	}
+	dflt, err := a.Store.Setting(ctx, p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
+	if err != nil {
+		return store.Policy{}, err
+	}
+	now := time.Now()
+	dec := policy.Evaluate(rules, policy.Request{Roles: gateway.CallerRoles(requester, acc), TokenID: tok.ID, UserID: tok.UserID, Teams: acc.Teams,
+		Server: ap.ServerAlias, Tool: ap.Tool, PinHash: ap.PinHash, Annotations: def.Annotations}, dflt, now)
+	if dec.Action != store.ActionAsk {
+		return refuse("The rules changed while this request waited: this call would now be " + map[string]string{store.ActionAllow: "allowed", store.ActionDeny: "denied"}[dec.Action] + ".")
+	}
+	priority := 0
+	for _, r := range rules {
+		if r.ID == dec.RuleID {
+			priority = r.Priority + 1
+		}
+	}
+	subject := "token:" + tok.ID
+	if tok.UserID != "" {
+		subject = "user:" + tok.UserID
+	}
+	exp := now.Add(d)
+	return store.Policy{ID: ids.New(), Server: ap.ServerAlias, Tool: policy.ExactTool(ap.Tool), Subject: subject, Action: store.ActionAllow,
+		Priority: priority, PinHash: ap.PinHash, Note: fmt.Sprintf("Allowed for %s by %s from approval %s", ap.RequesterPerson, p.Name, ap.ID),
+		CreatedBy: p.Name, CreatedAt: now, ExpiresAt: &exp}, nil
 }
 
 func (a *API) patchApprovalSettings(w http.ResponseWriter, r *http.Request, p auth.Principal) error {

@@ -539,8 +539,63 @@ ADRs: 0005
 - [x] Web approval page with sessions and CSRF (F05 first slice, ADR 0016)
 - [ ] Step-up re-authentication before high-risk approvals (F05 later)
 - [ ] Slack with signing verification and linked identities; email
-- [ ] Scoped temporary grants from an approval, batching, approver dashboard
-- [ ] Withdraw endpoint for requesters
+- [ ] Batching of similar requests, approver dashboard (who approves everything)
+
+### Second slice: approvals people live with (2026-11-20)
+
+Goal (owner's plan, 2026-11-20): an approver is not asked the same thing
+all day, a person can take back a request they no longer want, and decided
+approvals can be looked back on.
+
+Acceptance:
+1. Approving can also allow the same tool on the same server for the
+   requester for 15 minutes, 1 hour or 8 hours ("scoped grant", ADR 0005).
+   It is an allow rule with that expiry, subject `user:<id>` (the
+   requester's member; `token:<id>` for a token of no member), named after
+   the approval, shown on Rules and removable there. It ranks one above the
+   rule that asked, so a deny that outranked the ask still wins.
+2. Only someone who may decide the approval can grant, never for longer than
+   8 hours, never for their own request, and only for that exact tool (not
+   a pattern). The approval and the grant are each audited.
+3. A person sees their own pending requests (Start page,
+   `GET /api/v1/me/approvals`) and withdraws one
+   (`POST /api/v1/me/approvals/{id}/withdraw`). A held call ends as refused;
+   a retry asks again. Nobody withdraws another person's request.
+4. Approvers page through waiting requests beyond the first page and see
+   the history of decided ones (approved, denied, withdrawn, used,
+   expired), newest first, without their arguments.
+5. Rules accept `user:<id>` for an existing member of the org only.
+
+Threat note:
+- A grant widens access, so it is narrow by construction: one tool by exact
+  name, one server, one person, at most 8 hours, from a person who could
+  have approved each call anyway. It never outranks a deny that already won.
+- Withdrawing is limited to the requester's own member, found by the
+  token's bound user (ADR 0022), so a request cannot be cancelled by
+  someone else.
+- History shows no arguments (they are purged once a call is decided or
+  used).
+- A grant is checked when it is made, against the rules and the requester
+  as they are then: it is made only when the call would still ask, ranks
+  above the rule that asks now, and is pinned to the reviewed definition.
+  Nobody grants for their own request, even where self-approval is allowed.
+  A grant covers all of the person's tokens (it is "for this person").
+
+Tasks and the tests that name them:
+
+- [x] Store: migration `00012_approval_rule.sql` (`approvals.rule_id`: the rule that asked); `ListApprovalsPage` (pending or history, newest first, a cursor); `MyApprovals` (by the member's tokens); `user:<id>` rules need a member of the org
+  - tests: `TestApprovalPages` (pages never repeat a row, including two asked in the same instant; a cursor from elsewhere is refused; other orgs' rows never show), `TestMyApprovalsAndWithdraw` (a token that only names the person is not theirs), `TestUserRuleNeedsAMember` (another org's member and a removed one are refused)
+- [x] Policy: subject `user:<id>` matched against the caller's member; `ExactTool` turns a name into a pattern that matches only it
+  - tests: `TestUserSubject` (another member, no member and another tool are not matched), `TestValidSubjectUser`, `TestValidation`
+- [x] Approval service: the rule that asked is kept; `Withdraw` by the requester's member only; a withdrawn request is its own outcome, and the AI client is told to call again rather than that a person denied it
+  - tests: `TestWithdrawOwnRequestOnly`, `TestHeldCallEndsWhenWithdrawn`
+- [x] Admin API: approve with `{"grant": "15m"|"1h"|"8h"}`; `GET /api/v1/approvals?status=pending|history&before=&limit=` with `next`; `GET /api/v1/me/approvals`; `POST /api/v1/me/approvals/{id}/withdraw`
+  - tests: `TestApproveWithGrant` (rule shape, one above the asking rule, expiry, the person named on Rules, audit; a bad grant decides nothing), `TestGrantFromTheDefaultAndRefusals` (rank 0 under the default; a refused self-approval grants nothing; a plain approve grants nothing), `TestApprovalHistoryAPI` (pages, history without arguments, bad cursor, members refused), `TestWithdrawAPI`
+- [x] App: Approvals has Waiting and History, with "Load more"; approving offers "also allow for…"; Start lists the person's waiting requests with Withdraw; Rules names a grant's person
+  - tests (Vitest): `pages.test.tsx` (approve with a grant, load more and history, withdraw from Start); 46/46
+- [x] Acceptance: `TestApprovalGrantAndWithdraw` (a grant lets the next calls through without asking and names the person on Rules; without it the call asks again; a withdrawn request cannot be approved and a retry asks anew; history lists both without arguments. A held call ending on withdrawal is `internal/approval` `TestHeldCallEndsWhenWithdrawn`)
+- [x] Docs: README, `docs/manual-test.md` section 15, version 0.13.0
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f10-approvals-security-review.md`): two Medium findings, both fixed. No grant for one's own request (`TestNoGrantForOneself`); a grant is checked against the current rules, requester and accepted definition before anything is decided, and pinned to that definition (`TestGrantRefusedWhenRulesChanged`, `TestGrantNeedsTheAcceptedDefinition`)
 
 ## F11. Manifest pinning and scanning
 Status: In progress (pins built with F02; the whole definition and its diff with F14 R-01 in 0.8.1; block, scan and opt-in choosing 2026-11-20, ported onto main 2026-11-21)
@@ -812,9 +867,9 @@ person's AI client still can never approve or administer anything.
 - [x] App: People shows each person's roles with a **change** picker (checkboxes; owner and admin clear the others; Save disabled with none); admins see no change for owners and admins; the invite form takes a set; Approvals shows why one's own request cannot be decided, without buttons; the bar shows the roles; rules offer approvers and auditors; a member who also approves lands on Start
   - tests (Vitest): `roles.test.ts` (`pickRole`, `roleText`), `pages.test.tsx` (the invite sends a set, a member's roles change as a set, admins get no change for owners and admins, own approvals show the reason and no buttons); 38/38
 - [x] Acceptance through the real binary: `TestMemberWhoApproves` (a person with member and approver calls a tool that needs approval; their gateway token gets 401 on the admin API; their own request is marked and refused; they approve another member's call, which then runs; without approver they cannot list approvals; with auditor a `role:auditor` deny applies to their next call; as approver only their token lists nothing and calls are "not available", and they get no new token; every change is audited with the owner as actor). Mutation-checked: reading the token's role instead of the person's fails it
-- [x] Docs: README (Roles), `docs/manual-test.md` section 10, version 0.8.0
+- [x] Docs: README (Roles), `docs/manual-test.md` section 13, version 0.11.0
 - [x] Security review 2026-11-18 (`docs/reviews/2026-11-18-f20-roles-security-review.md`): no findings at 0.8 or above. Acted on: an admin could revoke an owner's or admin's own gateway token once those carry `member`; revoking is now protected by the person's roles (`TestAdminCannotRevokeAnOwnersOwnToken`). For the release: a `role:member` rule no longer matches an owner's or admin's own AI client token
-- [ ] Owner's walkthrough on app.privo.club: `docs/manual-test.md` section 10
+- [ ] Owner's walkthrough on app.privo.club: `docs/manual-test.md` section 13
 
 ### Later in F20
 

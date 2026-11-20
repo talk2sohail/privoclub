@@ -27,9 +27,10 @@ type Result int
 
 // Gate results.
 const (
-	Approved Result = iota // the call may run; the approval is consumed
-	Pending                // a person has not decided yet
-	Denied                 // a person denied this exact call
+	Approved  Result = iota // the call may run; the approval is consumed
+	Pending                 // a person has not decided yet
+	Denied                  // a person denied this exact call
+	Withdrawn               // the requester took the request back; a retry asks again
 )
 
 // Outcome describes a gate decision.
@@ -58,6 +59,7 @@ type Store interface {
 	CountPending(ctx context.Context, org store.OrgID, requesterID string, now time.Time) (int, error)
 	RestoreApproval(ctx context.Context, org store.OrgID, id string) error
 	PurgeArguments(ctx context.Context, org store.OrgID, id string) error
+	WithdrawApproval(ctx context.Context, org store.OrgID, id, userID, by string, now time.Time) (bool, error)
 	ConsumeApproval(ctx context.Context, org store.OrgID, id string, now time.Time) (bool, error)
 	DecideApproval(ctx context.Context, org store.OrgID, id, status, by string, now time.Time) (bool, error)
 	Setting(ctx context.Context, org store.OrgID, key, def string) (string, error)
@@ -98,6 +100,8 @@ type Request struct {
 	ArgsDigest      string
 	Args            json.RawMessage
 	Reason          string
+	RuleID          string // the rule that asked; "" for the org default
+	PinHash         string // the reviewed definition called
 }
 
 // Gate consumes a matching approval if one is approved, otherwise creates or
@@ -164,7 +168,7 @@ func (s *Service) create(ctx context.Context, r Request, b store.ApprovalBinding
 		ttl = 10 * time.Minute
 	}
 	a := store.Approval{ID: ids.New(), RequesterID: r.RequesterID, RequesterName: r.RequesterName, RequesterPerson: r.RequesterPerson, ServerID: r.ServerID,
-		ServerAlias: r.ServerAlias, Tool: r.Tool, ArgsDigest: r.ArgsDigest, Reason: r.Reason,
+		ServerAlias: r.ServerAlias, Tool: r.Tool, ArgsDigest: r.ArgsDigest, Reason: r.Reason, RuleID: r.RuleID, PinHash: r.PinHash,
 		Status: store.ApprovalPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 	sealed, err := s.seal(ctx, r.Org, a.ID, r.Args)
 	if err != nil {
@@ -198,8 +202,10 @@ func (s *Service) step(ctx context.Context, org store.OrgID, a store.Approval) (
 			return Outcome{Result: Approved, ID: a.ID, ExpiresAt: a.ExpiresAt, DecidedBy: a.DecidedBy}, true, nil
 		}
 		return Outcome{Result: Pending, ID: a.ID, ExpiresAt: a.ExpiresAt}, true, nil
-	case store.ApprovalDenied, store.ApprovalWithdrawn:
+	case store.ApprovalDenied:
 		return Outcome{Result: Denied, ID: a.ID, DecidedBy: a.DecidedBy}, true, nil
+	case store.ApprovalWithdrawn:
+		return Outcome{Result: Withdrawn, ID: a.ID}, true, nil
 	case store.ApprovalExpired, store.ApprovalConsumed:
 		return Outcome{Result: Pending, ID: a.ID, ExpiresAt: a.ExpiresAt}, true, nil
 	}
@@ -264,6 +270,23 @@ func (d Decider) label() string {
 		return d.Name + " (user " + d.UserID + ")"
 	}
 	return d.Name + " (" + d.TokenID + ")"
+}
+
+// ErrNotYours is returned when withdrawing a request that is not the
+// person's own, not pending, or unknown: the three answer alike.
+var ErrNotYours = errors.New("approval: no pending request of yours with this id")
+
+// Withdraw takes back a pending request asked for with one of the member's
+// own tokens (F10). A held call ends at once; a retry asks again.
+func (s *Service) Withdraw(ctx context.Context, org store.OrgID, id string, by Decider) error {
+	ok, err := s.Store.WithdrawApproval(ctx, org, id, by.UserID, by.label(), s.clock())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotYours
+	}
+	return nil
 }
 
 // Own reports whether an approval is the decider's own request: made with
