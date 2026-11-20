@@ -1,6 +1,6 @@
 # 0028. The audit signing key comes from the master key; checkpoints anyone can check
 
-- Status: Proposed, 2026-11-20 (accept after the F12 review)
+- Status: Accepted, 2026-11-21 by the owner (proposed 2026-11-20); built in 0.16.0
 - Date: 2026-11-20
 - Details: 0006 (sealer, chain, Ed25519 checkpoints), 0013 (key custody)
 

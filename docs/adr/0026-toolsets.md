@@ -1,6 +1,6 @@
 # 0026. Toolsets: a team can see only some of a server's tools
 
-- Status: Proposed, 2026-11-20 (accept after the F08 review)
+- Status: Accepted, 2026-11-21 by the owner (proposed 2026-11-20); built in 0.14.0
 - Date: 2026-11-20
 - Refines: 0020 (teams reach servers), 0002 (`toolsets` were planned per user or
   group)

@@ -1,6 +1,6 @@
 # 0027. Rules look at arguments; grants only replace an ask; rules as YAML
 
-- Status: Proposed, 2026-11-20 (accept after the F09 review)
+- Status: Accepted, 2026-11-21 by the owner (proposed 2026-11-20); built in 0.15.0
 - Date: 2026-11-20
 - Amends: 0001 (decision stage), 0005 (scoped grants)
 - Related: 0002 (`policies.conditions` was planned), F10 (grants), F20
