@@ -180,10 +180,13 @@ func (s *Store) CountUnsealed(ctx context.Context, org OrgID) (int, error) {
 	return n, err
 }
 
-// PruneAudit deletes sealed events older than before (retention). Unsealed
-// events and blocks are never deleted. It returns how many rows went.
+// PruneAudit deletes the events of whole blocks sealed before before
+// (retention): a block sealed then holds only older events, and keeping
+// blocks whole keeps every remaining block verifiable. Unsealed events and
+// blocks themselves are never deleted. It returns how many rows went.
 func (s *Store) PruneAudit(ctx context.Context, org OrgID, before time.Time) (int, error) {
-	res, err := s.w.ExecContext(ctx, `DELETE FROM audit_events WHERE org_id = ? AND chain_seq IS NOT NULL AND julianday(ts) < julianday(?)`, org, ts(before))
+	res, err := s.w.ExecContext(ctx, `DELETE FROM audit_events WHERE org_id = ? AND chain_seq IS NOT NULL AND chain_seq <= (
+		SELECT COALESCE(MAX(last_seq), 0) FROM audit_blocks WHERE org_id = ? AND julianday(sealed_at) < julianday(?))`, org, org, ts(before))
 	if err != nil {
 		return 0, err
 	}
