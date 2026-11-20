@@ -190,6 +190,10 @@ on the admin site, or follows the link their AI client shows on the first call.
 A person disconnects there; an admin lists and removes connections with
 `GET /api/v1/servers/<alias>/connections` and
 `DELETE /api/v1/servers/<alias>/connections/<person>`.
+Admins see everyone's connections across servers on **Connections →
+Everyone's connections** (`GET /api/v1/connections?person=&server=`, 0.19.0),
+with those unused for 90 days marked; **End** revokes at the provider and
+deletes.
 
 **A server that does not say where its people sign in** (no protected
 resource metadata, common before the MCP authorization spec): give its

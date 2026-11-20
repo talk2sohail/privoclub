@@ -1072,3 +1072,33 @@ describe("what the review shows follows what is served (review of control-plane 
     expect(screen.getByText("Accepted earlier, not offered now (1)").closest("details")!.textContent).toContain("version two");
   });
 });
+
+describe("everyone's connections (F07 A)", () => {
+  const row = (server: string, person: string, unused = false) => ({
+    server, person, kind: "oauth", scopes: "", catalog: false, connected_at: "2026-11-01T00:00:00Z", last_used_at: "2026-11-02T00:00:00Z", refreshed_at: "", unused,
+  });
+  it("lists them for an admin, marks the unused, and ends one after a second click", async () => {
+    at("/admin/connections");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/me/connections": { can_connect: true, connections: [] },
+      "GET /admin/api/v1/connections": { connections: [row("linear", "ada"), row("notion", evil, true)], next: "" },
+      "DELETE /admin/api/v1/servers/linear/connections/ada": { disconnected: "ada", server: "linear" },
+    });
+    await screen.findByText("Everyone's connections");
+    await screen.findByText(evil);
+    expect(document.querySelector("img")).toBeNull();
+    expect(screen.getByText("(unused for 90 days)")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "End…" })[0]!);
+    expect(srv.writes()).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "End ada's linear" }));
+    await waitFor(() => expect(srv.writes()).toMatchObject([{ method: "DELETE", url: "/admin/api/v1/servers/linear/connections/ada" }]));
+  });
+
+  it("is not shown to a member", async () => {
+    at("/admin/connections");
+    const srv = await start(session("member"), { "GET /admin/api/me/connections": { can_connect: true, connections: [] } });
+    await screen.findByText("Your connections");
+    expect(screen.queryByText("Everyone's connections")).toBeNull();
+    expect(srv.calls.some((c) => c.url.startsWith("/admin/api/v1/connections"))).toBe(false);
+  });
+});

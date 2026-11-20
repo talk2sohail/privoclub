@@ -546,7 +546,7 @@ until URL elicitation lands.
 - [ ] URL-mode elicitation (2025-11-25) and input-required (2026-07-28) for the connect link
 - [ ] Shared org-wide credentials, only by explicit admin choice and with a policy limiting the tools
 - [ ] Scope step-up on `insufficient_scope`
-- [ ] Admin page of everyone's connections (a server's page lists its connected people since F14; a page across servers is still to do)
+- [x] Admin page of everyone's connections (F07 A, 0.19.0)
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ### Next slices (spec 2026-11-21)
@@ -567,9 +567,9 @@ Acceptance:
    unchanged.
 
 Tasks and tests:
-- [ ] Store: `ListAllGrants` (paged, org-scoped) (`TestListAllGrantsIsOrgScopedAndPaged`)
-- [ ] API (`TestConnectionsAcrossServers`, `TestEndingAConnectionRevokes`)
-- [ ] App page; Vitest; walkthrough
+- [x] Store: `ListAllGrants` (paged, org-scoped) (`TestListAllGrantsIsOrgScopedAndPaged`)
+- [x] API: `GET /api/v1/connections` (`TestConnectionsAcrossServers`); ending one is the existing `DELETE /api/v1/servers/{alias}/connections/{person}`, which revokes at the provider (`TestDisconnectRevokesAndDeletes`)
+- [x] App: **Connections → Everyone's connections** for admins (filters, unused marked, End with a second click); Vitest; walkthrough section 23 (0.19.0)
 
 **B. Scope step-up on `insufficient_scope`.** Goal: a call refused for a
 missing scope tells the person what to grant and lets them do it, instead

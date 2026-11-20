@@ -383,3 +383,15 @@ proxy that checks a header will do.
 3. Restore them, connect again, then delete the server (or change its OAuth
    client id under **Edit**): the same happens.
 
+## 23. Everyone's connections (needs 0.19.0+ and the second account)
+
+1. With both accounts connected to a server that uses each person's own
+   account or key, open **Connections** as the owner: **Everyone's
+   connections** lists both, with server, person, kind and dates. No token
+   anywhere on the page.
+2. Filter by the second account's person name: only theirs.
+3. **End…** then **End <person>'s <server>** on theirs: gone from the list;
+   signed in as them, **Connections** asks them to connect again.
+   **Activity → Admin changes**: `upstream.disconnect:<server>:<person>`.
+4. Signed in as a member: no **Everyone's connections** section.
+
