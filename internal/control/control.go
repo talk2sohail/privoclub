@@ -537,6 +537,25 @@ func (a *API) listPins(w http.ResponseWriter, r *http.Request, p auth.Principal)
 	return nil
 }
 
+// pinsAction names what a review decided: the count, then each definition as
+// kind/name@hash-prefix (at most 20), so the trail says which ones.
+func pinsAction(verb string, done []store.PinKey) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "pins.%s:%d", verb, len(done))
+	for i, k := range done {
+		if i == 20 {
+			b.WriteString(",…")
+			break
+		}
+		sep := ","
+		if i == 0 {
+			sep = ":"
+		}
+		b.WriteString(sep + k.Kind + "/" + k.Name + "@" + k.Hash[:min(len(k.Hash), 12)])
+	}
+	return b.String()
+}
+
 // acceptPins accepts exactly the reviewed definitions named in the request.
 func (a *API) acceptPins(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	return a.decidePins(w, r, p, "accept", a.Store.AcceptPins)
@@ -571,7 +590,7 @@ func (a *API) decidePins(w http.ResponseWriter, r *http.Request, p auth.Principa
 	if err != nil {
 		return err
 	}
-	a.adminEvent(r.Context(), p, fmt.Sprintf("pins.%s:%d", verb, len(done)), s.Alias)
+	a.adminEvent(r.Context(), p, pinsAction(verb, done), s.Alias)
 	writeJSON(w, http.StatusOK, map[string]any{verb + "ed": len(done), "requested": len(keys)})
 	return nil
 }

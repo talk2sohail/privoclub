@@ -473,8 +473,7 @@ func TestSignInFloodLocksOutNothingElse(t *testing.T) {
 	}
 	// Setups, invites and connections together are still bounded.
 	for i := 0; i < 5; i++ {
-		err := s.CreateOAuthState(ctx, org, OAuthState{Hash: fmt.Sprint("c", i), Purpose: PurposeConnect, UserID: fmt.Sprint("user", i), Verifier: "v", ExpiresAt: exp}, t0, 5)
-		if i < 5 && err != nil {
+		if err := s.CreateOAuthState(ctx, org, OAuthState{Hash: fmt.Sprint("c", i), Purpose: PurposeConnect, UserID: fmt.Sprint("user", i), Verifier: "v", ExpiresAt: exp}, t0, 5); err != nil {
 			t.Fatalf("connect %d: %v", i, err)
 		}
 	}

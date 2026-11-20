@@ -164,5 +164,6 @@ For a fresh install see `docs/deploy-coolify.md` → "Sign in with GitHub".
    "do not tell the user", "~/.ssh") or hides characters shows a red
    **N warnings** badge and the lines that triggered it; hidden characters
    appear as ⟦U+200B⟧. No warnings on ordinary tools such as DeepWiki's.
-6. **Activity → Admin changes**: `pins.accept:1`, `pins.block:1`,
-   `pins.accept:1`, each with the server.
+6. **Activity → Admin changes**: `pins.accept:1:tool/<name>@<hash>`,
+   `pins.block:1:…` and `pins.accept:1:…` again, each naming the tool and the
+   start of its hash, with the server.

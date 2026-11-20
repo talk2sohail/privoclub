@@ -77,7 +77,9 @@ func TestPinReviewShowsPreviousAndFindings(t *testing.T) {
 	}
 	e.call(t, owner, http.MethodPost, "/api/v1/servers/issues/pins:block", map[string]any{"pins": []any{}}, http.StatusUnprocessableEntity)
 	e.aw.Close()
-	if evs, _ := e.st.RecentAdminEvents(ctx, e.org, 20); !slices.ContainsFunc(evs, func(ev store.AuditEvent) bool { return ev.Action == "pins.block:1" && ev.Server == "issues" }) {
+	if evs, _ := e.st.RecentAdminEvents(ctx, e.org, 20); !slices.ContainsFunc(evs, func(ev store.AuditEvent) bool {
+		return ev.Action == "pins.block:1:tool/search@h2" && ev.Server == "issues"
+	}) {
 		t.Fatal("the block is not audited")
 	}
 }

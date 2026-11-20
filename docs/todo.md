@@ -452,6 +452,8 @@ text, with characters a person cannot see made visible (⟦U+200B⟧).
   - tests: `internal/scan` `TestScanFindsInstructionsAfterTheFirstLine`, `TestScanFindsHiddenCharacters`, `TestScanWalksSchemaAndAnnotations`, `TestScanNotesLongAndEncodedText`, `TestScanQuietOnOrdinaryTools` (no warning on GitHub, Notion and DeepWiki shapes), `TestScanUnreadableAndBounded`, `TestReveal`; `internal/store` `TestBlockPins`; `internal/control` `TestPinReviewShowsPreviousAndFindings`; acceptance `TestAdminUIFromScratch` (an honest tool has no findings); Vitest `review.test.ts`, `pages.test.tsx` (the whole description as text, nothing chosen by default, the diff and warnings, block)
 - [ ] Scope keys on pins (per team or per person), with toolsets (F08)
 - [ ] Phrases in other languages; a scan of resource contents and tool results (F02 result checks)
+- [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-control-plane-1-security-review.md`, with F05 R-01, F07 R-02, R-03 and F24 R-01, R-02): no findings at 0.8 or above. Acted on: pin decisions are audited with each `kind/name@hash`
+- [ ] From that review: `previous` and "Available to AI clients" should follow the definition the gateway serves now, not the newest accepted one by time; route token events through `audit.Writer`; refuse refreshing a disabled server's grant
 
 ## F12. Audit log
 Status: In progress
