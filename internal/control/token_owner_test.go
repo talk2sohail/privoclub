@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +36,7 @@ func TestMyTokenBelongsToTheSignedInMember(t *testing.T) {
 		t.Fatalf("created %v", res)
 	}
 	p := verify(t, e, res["token"].(string))
-	if p.UserID != ada.ID || p.Kind != store.KindGateway || p.Role != store.RoleMember {
+	if p.UserID != ada.ID || p.Kind != store.KindGateway || !slices.Equal(p.Roles, []string{store.RoleMember}) {
 		t.Fatalf("principal %+v, want ada's user id on a member gateway token", p)
 	}
 }

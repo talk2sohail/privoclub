@@ -84,7 +84,7 @@ func statGateway(t *testing.T, def string, auditFails bool) (store.CallStat, *me
 	aw := audit.NewWriter(sink, audit.Options{})
 	mgr := upstream.New(upstream.Options{})
 	g := &Gateway{Store: &statStore{def: def}, Upstream: mgr, Audit: aw, Telemetry: rec, Logger: slog.New(slog.DiscardHandler)}
-	c := call{p: auth.Principal{OrgID: "o", TokenID: "tok", UserID: "u-ada", Client: "claude", Role: store.RoleMember},
+	c := call{p: auth.Principal{OrgID: "o", TokenID: "tok", UserID: "u-ada", Client: "claude", Roles: []string{store.RoleMember}},
 		item: upstream.Item{Alias: "github", ServerID: "srv-1", Name: "search"}, action: "tools/call", args: []byte(`{"q":"x"}`)}
 	err := g.run(context.Background(), c, func(context.Context, *mcp.ClientSession) (string, any, error) {
 		t.Fatal("the upstream was called")

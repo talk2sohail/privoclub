@@ -177,3 +177,26 @@ proxy that checks a header will do.
 5. Optional: with `PRIVO_METRICS_ADDR=127.0.0.1:9464`, `curl
    127.0.0.1:9464/metrics` in the container shows `privo_mcp_calls_total`;
    `https://<your domain>/metrics` does not.
+
+## 13. A person with several roles (needs 0.11.0+ and the second account from 4)
+
+1. **People**: next to the second account, **change** → tick **member** and
+   **approver** → **Save roles**. Expect: "approver, member" in the list.
+   Tick **admin** in the picker: the other boxes clear (admin stands alone);
+   **Cancel**.
+2. As the second account, reload: they still land on **Start**, and
+   **Approvals** is now in the bar.
+3. In their AI client, call a tool that a rule sends to approval (as in 6).
+   On **Approvals** they see their own request marked "(you)" with "This is
+   your own request. Another approver decides it." and no buttons. Approve it
+   as the owner instead; the retried call goes through.
+4. Make a call from the owner's AI client that needs approval: the second
+   account approves it.
+5. Paste the second account's AI client token into a request to the admin API
+   (`curl -H "Authorization: Bearer <token>" <URL>/api/v1/approvals`): expect
+   401.
+6. Change their roles to **approver** only. Their AI client's tool list is
+   empty at the next refresh, a call is "not available", and **Tokens** offers
+   them no new token. Put **member** back.
+7. **Activity → Admin changes**: `member.roles:<person>:<before>-><after>`,
+   one per Save, with you as actor.

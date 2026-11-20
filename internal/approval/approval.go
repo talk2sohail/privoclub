@@ -266,13 +266,20 @@ func (d Decider) label() string {
 	return d.Name + " (" + d.TokenID + ")"
 }
 
+// Own reports whether an approval is the decider's own request: made with
+// their token or by their person. Unless the org allows self-approval, they
+// cannot decide it.
+func Own(by Decider, a store.Approval) bool {
+	return (by.TokenID != "" && by.TokenID == a.RequesterID) || (by.Person != "" && by.Person == a.RequesterPerson)
+}
+
 // Decide approves or denies a pending approval.
 func (s *Service) Decide(ctx context.Context, org store.OrgID, id string, by Decider, approve bool) error {
 	a, err := s.Store.GetApproval(ctx, org, id)
 	if err != nil {
 		return err
 	}
-	if (by.TokenID != "" && by.TokenID == a.RequesterID) || (by.Person != "" && by.Person == a.RequesterPerson) {
+	if Own(by, a) {
 		allow, err := s.Store.Setting(ctx, org, SettingAllowSelf, "false")
 		if err != nil {
 			return err

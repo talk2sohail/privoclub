@@ -294,6 +294,9 @@ func (s *Store) ServerTeams(ctx context.Context, org OrgID) (map[string][]string
 type Access struct {
 	Servers map[string]bool
 	Teams   []string
+	// Roles are the member's current roles, read with their access (ADR
+	// 0021); nil for a caller who is no member or a removed one.
+	Roles []string
 }
 
 // Reaches reports whether the caller may use the server.
@@ -306,14 +309,14 @@ func (a Access) Reaches(serverID string) bool { return a.Servers[serverID] }
 func (s *Store) AccessFor(ctx context.Context, org OrgID, userID string) (Access, error) {
 	a := Access{Servers: map[string]bool{}}
 	if userID != "" {
-		var disabled sql.NullString
-		err := s.r.QueryRowContext(ctx, `SELECT disabled_at FROM users WHERE org_id = ? AND id = ?`, org, userID).Scan(&disabled)
-		if errors.Is(err, sql.ErrNoRows) || (err == nil && disabled.Valid) {
+		u, err := scanUser(org, s.r.QueryRowContext(ctx, `SELECT `+userCols+` FROM users u WHERE u.org_id = ? AND u.id = ?`, org, userID))
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && u.DisabledAt != nil) {
 			return a, nil
 		}
 		if err != nil {
 			return a, err
 		}
+		a.Roles = u.Roles
 	}
 	a.Teams = []string{TeamEveryone}
 	if userID != "" {

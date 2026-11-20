@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -564,7 +565,7 @@ func (s *Server) VerifyAccessToken(ctx context.Context, bearer string) (store.Cl
 		}
 		return fail()
 	}
-	if u.DisabledAt != nil || !store.GatewayRole(u.Role) {
+	if u.DisabledAt != nil || !slices.ContainsFunc(u.Roles, store.GatewayRole) {
 		return fail()
 	}
 	if g.ExpiresAt.Before(exp) {

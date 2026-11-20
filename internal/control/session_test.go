@@ -68,12 +68,13 @@ func (e *sessionEnv) user(t *testing.T, person, role string) (store.User, auth.P
 	}
 	if role != store.RoleOwner {
 		ev.ID, ev.CallID = "role-"+person, "role-"+person
-		if err := e.st.SetUserRole(ctx, e.org, u.ID, role, ev); err != nil {
+		roles, err := e.st.SetUserRoles(ctx, e.org, u.ID, strings.Split(role, ","), ev)
+		if err != nil {
 			t.Fatal(err)
 		}
-		u.Role = role
+		u.Roles = roles
 	}
-	return u, auth.Principal{OrgID: e.org, Name: person, Role: role, Kind: KindSession, Person: person, UserID: u.ID}
+	return u, auth.Principal{OrgID: e.org, Name: person, Roles: u.Roles, Kind: KindSession, Person: person, UserID: u.ID}
 }
 
 func (e *sessionEnv) call(t *testing.T, p auth.Principal, method, path string, body any, want int) map[string]any {
@@ -181,10 +182,10 @@ func TestMembersRoleRules(t *testing.T) {
 	// Owners can make owners; the last owner cannot be demoted.
 	e.call(t, owner, http.MethodPatch, "/api/v1/members/carol", map[string]any{"role": "owner"}, http.StatusOK)
 	carolOwner := admin
-	carolOwner.Role = store.RoleOwner
+	carolOwner.Roles = []string{store.RoleOwner}
 	e.call(t, carolOwner, http.MethodPatch, "/api/v1/members/boss", map[string]any{"role": "member"}, http.StatusOK)
 	bossMember := owner
-	bossMember.Role = store.RoleMember
+	bossMember.Roles = []string{store.RoleMember}
 	if code, _ := e.api.Serve(context.Background(), bossMember, http.MethodGet, "/api/v1/members", nil); code != http.StatusForbidden {
 		t.Fatalf("demoted owner still manages members: %d", code)
 	}

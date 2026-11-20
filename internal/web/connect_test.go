@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -493,7 +494,7 @@ func (e *env) invite(person, role string) string {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	err = e.st.CreateInvite(context.Background(), e.org, store.NewInvite{ID: ids.New(), SecretHash: hash, Person: person, Role: role, CreatedBy: "boss",
+	err = e.st.CreateInvite(context.Background(), e.org, store.NewInvite{ID: ids.New(), SecretHash: hash, Person: person, Roles: strings.Split(role, ","), CreatedBy: "boss",
 		Now: e.clock.now(), ExpiresAt: e.clock.now().Add(72 * time.Hour)}, e.event("invite.create"))
 	if err != nil {
 		e.t.Fatal(err)
@@ -527,7 +528,7 @@ func TestInviteClaimCreatesMemberWithRole(t *testing.T) {
 		t.Fatalf("claim: %d %q %s", cb.StatusCode, cb.Header.Get("Location"), cb.Body)
 	}
 	u, err := e.st.UserByIdentity(context.Background(), e.org, store.ProviderGitHub, "7007")
-	if err != nil || u.Person != "ada" || u.Role != store.RoleMember {
+	if err != nil || u.Person != "ada" || !slices.Equal(u.Roles, []string{store.RoleMember}) {
 		t.Fatalf("invited user %+v %v", u, err)
 	}
 	if b.cookie(e.srv.sessionCookie) == nil {

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadSession } from "./api";
 import { App } from "./app";
@@ -188,14 +188,67 @@ describe("people", () => {
   it("creates an invite and shows its link once", async () => {
     at("/admin/people");
     const srv = await start(session("owner"), {
-      "GET /admin/api/v1/members": { members: [{ person: "ada", name: "Ada Lovelace", role: "owner", github_login: "ada-gh", removed: false }] },
-      "POST /admin/api/v1/invites": () => [201, { invite: { person: "bob", role: "member", url: "https://privo.example/admin/invite/privo_invite_x", expires_at: "2026-11-06T00:00:00Z" } }],
+      "GET /admin/api/v1/members": { members: [{ person: "ada", name: "Ada Lovelace", roles: ["owner"], github_login: "ada-gh", removed: false }] },
+      "POST /admin/api/v1/invites": () => [201, { invite: { person: "bob", roles: ["approver", "member"], url: "https://privo.example/admin/invite/privo_invite_x", expires_at: "2026-11-06T00:00:00Z" } }],
     });
     await screen.findByText("(you)");
     fireEvent.input(document.querySelector('input[name="person"]')!, { target: { value: " bob " } });
+    fireEvent.click(within(screen.getByRole("group", { name: "Roles" })).getByLabelText(/^approver/));
     fireEvent.click(screen.getByRole("button", { name: "Create invite link" }));
     await screen.findByText("https://privo.example/admin/invite/privo_invite_x");
-    expect(srv.writes()[0]!.body).toEqual({ person: "bob", role: "member" });
+    expect(srv.writes()[0]!.body).toEqual({ person: "bob", roles: ["approver", "member"] });
+    expect(screen.getByText("approver, member")).toBeTruthy();
+  });
+
+  // ADR 0025: roles are a set; owner and admin stand alone.
+  it("changes a member's roles as a set", async () => {
+    at("/admin/people");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/members": {
+        members: [
+          { person: "ada", name: "Ada Lovelace", roles: ["owner"], github_login: "ada-gh", removed: false },
+          { person: "dan", name: "Dan", roles: ["member"], github_login: "dan-gh", removed: false },
+        ],
+      },
+      "PATCH /admin/api/v1/members/dan": { person: "dan", roles: ["approver", "member"] },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Change roles of dan" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Roles of dan" })).getByLabelText(/^approver/));
+    fireEvent.click(screen.getByRole("button", { name: "Save roles" }));
+    await screen.findByText("Roles changed. They apply to dan's next request.");
+    expect(srv.writes()[0]!.body).toEqual({ roles: ["approver", "member"] });
+  });
+
+  it("offers admins no change for owners and admins", async () => {
+    at("/admin/people");
+    await start(session("owner", { change_roles: ["member", "approver", "auditor"] }), {
+      "GET /admin/api/v1/members": {
+        members: [
+          { person: "boss", name: "Boss", roles: ["owner"], github_login: "boss", removed: false },
+          { person: "cat", name: "Cat", roles: ["admin"], github_login: "cat", removed: false },
+          { person: "dan", name: "Dan", roles: ["auditor", "member"], github_login: "dan", removed: false },
+        ],
+      },
+    });
+    await screen.findByRole("button", { name: "Change roles of dan" });
+    expect(screen.queryByRole("button", { name: "Change roles of boss" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change roles of cat" })).toBeNull();
+  });
+});
+
+describe("own approvals", () => {
+  it("shows why a person cannot decide their own request, without buttons", async () => {
+    at("/admin/approvals");
+    await start(session("approver"), {
+      "GET /admin/api/v1/approvals?status=pending": {
+        approvals: [
+          { id: "a1", status: "pending", tool: "merge", server: "github", requester: "laptop", requester_person: "ada", reason: "", arguments: {}, own: true, decide_blocked: "This is your own request. Another approver decides it." },
+        ],
+      },
+    });
+    await screen.findByText("This is your own request. Another approver decides it.");
+    expect(screen.queryByRole("button", { name: "Approve this call" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deny" })).toBeNull();
   });
 });
 

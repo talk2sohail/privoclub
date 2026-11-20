@@ -139,6 +139,8 @@ export function Rules(_: PageProps) {
             <select name="subject">
               <option value="*">everyone</option>
               <option value="role:member">members</option>
+              <option value="role:approver">approvers</option>
+              <option value="role:auditor">auditors</option>
               <option value="role:admin">admins</option>
               <option value="role:owner">owners</option>
             </select>

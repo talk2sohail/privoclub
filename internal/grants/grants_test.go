@@ -127,7 +127,7 @@ func newEnv(t *testing.T) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = st.CreateInvite(ctx, org.ID, store.NewInvite{ID: "i", SecretHash: "ih", Person: "ada", Role: store.RoleMember, CreatedBy: "boss", Now: t0, ExpiresAt: t0.Add(time.Hour)}, ev("invite"))
+	_ = st.CreateInvite(ctx, org.ID, store.NewInvite{ID: "i", SecretHash: "ih", Person: "ada", Roles: []string{store.RoleMember}, CreatedBy: "boss", Now: t0, ExpiresAt: t0.Add(time.Hour)}, ev("invite"))
 	e.ada, err = st.ClaimInvite(ctx, org.ID, store.Claim{LinkID: "i", UserID: "u-ada", Subject: "2", Login: "ada", DisplayName: "Ada", Session: sess("s2"), Now: t0}, ev("claim2"))
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func newEnv(t *testing.T) *env {
 
 func (e *env) connect(t *testing.T, u store.User, tok upstreamauth.Token) store.Grant {
 	t.Helper()
-	g, err := e.svc.Save(context.Background(), e.org, e.srv, u, tok, u.Role == store.RoleOwner,
+	g, err := e.svc.Save(context.Background(), e.org, e.srv, u, tok, u.Has(store.RoleOwner),
 		store.AuditEvent{ID: fmt.Sprintf("ev-c-%d", evSeq.Add(1)), CallID: "c", Time: t0, Actor: u.Person, Action: "upstream.connect:linear", Decision: "allow", Outcome: "ok"})
 	if err != nil {
 		t.Fatal(err)

@@ -15,9 +15,12 @@ import (
 // addUser inserts an active member directly, as sign-in would.
 func addUser(t *testing.T, s *Store, org OrgID, id, person string) {
 	t.Helper()
-	_, err := s.w.ExecContext(context.Background(), `INSERT INTO users (org_id, id, person, display_name, role, created_at) VALUES (?, ?, ?, ?, 'member', ?)`,
+	_, err := s.w.ExecContext(context.Background(), `INSERT INTO users (org_id, id, person, display_name, created_at) VALUES (?, ?, ?, ?, ?)`,
 		org, id, person, "Name "+person, ts(t0))
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.w.ExecContext(context.Background(), `INSERT INTO user_roles (org_id, user_id, role, granted_at) VALUES (?, ?, 'member', ?)`, org, id, ts(t0)); err != nil {
 		t.Fatal(err)
 	}
 }

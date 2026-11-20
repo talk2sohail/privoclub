@@ -16,6 +16,7 @@ import { OAuthClients } from "./pages/oauth";
 import { Tokens } from "./pages/tokens";
 import { Link, beforeNavigate, match, navigate, useLocation } from "./router";
 import { FlashBar, clearFlash } from "./ui";
+import { roleText } from "./roles";
 
 type NavItem = { href: string; label: string; show: (c: Can) => boolean };
 
@@ -118,7 +119,7 @@ export function App({ session }: { session: Session }) {
         <form class="who" method="post" action="/admin/signout">
           <span>
             {u.name}
-            {u.name !== u.person && <small> {u.person}</small>} <small>{u.role}</small>
+            {u.name !== u.person && <small> {u.person}</small>} <small>{roleText(u.roles)}</small>
           </span>
           <input type="hidden" name="csrf" value={session.csrf} />
           <button type="submit" class="link">
