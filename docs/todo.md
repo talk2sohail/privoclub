@@ -716,11 +716,97 @@ ADRs: 0008
 - [x] Cap the size of upstream responses (tool results, resource reads, list pages): `PRIVO_UPSTREAM_MAX_RESPONSE_BYTES` and the list limits, see R-04 in F24
 
 ## F20. Enterprise identity and roles
-Status: Not started
-ADRs: 0011
+Status: In progress (first slice specified 2026-11-18, ADR 0025 accepted 2026-11-18; no code yet)
+ADRs: 0011, 0021, 0025
 
-- [ ] Seven roles; role changes audited
-- [ ] Generic OIDC and SAML SSO; group mapping
+### First slice: goal
+
+Owner's request (2026-11-17): a person can do more than one kind of thing. A
+member who uses the gateway from their AI client can also approve other
+people's requests, or read the audit log, without being made an admin. A
+person's AI client still can never approve or administer anything.
+
+### First slice: acceptance
+
+1. A person holds a set of roles: `{owner}`, `{admin}`, or any non-empty
+   subset of `{member, approver, auditor}`. Any other set is refused with a
+   message that says which sets are allowed.
+2. Permissions are the union of the person's roles. A person with no role
+   can do nothing.
+3. A person with member and approver uses the gateway from their AI client.
+   They also see and decide other people's approvals in the browser.
+4. That person's gateway token gets 401 on the admin API, and it cannot
+   decide approvals. Every new gateway token is stored as `member`, whatever
+   roles its person holds.
+5. A person who is only an approver or only an auditor still gets no gateway
+   token.
+6. A rule with subject `role:<role>` matches a person who holds that role
+   among others. A change to someone's roles applies to the gateway's next
+   request, and to their session's next request.
+7. Owners change any set. Admins change sets within `{member, approver,
+   auditor}`, and only for people who are not owners or admins. Nobody
+   changes their own roles. The last active owner cannot lose owner. Each
+   change is one audit event with the set before and after.
+8. Invites carry a role set and follow the same rules.
+9. A member who is also an approver cannot decide their own requests unless
+   the org allows self-approval. The approvals page marks their own requests
+   and says why the buttons are off.
+10. Existing installs keep working after the migration: each person has the
+    role they had, and existing gateway tokens of signed-in people work
+    unchanged.
+
+### First slice: threat note
+
+- **The AI client never approves.** Roles live on the person. A gateway token
+  only uses the gateway, and the token kinds still keep it off the admin API
+  (ADR 0014). Deciding needs a session with CSRF (ADR 0016) or a control
+  token. A prompt-injected agent with a member-and-approver person's gateway
+  token can call tools within policy. It cannot approve its own held call,
+  turn on self-approval or change rules.
+- **Escalation.** Admins cannot grant or remove owner or admin, and nobody
+  edits their own roles. Valid sets are fixed, so "admin plus something"
+  never appears to confuse a reviewer. Every change is audited with the
+  actor.
+- **Self-approval.** Combining member and approver makes self-approval
+  attempts more likely. The per-person check (ADR 0005) is unchanged, stays
+  off by default, and is tested with a person who holds both roles.
+- **Person binding.** `role:` rules now follow the token's member. Since
+  the F07 R-01 fix (ADR 0021) that is the user a token is bound to by id,
+  never a person name, so no token can borrow someone else's roles.
+- **Fail closed.** If reading roles fails, the request fails. No roles means
+  no permission. An unknown role in the database is ignored, never treated
+  as owner.
+- **Revocation.** Roles are read on every request (tokens are trusted for at
+  most 5 seconds, ADR 0003). Losing owner or admin drops catalog grants in
+  the same transaction.
+
+### First slice: tasks and the tests that name them
+
+- [x] Spec (this section) and ADR 0025 (numbered 0021 on its branch); ADRs 0011 and 0014 marked as amended
+- [x] Prerequisite: F07 R-01, tokens bound to a user id (ADR 0021, merged 2026-11-11)
+- [ ] Store: migration `00011_user_roles.sql` (`user_roles`, `invite_roles`, both with `org_id`; copy `users.role` and `invites.role`, then drop both columns; rewrite gateway tokens of signed-in people to `member`); `SetUserRoles`, `UserRoles`; catalog grants and `promoteCatalog` read `user_roles`
+  - tests: `TestUserRolesMigration` (each person keeps their role; personal gateway tokens become `member`; automation tokens unchanged), `TestRoleSetRules` (owner alone, admin alone, subsets of member, approver and auditor; empty and mixed sets refused), `TestSetUserRolesAudited` (set before and after), `TestLosingAdminDropsCatalogGrants`, `TestPromoteCatalogReadsUserRoles`, `TestUserRolesAreIsolatedPerOrg`, `TestInviteCarriesRoleSet`
+- [ ] Auth: `Principal.Roles` (sorted set), `Has`, `Can` as the union; no roles means no permission; unknown roles ignored
+  - tests: `TestCanIsUnionOfRoles`, `TestNoRolesNoPermissions`, `TestUnknownRoleGrantsNothing`, `TestApproverAloneCannotUseGateway`, `TestMemberApproverCanUseGatewayAndDecide`
+- [ ] Code check: no direct `Role ==` or `Role !=` comparisons outside `internal/auth` and `internal/store`
+  - tests: `TestNoDirectRoleComparisons` (reads the Go sources; fails with an example comparison added back)
+- [ ] Policy and gateway: `role:` subjects match any of the person's current roles, read per request; a token without a user matches by its own role
+  - tests: `TestRoleSubjectMatchesAnyRole`, `TestRoleSubjectForAutomationToken`, `TestRoleChangeAppliesOnNextRequest`, `TestReadingRolesFailsClosed`
+- [ ] Control API: `PATCH /api/v1/members/{person}` takes `roles` (a set) and keeps accepting `role` for one release; invites take `roles`; personal gateway tokens are issued as `member`; control tokens keep one role
+  - tests: `TestPatchMemberRolesRules` (an admin cannot grant or remove admin or owner, nobody edits their own roles, the last owner keeps owner), `TestPatchMemberRoleStillWorks`, `TestPersonalGatewayTokenIsMemberOnly`, `TestGatewayTokenNeedsGatewayUse` (an approver-only person is refused), `TestControlTokenHasOneRole`, `TestMemberApproverGatewayTokenIsRefusedByAdminAPI`
+- [ ] Approvals: self-approval check tested with a person who holds member and approver; the list marks the caller's own requests
+  - tests: `TestSelfApprovalRefusedForMemberApprover`, `TestSelfApprovalAllowedWhenOrgAllows`, `TestApprovalsListMarksOwnRequests`
+- [ ] App: Members page shows each person's roles as checkboxes, offering only the sets the editor may set; invite form takes a set; approvals page turns off decide on one's own requests with the reason; start page appears for anyone who holds member
+  - tests (Vitest): role checkboxes follow the editor (owner, admin), an invalid set cannot be saved, the invite sends a set, own requests show the reason and no active buttons
+- [ ] Acceptance through the real binary: `TestMemberWhoApproves` (a person with member and approver calls a tool that needs approval from their client; their gateway token gets 401 on the admin API; they cannot approve their own call in the browser; they approve another member's call; an owner removes approver and their next request cannot decide; the audit names each actor)
+- [ ] Docs: README (roles), `docs/manual-test.md` (a new section for combined roles), version 0.8.0
+- [ ] Independent security review (auth and tenancy), findings recorded here
+
+### Later in F20
+
+- [ ] The remaining roles of ADR 0011 (server admin, policy admin) as members of the combinable group
+- [ ] Approvers scoped to a team or a server (needs its own ADR; ADR 0025 leaves room)
+- [ ] Generic OIDC and SAML SSO; identity provider groups mapped onto teams and roles (`user_roles.source = idp:<group>`)
 - [ ] SCIM 2.0 with immediate revocation on deprovisioning
 - [ ] Passkeys or TOTP for local accounts
 

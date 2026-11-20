@@ -2,7 +2,9 @@
 
 - Status: Accepted, 2026-10-28 (security fix; amends 0003 and 0011)
 - Date: 2026-10-28
-- Amended by: 0016 (point 5: people sign in with GitHub and get sessions)
+- Amended by: 0016 (point 5: people sign in with GitHub and get sessions),
+  0025 (point 2: a person who approves may also hold member and use the
+  gateway; their gateway token still cannot approve)
 
 ## Context
 

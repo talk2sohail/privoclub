@@ -2,7 +2,8 @@
 
 - Status: Accepted, 2026-10-28
 - Date: 2026-10-28
-- Amended by: 0016 (identity sequence point 1: GitHub sign-in comes first)
+- Amended by: 0016 (identity sequence point 1: GitHub sign-in comes first),
+  0025 (a person holds a set of roles; tokens do not)
 
 ## Decision
 
