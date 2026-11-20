@@ -174,8 +174,12 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 
 	reg := health.NewRegistry(0)
 	reg.Register("database", st.Ping)
+	home := server.Home{SignIn: webCfg.Enabled(cfg.PublicURL)}
+	if cfg.PublicURL != nil {
+		home.MCPURL = cfg.PublicURL.JoinPath("mcp").String()
+	}
 	srv := server.New(server.Options{
-		Logger: logger, Health: reg, ShutdownTimeout: cfg.ShutdownTimeout,
+		Logger: logger, Health: reg, ShutdownTimeout: cfg.ShutdownTimeout, Home: home,
 		Routes: func(mux *http.ServeMux) {
 			mux.Handle("/mcp", gw.Handler())
 			api.Routes(mux)

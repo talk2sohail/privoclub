@@ -82,7 +82,7 @@ name a file with the `_file` form instead) stops the command with exit 2. The
 file is read once at start; restart to change a setting. In a container use
 `PRIVO_CONFIG_FILE`, so the image's healthcheck reads the same file.
 
-Endpoints: `/` (static landing page), `/mcp` (MCP gateway), `/api/v1/...`
+Endpoints: `/` (home page: **Sign in** to the admin site and the MCP address for AI clients), `/mcp` (MCP gateway), `/api/v1/...`
 (admin API), `/admin/...` (the admin site, with `/auth/...`, `/connect/...` and
 `/oauth/client-metadata.json`; see below), `/livez`, `/readyz`, `/version` (the
 semantic version, see `docs/versioning.md`).

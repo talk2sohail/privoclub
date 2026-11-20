@@ -21,6 +21,8 @@ type Options struct {
 	ShutdownTimeout time.Duration
 	// Routes lets later packages (gateway, admin API) mount handlers.
 	Routes func(mux *http.ServeMux)
+	// Home is what the root page offers.
+	Home Home
 }
 
 // Server is Privo's HTTP server.
@@ -41,7 +43,7 @@ func New(opts Options) *Server {
 		opts.ShutdownTimeout = 30 * time.Second
 	}
 	mux := http.NewServeMux()
-	mux.Handle("GET /{$}", rootHandler()) // exactly "/"; every other unknown path stays 404
+	mux.Handle("GET /{$}", rootHandler(opts.Home)) // exactly "/"; every other unknown path stays 404
 	mux.Handle("GET /livez", health.LiveHandler())
 	mux.Handle("GET /readyz", opts.Health.ReadyHandler())
 	mux.HandleFunc("GET /version", func(w http.ResponseWriter, _ *http.Request) {

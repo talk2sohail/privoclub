@@ -126,3 +126,43 @@ func TestRootPage(t *testing.T) {
 		}
 	})
 }
+
+// The home page leads people to the admin site and tells AI clients where to
+// connect; both come from configuration (owner's request, 2026-11-20).
+func TestHomeOffersSignInAndTheMCPAddress(t *testing.T) {
+	base, cancel, done := start(t, Options{Home: Home{SignIn: true, MCPURL: "https://app.privo.example/mcp"}})
+	defer func() {
+		cancel()
+		<-done
+	}()
+	resp, body := do(t, http.MethodGet, base+"/")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d", resp.StatusCode)
+	}
+	for _, want := range []string{`<a class="button" href="/admin/">Sign in</a>`, "<code>https://app.privo.example/mcp</code>", "Start page"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	if strings.Contains(strings.ToLower(body), "<script") {
+		t.Error("page has a script")
+	}
+}
+
+func TestHomeWithoutTheAdminSite(t *testing.T) {
+	base, cancel, done := start(t, Options{})
+	defer func() {
+		cancel()
+		<-done
+	}()
+	_, body := do(t, http.MethodGet, base+"/")
+	if strings.Contains(body, `href="/admin/"`) || !strings.Contains(body, "not set up") || !strings.Contains(body, "/mcp</code> path of this address") {
+		t.Errorf("page without sign-in:\n%s", body)
+	}
+}
+
+func TestHomeEscapesItsConfiguration(t *testing.T) {
+	if got := rootHTML(Home{MCPURL: `https://x.example/"><script>`}); strings.Contains(got, "<script>") {
+		t.Fatal("the MCP address is not escaped")
+	}
+}
