@@ -780,7 +780,7 @@ ADRs: 0007
 - [ ] Isolated network; egress allow-list proxy
 
 ## F14. Admin UI
-Status: In progress (the Preact admin app is deployed; third slice, the admin gaps, built and reviewed 2026-11-21 as 0.17.0; independent review of 2026-11-03: R-03, R-05 to R-08 open below)
+Status: In progress (the Preact admin app is deployed; third slice, the admin gaps, built and reviewed 2026-11-21 as 0.17.0; every finding of the independent review of 2026-11-03 fixed by 0.17.1)
 ADRs: 0016, 0017, 0018 (superseded), 0019
 
 ### First slice: goal
@@ -861,11 +861,11 @@ Tasks and the tests that name them:
 
 - [x] R-01 (Medium): the tool review shows only the first line (at most 300 characters) of a description, while the hash that is accepted covers all of it, the input schema and the annotations. Show the whole description as text, the schema, and a diff for a changed definition **Fixed in 0.8.1:** the review shows the whole description as text, the full definition (schema and annotations) behind "Full definition (what is accepted)", and for a changed tool a line diff against the accepted version (`web/src/review.tsx`). Tests: `web/src/review.test.ts`, "the tool review (F14 R-01)" in `web/src/pages.test.tsx`. **Independent review of 2026-11-15, U-02 (Medium), fixed:** the browser drew invisible characters (Unicode tag characters, zero-width, bidi overrides, private use, unassigned, separators, variation selectors) as nothing, though the hash covers them, so a hidden instruction could pass review. Every one is now shown as `⟦U+XXXX⟧` in the description, the diff and the full definition, with a warning that names how many there are. Tests: `review.test.ts` "reveal", "shows hidden characters and warns about them" in `pages.test.tsx`
 - [x] R-02 (Medium): the same hole as F07 R-01, one click away in the app: the Tokens page offers a "person" field to admins. Fix with F07 R-01 **Fixed in 0.7.0 (F27).** The field stays as a label and says so.
-- [ ] R-03 (Low): a refused or cross-site request still slides the session's idle timeout; touch the session only after every check passed
+- [x] R-03 (Low): a refused or cross-site request still slides the session's idle timeout; touch the session only after every check passed **Fixed in 0.17.1:** sessions are looked up without a touch; the bridge and forms touch only after every check passed, pages only when opened from this site or directly (Fetch Metadata, or the Referer without it) (`TestOnlyAcceptedRequestsKeepTheSessionAlive`). Security review of the fixes: `docs/reviews/2026-11-21-f14-review-fixes-security-review.md`, one Low, fixed
 - [x] R-04 (Low): the review ticks everything by default, also items that arrive while the page polls. Fixed 2026-11-20: nothing is chosen until the reviewer chooses it ("Choose all N shown" chooses only what is on the page)
-- [ ] R-05 (Low): the UI build has no audit step (`web/.npmrc` has `audit=false` and `legacy-peer-deps=true`; `npm ci` runs lifecycle scripts; actions are pinned by tag): `npm ci --ignore-scripts`, `npm audit --omit=dev`, `npm audit signatures` in the `ui` job, actions by SHA
-- [ ] R-06 (Low): the bridge passes a body on GET and DELETE and accepts any content type with an empty body
-- [ ] R-07, R-08 (Info): a session can mint long-lived owner control tokens (consider a confirmation and an audit tag); a token shown once stays in the page's state until the person leaves
+- [x] R-05 (Low): the UI build has no audit step (`web/.npmrc` has `audit=false` and `legacy-peer-deps=true`; `npm ci` runs lifecycle scripts; actions are pinned by tag): `npm ci --ignore-scripts`, `npm audit --omit=dev`, `npm audit signatures` in the `ui` job, actions by SHA **Fixed in 0.17.1:** `web/.npmrc` runs no install scripts and no longer turns audit off (legacy peer handling stays, documented: npm 10 crashes on vitest's optional peers); `make ui-audit` (`npm audit --omit=dev`, `npm audit signatures`) runs in the `ui` job; vitest 4.1.12 (GHSA-qxg6-89mg-rqv8); every action in CI pinned by commit SHA
+- [x] R-06 (Low): the bridge passes a body on GET and DELETE and accepts any content type with an empty body **Fixed in 0.17.1:** a GET or DELETE with a body is 400, any content type but JSON is 415 with or without a body, both before the session is touched (`TestBridgeNeedsSessionHeaderTokenOriginAndJSON`)
+- [x] R-07, R-08 (Info): a session can mint long-lived owner control tokens (consider a confirmation and an audit tag); a token shown once stays in the page's state until the person leaves **Fixed in 0.17.1:** an owner or admin control token made in the browser needs `confirm: true` (the app asks with a checkbox) and its audit event carries client `web` (`TestElevatedTokenFromASessionNeedsConfirmation`); a token shown once goes with "I copied it, hide it" or by itself after 10 minutes (Vitest)
 
 ### Third slice: the admin gaps (2026-11-21)
 

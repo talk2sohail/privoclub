@@ -418,26 +418,58 @@ func (s *Server) setCookie(w http.ResponseWriter, name, value string, maxAge int
 
 func (s *Server) clearCookie(w http.ResponseWriter, name string) { s.setCookie(w, name, "", -1) }
 
-// session returns the signed-in session and user for a request. An unknown,
-// expired, idle or malformed cookie, and a disabled user, all give false.
+// session returns the signed-in session and user for a request a person
+// opened themselves (a page, the app's session call). An unknown, expired,
+// idle or malformed cookie, and a disabled user, all give false. It keeps
+// the session alive unless the request came from another site (F14 R-03).
 func (s *Server) session(r *http.Request) (store.Session, store.User, bool) {
+	sess, u, ok := s.lookup(r)
+	if ok && s.ownRequest(r) {
+		s.touch(r)
+	}
+	return sess, u, ok
+}
+
+// ownRequest reports whether the person opened a request on this site
+// themselves: from its own pages, or typed or bookmarked. A browser without
+// Fetch Metadata counts only with no Referer or one from this site.
+func (s *Server) ownRequest(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return true
+	case "":
+		ref := r.Header.Get("Referer")
+		return ref == "" || ref == s.origin || strings.HasPrefix(ref, s.origin+"/")
+	}
+	return false
+}
+
+// lookup is session without keeping it alive: for requests that still have
+// checks to pass, which touch the session only once they passed (F14 R-03).
+func (s *Server) lookup(r *http.Request) (store.Session, store.User, bool) {
 	c, err := r.Cookie(s.sessionCookie)
 	if err != nil || !validSecret(c.Value) {
 		return store.Session{}, store.User{}, false
 	}
-	hash := HashSecret(c.Value)
-	now := s.now()
-	sess, u, err := s.o.Store.SessionByHash(r.Context(), s.o.Org, hash, now, s.o.IdleTimeout)
+	sess, u, err := s.o.Store.SessionByHash(r.Context(), s.o.Org, HashSecret(c.Value), s.now(), s.o.IdleTimeout)
 	if err != nil {
 		if !errors.Is(err, store.ErrNotFound) {
 			s.log.Error("web: read session", "err", err)
 		}
 		return store.Session{}, store.User{}, false
 	}
-	if err := s.o.Store.TouchSession(r.Context(), s.o.Org, hash, now); err != nil {
+	return sess, u, true
+}
+
+// touch keeps the request's session alive.
+func (s *Server) touch(r *http.Request) {
+	c, err := r.Cookie(s.sessionCookie)
+	if err != nil || !validSecret(c.Value) {
+		return
+	}
+	if err := s.o.Store.TouchSession(r.Context(), s.o.Org, HashSecret(c.Value), s.now()); err != nil {
 		s.log.Warn("web: touch session", "err", err)
 	}
-	return sess, u, true
 }
 
 // principal is who a signed-in person is, in the terms the permission table uses.
@@ -479,7 +511,7 @@ func (s *Server) guarded(w http.ResponseWriter, r *http.Request) (store.Session,
 	if !s.form(w, r) {
 		return store.Session{}, store.User{}, false
 	}
-	sess, u, ok := s.session(r)
+	sess, u, ok := s.lookup(r)
 	if !ok {
 		redirect(w, "/admin/signin")
 		return store.Session{}, store.User{}, false
@@ -490,6 +522,7 @@ func (s *Server) guarded(w http.ResponseWriter, r *http.Request) (store.Session,
 		s.pageFor(w, http.StatusForbidden, sess, u, "Request refused", "The page you used is out of date. Go back, reload it and try again.")
 		return store.Session{}, store.User{}, false
 	}
+	s.touch(r)
 	return sess, u, true
 }
 

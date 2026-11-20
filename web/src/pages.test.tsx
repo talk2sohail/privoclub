@@ -1019,3 +1019,31 @@ describe("the admin gaps (F14 third slice)", () => {
     await waitFor(() => expect(within(form).getByText(/mcp.figma.com did not answer within 10 seconds/)).toBeTruthy());
   });
 });
+
+describe("tokens (F14 R-07, R-08)", () => {
+  it("asks before an owner API token and sends the confirmation", async () => {
+    at("/admin/tokens");
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/me/tokens": { tokens: [] },
+      "GET /admin/api/v1/me/clients": { enabled: false, clients: [] },
+      "GET /admin/api/v1/tokens": { tokens: [] },
+      "POST /admin/api/v1/tokens": () => [201, { id: "t1", token: "prv_secret_value", name: "ops", role: "owner", kind: "control", person: "", expires_at: "2026-12-21T00:00:00Z" }],
+    });
+    fireEvent.click(await screen.findByText("Create an API token (for scripts and automation)"));
+    const form = screen.getByRole("button", { name: "Create API token" }).closest("form")!;
+    fireEvent.input(form.querySelector('input[name="name"]')!, { target: { value: "ops" } });
+    expect(within(form).queryByRole("checkbox")).toBeNull(); // an auditor token asks nothing
+    fireEvent.change(form.querySelector('select[name="role"]')!, { target: { value: "owner" } });
+    const confirm = within(form).getByRole("checkbox") as HTMLInputElement;
+    expect(confirm.required).toBe(true);
+    fireEvent.click(confirm);
+    fireEvent.submit(form);
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]!.body).toEqual({ name: "ops", role: "owner", kind: "control", person: "", confirm: true });
+
+    // The token shown once goes when hidden.
+    await screen.findByText("prv_secret_value");
+    fireEvent.click(screen.getByRole("button", { name: "I copied it, hide it" }));
+    expect(screen.queryByText("prv_secret_value")).toBeNull();
+  });
+});

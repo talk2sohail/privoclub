@@ -113,7 +113,7 @@ func TestAnAPITokenCannotMakeAMembersToken(t *testing.T) {
 	e := newSessionEnv(t)
 	_, owner := e.user(t, "boss", store.RoleOwner)
 	e.user(t, "ada", store.RoleMember)
-	res := e.call(t, owner, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "script", "role": "admin", "kind": "control", "person": "ada"}, http.StatusCreated)
+	res := e.call(t, owner, http.MethodPost, "/api/v1/tokens", map[string]any{"name": "script", "role": "admin", "kind": "control", "person": "ada", "confirm": true}, http.StatusCreated)
 	p := verify(t, e, res["token"].(string))
 	if p.Person != "ada" || p.UserID != "" {
 		t.Fatalf("control token principal %+v", p)
