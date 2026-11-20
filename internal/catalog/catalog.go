@@ -55,8 +55,12 @@ type Entry struct {
 	AppURL       string   `json:"app_url,omitempty"`  // where to create the OAuth app (own_app)
 	AppHelp      string   `json:"app_help,omitempty"` // what to do there
 	Scopes       []string `json:"scopes,omitempty"`   // a narrower set than the provider offers, when it offers too much
-	Profiles     []string `json:"profiles"`
-	CheckedOn    string   `json:"checked_on"`
+	// Issuer is the authorization server the entry's people sign in at. An
+	// own_app entry names it, so the client secret goes only there and never
+	// to one the MCP server names (F07 R-05).
+	Issuer    string   `json:"issuer,omitempty"`
+	Profiles  []string `json:"profiles"`
+	CheckedOn string   `json:"checked_on"`
 }
 
 // Profiles returns the team profiles in display order.
@@ -77,7 +81,7 @@ var entries = []Entry{
 	{ID: "github", Name: "GitHub", Description: "Repositories, issues, pull requests and Actions.", Alias: "github",
 		URL: "https://api.githubcopilot.com/mcp/", Transport: "http", Auth: AuthOAuth, Registration: RegistrationOwnApp,
 		AppURL: "https://github.com/settings/applications/new", AppHelp: "Create an OAuth App (not a GitHub App), set its callback URL to the one shown, and paste its client id and secret.",
-		Scopes: []string{"repo", "read:org", "read:user"}, Profiles: []string{ProfileDevelopers}, CheckedOn: checked},
+		Scopes: []string{"repo", "read:org", "read:user"}, Issuer: "https://github.com/login/oauth", Profiles: []string{ProfileDevelopers}, CheckedOn: checked},
 	{ID: "linear", Name: "Linear", Description: "Issues, projects and cycles.", Alias: "linear",
 		URL: "https://mcp.linear.app/mcp", Transport: "http", Auth: AuthOAuth, Registration: RegistrationAutomatic,
 		Profiles: []string{ProfileDevelopers, ProfileProduct}, CheckedOn: checked},
@@ -127,7 +131,7 @@ var entries = []Entry{
 	{ID: "asana", Name: "Asana", Description: "Tasks, projects and goals.", Alias: "asana",
 		URL: "https://mcp.asana.com/v2/mcp", Transport: "http", Auth: AuthOAuth, Registration: RegistrationOwnApp,
 		AppURL: "https://app.asana.com/0/my-apps", AppHelp: "Create an app, add the callback URL shown as a redirect URL, and paste its client id and secret.",
-		Profiles: []string{ProfileProduct}, CheckedOn: checked},
+		Profiles: []string{ProfileProduct}, Issuer: "https://app.asana.com", CheckedOn: checked},
 	{ID: "monday", Name: "monday.com", Description: "Boards, items and updates.", Alias: "monday",
 		URL: "https://mcp.monday.com/mcp", Transport: "http", Auth: AuthOAuth, Registration: RegistrationAutomatic,
 		Profiles: []string{ProfileProduct}, CheckedOn: checked},
@@ -145,7 +149,7 @@ var entries = []Entry{
 	{ID: "hubspot", Name: "HubSpot", Description: "Contacts, companies and deals.", Alias: "hubspot",
 		URL: "https://mcp.hubspot.com/", Transport: "http", Auth: AuthOAuth, Registration: RegistrationOwnApp,
 		AppHelp:  "Create an app in your HubSpot developer account with the callback URL shown as its redirect URL, and paste its client id and secret.",
-		Profiles: []string{ProfileSales}, CheckedOn: checked},
+		Profiles: []string{ProfileSales}, Issuer: "https://mcp.hubspot.com", CheckedOn: checked},
 	{ID: "intercom", Name: "Intercom", Description: "Conversations, contacts and help articles.", Alias: "intercom",
 		URL: "https://mcp.intercom.com/mcp", Transport: "http", Auth: AuthOAuth, Registration: RegistrationAutomatic,
 		Profiles: []string{ProfileSales, ProfileProduct}, CheckedOn: checked},
@@ -154,7 +158,7 @@ var entries = []Entry{
 	{ID: "slack", Name: "Slack", Description: "Search and post in channels and messages.", Alias: "slack",
 		URL: "https://mcp.slack.com/mcp", Transport: "http", Auth: AuthOAuth, Registration: RegistrationOwnApp,
 		AppURL: "https://api.slack.com/apps", AppHelp: "Create a Slack app, add the callback URL shown as a redirect URL under OAuth & Permissions, and paste its client id and secret.",
-		Profiles: []string{ProfileEveryone, ProfileSales}, CheckedOn: checked},
+		Profiles: []string{ProfileEveryone, ProfileSales}, Issuer: "https://mcp.slack.com", CheckedOn: checked},
 }
 
 // Entries returns every entry, sorted by name.

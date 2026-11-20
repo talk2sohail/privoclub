@@ -309,6 +309,10 @@ that member: their teams' servers and their own accounts.
 
 Personal tokens keep working for clients without OAuth and for scripts.
 
+A server added with an OAuth client secret (`oauth.client_secret`) also
+names its authorization server (`oauth.issuer`, 0.18.0): the secret goes only
+there, never to one the MCP server picks. The catalog fills it in.
+
 ## Activity: how calls went (0.10.0)
 
 **Activity → Overview** shows, for the last hour, day, week or month: how many

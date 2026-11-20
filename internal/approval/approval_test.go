@@ -341,3 +341,33 @@ func TestHeldCallEndsWhenWithdrawn(t *testing.T) {
 		t.Fatal("the held call did not end when the request was withdrawn")
 	}
 }
+
+// F05 R-04: a person never decides their own request, whatever case their
+// name is written in, and a member is known by their user id first.
+func TestOwnKnowsTheMemberAndIgnoresCase(t *testing.T) {
+	a := store.Approval{RequesterID: "tok-1", RequesterPerson: "Alice", RequesterUserID: "u-alice"}
+	for name, d := range map[string]Decider{
+		"the same token":                  {TokenID: "tok-1"},
+		"her session":                     {UserID: "u-alice", Person: "alice"},
+		"her name in another case":        {Person: "ALICE"},
+		"her user id under another label": {UserID: "u-alice", Person: "al"},
+	} {
+		if !Own(d, a) {
+			t.Errorf("%s: not seen as her own", name)
+		}
+	}
+	for name, d := range map[string]Decider{
+		"another member":   {UserID: "u-bob", Person: "bob"},
+		"another token":    {TokenID: "tok-2", Person: "bob"},
+		"nobody at all":    {},
+		"an empty user id": {UserID: ""},
+	} {
+		if Own(d, a) {
+			t.Errorf("%s: seen as her own", name)
+		}
+	}
+	// A request without a member (a token of nobody) matches no user id.
+	if Own(Decider{UserID: "u-bob"}, store.Approval{RequesterID: "tok-9", RequesterPerson: "ci"}) {
+		t.Error("an empty requester user id matched")
+	}
+}

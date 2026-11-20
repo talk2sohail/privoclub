@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -104,5 +105,15 @@ func TestEntriesIsACopy(t *testing.T) {
 	a[0].URL = "https://evil.example/"
 	if Entries()[0].URL == "https://evil.example/" {
 		t.Fatal("callers can change the catalog")
+	}
+}
+
+// F07 R-05: an entry whose admin brings their own client names the
+// authorization server, so its secret never goes to one the server names.
+func TestOwnAppEntriesNameTheirIssuer(t *testing.T) {
+	for _, e := range Entries() {
+		if e.Registration == RegistrationOwnApp && !strings.HasPrefix(e.Issuer, "https://") {
+			t.Errorf("%s brings its own client but names no issuer", e.ID)
+		}
 	}
 }

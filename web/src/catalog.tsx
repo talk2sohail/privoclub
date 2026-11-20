@@ -76,6 +76,7 @@ export function CatalogAdd({
         oauth.client_secret = (f.client_secret ?? "").trim();
       }
       if (entry.scopes?.length) oauth.scopes = entry.scopes;
+      if (entry.issuer) oauth.issuer = entry.issuer; // the client secret goes only there (F07 R-05)
       body.oauth = oauth;
     }
     void run(async () => {

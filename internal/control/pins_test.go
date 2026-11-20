@@ -97,3 +97,36 @@ func stringify(v any) string {
 	}
 	return ""
 }
+
+// Review of control-plane batch 1: what the review shows follows what the
+// server presents now. An older accepted definition the server no longer
+// offers is neither "available" nor what a change replaces.
+func TestPinViewsFollowWhatIsServedNow(t *testing.T) {
+	pins := []store.Pin{ // newest first
+		{Kind: "tool", Name: "search", Hash: "h3", Status: store.PinPending, Definition: `{}`},
+		{Kind: "tool", Name: "search", Hash: "h2", Status: store.PinAccepted, Definition: `{}`}, // accepted last, no longer offered
+		{Kind: "tool", Name: "search", Hash: "h1", Status: store.PinAccepted, Definition: `{}`}, // offered now
+	}
+	by := func(views []map[string]any) map[string]map[string]any {
+		m := map[string]map[string]any{}
+		for _, v := range views {
+			m[v["hash"].(string)] = v
+		}
+		return m
+	}
+	now := by(pinViews(pins, map[store.PinKey]bool{{Kind: "tool", Name: "search", Hash: "h1"}: true}))
+	if now["h1"]["serving"] != true || now["h2"]["serving"] != false {
+		t.Fatalf("serving: h1 %v, h2 %v", now["h1"]["serving"], now["h2"]["serving"])
+	}
+	if prev := now["h3"]["previous"].(map[string]any); prev["hash"] != "h1" {
+		t.Fatalf("a change replaces %v, want the one served now (h1)", prev["hash"])
+	}
+	// Not connected: serving is unknown and left out; previous is the newest accepted.
+	unknown := by(pinViews(pins, nil))
+	if _, ok := unknown["h1"]["serving"]; ok {
+		t.Fatal("serving given without knowing what the server presents")
+	}
+	if prev := unknown["h3"]["previous"].(map[string]any); prev["hash"] != "h2" {
+		t.Fatalf("without a connection previous is %v, want the newest accepted (h2)", prev["hash"])
+	}
+}

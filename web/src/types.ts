@@ -29,6 +29,8 @@ export type Pin = {
   status: string;
   definition: { description?: string; title?: string; [key: string]: unknown } | null;
   findings?: Finding[]; // signs of hidden instructions (F11 scan); a hint, never a decision
+  serving?: boolean; // an accepted definition the server presents now; absent while unknown
+  previous?: { hash: string; definition: Pin["definition"] }; // what a pending one would replace
 };
 
 export type Finding = { path: string; rule: string; severity: "warn" | "note"; message: string; excerpt?: string };
@@ -144,6 +146,7 @@ export type CatalogEntry = {
   app_url?: string;
   app_help?: string;
   scopes?: string[];
+  issuer?: string; // the authorization server an own_app entry's secret goes to
   profiles: string[];
   checked_on: string;
   installed?: string;

@@ -271,7 +271,8 @@ func newOAuthWorld(t *testing.T, dynamic bool, extraEnv ...string) *oauthWorld {
 	}
 	oauth := map[string]any{}
 	if !dynamic {
-		oauth = map[string]any{"client_id": w.up.clientID, "client_secret": w.up.secret}
+		// A client secret goes only to an issuer the admin names (F07 R-05).
+		oauth = map[string]any{"client_id": w.up.clientID, "client_secret": w.up.secret, "issuer": w.up.srv.URL}
 	}
 	res := g.api(http.MethodPost, "/api/v1/servers", g.owner, map[string]any{"alias": "linear", "transport": "http", "url": w.up.srv.URL + "/mcp", "oauth": oauth}, http.StatusCreated)
 	w.serverJS, _ = res["server"].(map[string]any)

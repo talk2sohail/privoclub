@@ -154,6 +154,12 @@ func (a *API) editServer(ctx context.Context, p auth.Principal, s store.Server, 
 		if c.ClientID == "" || !printableASCII(c.ClientID, 255) || !printableASCII(secret, 512) {
 			return nil, errorf(http.StatusUnprocessableEntity, "oauth_client.client_id is needed, and it and client_secret must be printable without spaces")
 		}
+		// F07 R-05 on this path too: a secret goes only to an authorization
+		// server the admin named, never to one found from the MCP server.
+		if secret != "" && !cfg.OAuth.IssuerNamed && cfg.OAuth.Registration != store.RegistrationManual {
+			return nil, errorf(http.StatusUnprocessableEntity,
+				"%s's sign-in was found from the server, not named by you, so it takes no client secret; to use one, delete the server and add it again with oauth.issuer", s.Alias)
+		}
 		o := *cfg.OAuth
 		if c.ClientID != o.ClientID {
 			// Refresh tokens belong to the client that got them.

@@ -46,7 +46,10 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
 
   const all = pins.data?.pins ?? [];
   const pending = all.filter((p) => p.status === "pending");
-  const accepted = all.filter((p) => p.status === "accepted");
+  // What AI clients get: accepted and presented by the server now (an older
+  // accepted definition the server no longer offers is not available).
+  const accepted = all.filter((p) => p.status === "accepted" && p.serving !== false);
+  const earlier = all.filter((p) => p.status === "accepted" && p.serving === false);
   const items = current.items ?? {};
 
   return (
@@ -107,6 +110,21 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
             </table>
           </div>
         </section>
+      )}
+      {earlier.length > 0 && (
+        <details class="card">
+          <summary>Accepted earlier, not offered now ({earlier.length})</summary>
+          <p class="meta">
+            The server no longer offers these versions, so AI clients do not get them. If it offers one again, AI clients get it without another review.
+          </p>
+          <ul>
+            {earlier.map((p) => (
+              <li key={p.kind + p.name + p.hash}>
+                <code>{p.name}</code> <small class="meta">{p.kind}</small> {firstLine(p.definition?.description)}
+              </li>
+            ))}
+          </ul>
+        </details>
       )}
       {session.can.teams && <Access srv={current} />}
       {session.can.servers && (current.teams ?? []).length > 0 && <Toolsets srv={current} tools={toolNames(accepted)} />}

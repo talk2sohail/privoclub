@@ -114,6 +114,8 @@ export function Definition({ pin, previous }: { pin: Pin; previous?: Pin }) {
 
 /** previousOf finds the accepted version of a pending pin, if it changed. */
 export function previousOf(pin: Pin, all: Pin[]): Pin | undefined {
+  // The API names it: the definition served now, else the newest accepted.
+  if (pin.previous) return all.find((p) => p.hash === pin.previous!.hash && p.kind === pin.kind && p.name === pin.name);
   return all.find((p) => p.status === "accepted" && p.kind === pin.kind && p.name === pin.name && p.hash !== pin.hash);
 }
 

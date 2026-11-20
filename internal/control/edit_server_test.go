@@ -190,7 +190,7 @@ func oauthServerFor(t *testing.T, e *sessionEnv, alias, registration string) sto
 	srv := store.Server{OrgID: e.org, ID: "srv-" + alias, Alias: alias, Transport: "http", Enabled: true, CreatedAt: time.Now(),
 		Config: store.ServerConfig{URL: "https://127.0.0.1:1/" + alias + "/mcp", Auth: store.AuthOAuth, OAuth: &store.ServerOAuth{
 			Issuer: "https://as.example", AuthorizationEndpoint: "https://as.example/authorize", TokenEndpoint: "https://as.example/token",
-			Resource: "https://127.0.0.1:1/" + alias + "/mcp", ClientID: "client-1", Registration: registration, TokenAuthMethod: "none"}}}
+			Resource: "https://127.0.0.1:1/" + alias + "/mcp", ClientID: "client-1", Registration: registration, TokenAuthMethod: "none", IssuerNamed: true}}}
 	if err := e.st.CreateServer(context.Background(), srv, nil); err != nil {
 		t.Fatal(err)
 	}

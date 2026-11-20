@@ -36,6 +36,10 @@ const refreshTimeout = 20 * time.Second
 // connected, disconnected, or the authorization server refused the grant.
 var ErrNotConnected = errors.New("grants: no connected account")
 
+// ErrServerOff is returned for a server an admin turned off: its provider is
+// asked for nothing, and the grants are kept for when it is on again.
+var ErrServerOff = errors.New("grants: the server is turned off")
+
 // ErrKeyRefused means the server refused the person's own API key (ADR
 // 0023). The key is kept: a 401 can be the server's mistake, and the person
 // replaces the key on the connect page.
@@ -86,7 +90,22 @@ type Service struct {
 
 	mu      sync.Mutex
 	flights map[string]*flight
+	// unsaved holds tokens the provider issued that could not be saved
+	// (F07 R-06): with rotating refresh tokens, losing them loses the grant.
+	unsaved map[string]unsavedToken
 }
+
+// unsavedToken is a sealed credential waiting to be saved over the stored
+// row version from.
+type unsavedToken struct {
+	from uint64
+	c    store.Credential
+}
+
+// saveAttempts and saveBackoff bound the retries of saving a refreshed token.
+const saveAttempts = 4
+
+var saveBackoff = 25 * time.Millisecond
 
 type flight struct {
 	done chan struct{}
@@ -332,6 +351,9 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 	if err != nil {
 		return "", err
 	}
+	if !srv.Enabled {
+		return "", ErrServerOff
+	}
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrNotConnected
@@ -339,11 +361,45 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 	if err != nil {
 		return "", err
 	}
+	now := s.now()
+	key := string(org) + "\x00" + srv.ID + "\x00" + userID
+	stored := g.Credential.RowVersion
+	// A pair an earlier refresh could not save is newer than the stored one:
+	// save it now, and use it either way (F07 R-06).
+	s.mu.Lock()
+	p, held := s.unsaved[key]
+	s.mu.Unlock()
+	if held {
+		// The same credential at the same version: a reconnection makes a new
+		// credential, whose version may well be the same number.
+		if p.from == stored && p.c.ID == g.Credential.ID {
+			switch err := s.saveToken(ctx, org, srv.ID, userID, stored, p.c, now); {
+			case err == nil:
+				s.forgetUnsaved(key)
+				stored = p.c.RowVersion
+				g.Credential = p.c
+			case errors.Is(err, store.ErrNotFound):
+				// The grant went meanwhile (removed, disconnected, or the
+				// server's connections ended): nothing of it is used.
+				s.forgetUnsaved(key)
+				return "", ErrNotConnected
+			case errors.Is(err, store.ErrConflict):
+				s.forgetUnsaved(key) // another refresh saved a newer pair: theirs is read below
+				if g, err = s.Store.Grant(ctx, org, srv.ID, userID); err != nil {
+					return "", ErrNotConnected
+				}
+				stored = g.Credential.RowVersion
+			default:
+				g.Credential = p.c // still unsaved: use it, save it next time
+			}
+		} else {
+			s.forgetUnsaved(key) // the person connected again meanwhile
+		}
+	}
 	tok, err := s.token(ctx, org, g)
 	if err != nil {
 		return "", err
 	}
-	now := s.now()
 	if tok.AccessToken != stale && !tok.Expired(now, Skew) {
 		return tok.AccessToken, nil // refreshed meanwhile
 	}
@@ -381,13 +437,14 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 		return "", err
 	}
 	c := g.Credential
-	c.RowVersion++
+	c.RowVersion = stored + 1
 	c, err = s.seal(ctx, org, c, b)
 	if err != nil {
 		return "", err
 	}
-	switch err := s.Store.UpdateGrantToken(ctx, org, srv.ID, userID, g.Credential.RowVersion, c, now); {
+	switch err := s.saveToken(ctx, org, srv.ID, userID, stored, c, now); {
 	case err == nil:
+		s.forgetUnsaved(key)
 		return next.AccessToken, nil
 	case errors.Is(err, store.ErrNotFound):
 		return "", ErrNotConnected
@@ -403,13 +460,50 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 		}
 		return t.AccessToken, nil
 	default:
-		return "", err
+		// The provider may have rotated the refresh token: the pair is kept
+		// and saved on the next refresh, and this call goes on with it.
+		s.mu.Lock()
+		if s.unsaved == nil {
+			s.unsaved = map[string]unsavedToken{}
+		}
+		s.unsaved[key] = unsavedToken{from: stored, c: c}
+		s.mu.Unlock()
+		s.logger().Error("saving a refreshed grant failed; it is kept and saved on the next refresh", "server", srv.Alias, "err", err)
+		return next.AccessToken, nil
 	}
+}
+
+// saveToken saves a refreshed credential, retrying a few times: the tokens in
+// it are already issued and may be the only valid ones (F07 R-06). A lost
+// race or a deleted grant is not retried.
+func (s *Service) saveToken(ctx context.Context, org store.OrgID, serverID, userID string, from uint64, c store.Credential, now time.Time) error {
+	wait := saveBackoff
+	var err error
+	for range saveAttempts {
+		err = s.Store.UpdateGrantToken(ctx, org, serverID, userID, from, c, now)
+		if err == nil || errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrConflict) {
+			return err
+		}
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return err
+		}
+		wait *= 2
+	}
+	return err
+}
+
+func (s *Service) forgetUnsaved(key string) {
+	s.mu.Lock()
+	delete(s.unsaved, key)
+	s.mu.Unlock()
 }
 
 // Disconnect revokes the person's grant at the authorization server when it
 // offers revocation (best effort) and deletes it with the audit record ev.
 func (s *Service) Disconnect(ctx context.Context, org store.OrgID, srv store.Server, userID string, ev store.AuditEvent) error {
+	s.forgetUnsaved(string(org) + "\x00" + srv.ID + "\x00" + userID)
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if err != nil {
 		return err

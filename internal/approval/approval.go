@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,6 +95,7 @@ type Request struct {
 	RequesterID     string
 	RequesterName   string
 	RequesterPerson string
+	RequesterUserID string // the member who asked; "" for a token of nobody
 	ServerID        string
 	ServerAlias     string
 	Tool            string
@@ -167,7 +169,7 @@ func (s *Service) create(ctx context.Context, r Request, b store.ApprovalBinding
 	if ttl <= 0 {
 		ttl = 10 * time.Minute
 	}
-	a := store.Approval{ID: ids.New(), RequesterID: r.RequesterID, RequesterName: r.RequesterName, RequesterPerson: r.RequesterPerson, ServerID: r.ServerID,
+	a := store.Approval{ID: ids.New(), RequesterID: r.RequesterID, RequesterName: r.RequesterName, RequesterPerson: r.RequesterPerson, RequesterUserID: r.RequesterUserID, ServerID: r.ServerID,
 		ServerAlias: r.ServerAlias, Tool: r.Tool, ArgsDigest: r.ArgsDigest, Reason: r.Reason, RuleID: r.RuleID, PinHash: r.PinHash,
 		Status: store.ApprovalPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 	sealed, err := s.seal(ctx, r.Org, a.ID, r.Args)
@@ -293,7 +295,11 @@ func (s *Service) Withdraw(ctx context.Context, org store.OrgID, id string, by D
 // their token or by their person. Unless the org allows self-approval, they
 // cannot decide it.
 func Own(by Decider, a store.Approval) bool {
-	return (by.TokenID != "" && by.TokenID == a.RequesterID) || (by.Person != "" && by.Person == a.RequesterPerson)
+	// By token, by member, and by person name in any case (F05 R-04: a name
+	// typed "Alice" on a token and "alice" at sign-in are one person).
+	return (by.TokenID != "" && by.TokenID == a.RequesterID) ||
+		(by.UserID != "" && by.UserID == a.RequesterUserID) ||
+		(by.Person != "" && strings.EqualFold(by.Person, a.RequesterPerson))
 }
 
 // Decide approves or denies a pending approval.

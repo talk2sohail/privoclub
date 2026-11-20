@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -538,8 +539,9 @@ func TestGrantLostIsLogged(t *testing.T) {
 			t.Errorf("the message carries a secret or the endpoint: %q", d.Message)
 		}
 	}
-	if !strings.Contains(ds[1].Message, "must connect again") {
-		t.Errorf("the refused grant reads %q", ds[1].Message)
+	// Both carry the same time, so their order is not fixed: look for it.
+	if !slices.ContainsFunc(ds, func(d store.Diagnostic) bool { return strings.Contains(d.Message, "must connect again") }) {
+		t.Errorf("no diagnostic says the person must connect again: %+v", ds)
 	}
 }
 
@@ -560,5 +562,115 @@ func TestCredentialKindMustMatchTheServer(t *testing.T) {
 	}
 	if _, tok, err := e.svc.CatalogAccessToken(ctx, e.org, asKey); !errors.Is(err, ErrNotConnected) || tok != "" {
 		t.Fatalf("an OAuth grant read the catalog of a key server: %q %v", tok, err)
+	}
+}
+
+// flakyStore fails UpdateGrantToken a number of times.
+type flakyStore struct {
+	Store
+	mu    sync.Mutex
+	fails int
+}
+
+func (f *flakyStore) UpdateGrantToken(ctx context.Context, org store.OrgID, serverID, userID string, from uint64, c store.Credential, now time.Time) error {
+	f.mu.Lock()
+	if f.fails > 0 {
+		f.fails--
+		f.mu.Unlock()
+		return errors.New("database is locked")
+	}
+	f.mu.Unlock()
+	return f.Store.UpdateGrantToken(ctx, org, serverID, userID, from, c, now)
+}
+
+func (f *flakyStore) failNext(n int) {
+	f.mu.Lock()
+	f.fails = n
+	f.mu.Unlock()
+}
+
+// F07 R-06: the provider rotated the refresh token; saving it failed. The
+// save is retried with the token already obtained, and when it keeps failing
+// the new pair is kept and saved on the next refresh, never lost.
+func TestRotatedTokenIsNotLostWhenSavingFails(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	flaky := &flakyStore{Store: e.st}
+	e.svc.Store = flaky
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old", RefreshToken: "rt-0", Expiry: t0})
+
+	// Two failures: the retry saves it.
+	flaky.failNext(2)
+	if at, err := e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID); err != nil || at != "at-1" {
+		t.Fatalf("after two failed saves: %q %v", at, err)
+	}
+	g, _ := e.st.Grant(ctx, e.org, e.srv.ID, e.ada.ID)
+	if tok, _ := e.svc.token(ctx, e.org, g); tok.RefreshToken != "rt-1" {
+		t.Fatalf("stored refresh token %q, want rt-1", tok.RefreshToken)
+	}
+
+	// Every attempt fails: the call still works with the new token...
+	e.now = t0.Add(2 * time.Hour)
+	flaky.failNext(1000)
+	if at, err := e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID); err != nil || at != "at-2" {
+		t.Fatalf("when saving keeps failing: %q %v", at, err)
+	}
+	// ...and once the database answers, the next refresh saves the pair it
+	// holds instead of using the rotated-away rt-1 at the provider.
+	flaky.failNext(0)
+	refreshes := e.as.refreshes.Load()
+	if at, err := e.svc.RefreshAfterReject(ctx, e.org, e.srv, e.ada.ID, "old"); err != nil || at != "at-2" {
+		t.Fatalf("next refresh: %q %v", at, err)
+	}
+	if e.as.refreshes.Load() != refreshes {
+		t.Fatal("the provider was asked again with a refresh token it had rotated away")
+	}
+	g, _ = e.st.Grant(ctx, e.org, e.srv.ID, e.ada.ID)
+	if tok, _ := e.svc.token(ctx, e.org, g); tok.RefreshToken != "rt-2" {
+		t.Fatalf("stored refresh token %q, want rt-2", tok.RefreshToken)
+	}
+}
+
+// A pair held from before a reconnection is never written over the new grant.
+func TestUnsavedTokenDoesNotOutliveAReconnection(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	flaky := &flakyStore{Store: e.st}
+	e.svc.Store = flaky
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old", RefreshToken: "rt-0", Expiry: t0})
+	flaky.failNext(1000)
+	if _, err := e.svc.AccessToken(ctx, e.org, e.srv, e.ada.ID); err != nil {
+		t.Fatal(err)
+	}
+	flaky.failNext(0)
+	// Ada connects again: a new credential, maybe with the same version.
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "fresh", RefreshToken: "rt-new", Expiry: t0})
+	if _, err := e.svc.RefreshAfterReject(ctx, e.org, e.srv, e.ada.ID, "fresh"); err != nil {
+		t.Fatal(err)
+	}
+	g, _ := e.st.Grant(ctx, e.org, e.srv.ID, e.ada.ID)
+	if tok, _ := e.svc.token(ctx, e.org, g); tok.RefreshToken == "rt-1" {
+		t.Fatal("a pair held from the old connection was written over the new grant")
+	}
+}
+
+// A server turned off asks its provider for nothing: no refresh of anyone's
+// grant (review of control-plane batch 1).
+func TestNoRefreshForAServerTurnedOff(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.connect(t, e.ada, upstreamauth.Token{AccessToken: "old", RefreshToken: "rt-0", Expiry: t0})
+	if err := e.st.SetServerEnabled(ctx, e.org, e.srv.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.RefreshAfterReject(ctx, e.org, e.srv, e.ada.ID, "old"); !errors.Is(err, ErrServerOff) {
+		t.Fatalf("refresh of a server turned off: %v", err)
+	}
+	if n := e.as.refreshes.Load(); n != 0 {
+		t.Fatalf("the provider was asked %d times", n)
+	}
+	// The grant stays: turning the server on again needs no reconnecting.
+	if _, err := e.st.Grant(ctx, e.org, e.srv.ID, e.ada.ID); err != nil {
+		t.Fatalf("the grant was dropped: %v", err)
 	}
 }

@@ -370,7 +370,7 @@ const catalogAnswer = {
   oauth_available: true,
   entries: [
     { id: "figma", name: "Figma", description: "Design files.", alias: "figma", url: "https://mcp.figma.com/mcp", transport: "http", auth: "oauth", registration: "automatic", profiles: ["designers"], checked_on: "2026-11-03" },
-    { id: "github", name: "GitHub", description: "Code.", alias: "github", url: "https://api.githubcopilot.com/mcp/", transport: "http", auth: "oauth", registration: "own_app", app_url: "https://github.com/settings/applications/new", app_help: "Create an OAuth App.", scopes: ["repo"], profiles: ["developers"], checked_on: "2026-11-03" },
+    { id: "github", name: "GitHub", description: "Code.", alias: "github", url: "https://api.githubcopilot.com/mcp/", transport: "http", auth: "oauth", registration: "own_app", app_url: "https://github.com/settings/applications/new", app_help: "Create an OAuth App.", scopes: ["repo"], issuer: "https://github.com/login/oauth", profiles: ["developers"], checked_on: "2026-11-03" },
     { id: "notion", name: "Notion", description: "Docs.", alias: "notion", url: "https://mcp.notion.com/mcp", transport: "http", auth: "oauth", registration: "automatic", profiles: ["everyone"], checked_on: "2026-11-03", installed: "notion" },
   ],
 };
@@ -481,7 +481,7 @@ describe("catalog", () => {
       transport: "http",
       url: "https://api.githubcopilot.com/mcp/",
       teams: ["designers"],
-      oauth: { client_id: "Iv1.abc", client_secret: "s3cret", scopes: ["repo"] },
+      oauth: { client_id: "Iv1.abc", client_secret: "s3cret", scopes: ["repo"], issuer: "https://github.com/login/oauth" },
     });
   });
 
@@ -1045,5 +1045,30 @@ describe("tokens (F14 R-07, R-08)", () => {
     await screen.findByText("prv_secret_value");
     fireEvent.click(screen.getByRole("button", { name: "I copied it, hide it" }));
     expect(screen.queryByText("prv_secret_value")).toBeNull();
+  });
+});
+
+describe("what the review shows follows what is served (review of control-plane batch 1)", () => {
+  it("lists only definitions the server offers now, and diffs against the one served", async () => {
+    at("/admin/servers/files");
+    await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [{ alias: "files", status: "up", target: "t", transport: "http", enabled: true, items: { tool: 1 }, pending_review: 1, teams: ["everyone"] }] },
+      "GET /admin/api/v1/servers/files/pins": {
+        pins: [
+          { kind: "tool", name: "read", hash: "h3", status: "pending", definition: { description: "Reads, version three." }, previous: { hash: "h1", definition: { description: "Reads, version one." } } },
+          { kind: "tool", name: "read", hash: "h2", status: "accepted", serving: false, definition: { description: "Reads, version two." } },
+          { kind: "tool", name: "read", hash: "h1", status: "accepted", serving: true, definition: { description: "Reads, version one." } },
+        ],
+      },
+      "GET /admin/api/v1/teams": teamsAnswer,
+    });
+    await screen.findByText("Available to AI clients");
+    const available = screen.getByText("Available to AI clients").closest("section")!;
+    expect(available.textContent).toContain("version one");
+    expect(available.textContent).not.toContain("version two");
+    const diff = screen.getByLabelText("What changed in read");
+    expect(diff.textContent).toContain("version one");
+    expect(diff.textContent).not.toContain("version two");    // Not hidden: listed apart, with what it means.
+    expect(screen.getByText("Accepted earlier, not offered now (1)").closest("details")!.textContent).toContain("version two");
   });
 });

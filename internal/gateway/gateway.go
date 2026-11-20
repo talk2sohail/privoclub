@@ -23,6 +23,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
@@ -83,6 +84,9 @@ type Gateway struct {
 	CallTimeout time.Duration
 	// Telemetry records how each call went (ADR 0024); nil records nothing.
 	Telemetry *telemetry.Recorder
+
+	hiddenMu sync.Mutex
+	hidden   map[string]time.Time // last record of a hidden call, per caller, server and reason
 }
 
 // Handler returns the authenticated MCP HTTP handler.
@@ -365,7 +369,7 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	}
 	gated := time.Now()
 	out, err := g.Approval.Gate(ctx, approval.Request{Org: c.p.OrgID, RequesterID: c.p.TokenID, RequesterName: c.p.Name,
-		RequesterPerson: c.p.Person, ServerID: c.item.ServerID, ServerAlias: c.item.Alias, Tool: c.item.Name, ArgsDigest: digest,
+		RequesterPerson: c.p.Person, RequesterUserID: c.p.UserID, ServerID: c.item.ServerID, ServerAlias: c.item.Alias, Tool: c.item.Name, ArgsDigest: digest,
 		Args: c.args, Reason: dec.Reason, RuleID: dec.RuleID, PinHash: c.item.Hash})
 	if errors.Is(err, approval.ErrTooManyPending) {
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "too_many_pending")
@@ -759,6 +763,7 @@ func (g *Gateway) callTool(ctx context.Context, p auth.Principal, params *mcp.Ca
 		return nil, err
 	}
 	if !ok {
+		go g.recordHidden(context.WithoutCancel(ctx), p, upstream.KindTool, "tools/call", func(it upstream.Item) bool { return PublicName(it.Alias, it.Name) == params.Name })
 		return notFound("Tool", params.Name), nil
 	}
 	var result *mcp.CallToolResult
@@ -804,6 +809,7 @@ func (g *Gateway) getPrompt(ctx context.Context, p auth.Principal, params *mcp.G
 		return nil, err
 	}
 	if !ok {
+		go g.recordHidden(context.WithoutCancel(ctx), p, upstream.KindPrompt, "prompts/get", func(it upstream.Item) bool { return PublicName(it.Alias, it.Name) == params.Name })
 		return nil, invalidParams("prompt %q is not available", params.Name)
 	}
 	args, err := json.Marshal(params.Arguments) // map[string]string: keys sorted by encoding/json
@@ -851,6 +857,7 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 	}
 	idx := slices.IndexFunc(items, func(c upstream.Item) bool { return c.Alias == alias && c.Name == up })
 	if idx < 0 {
+		go g.recordHidden(context.WithoutCancel(ctx), p, upstream.KindResource, "resources/read", func(it upstream.Item) bool { return it.Alias == alias && it.Name == up })
 		return nil, resourceNotFound("resource %q is not available", params.URI)
 	}
 	it := items[idx]
@@ -869,4 +876,75 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 		return "ok", res, nil
 	})
 	return result, err
+}
+
+// hiddenWindow is how often one caller's calls on one server for one reason
+// are recorded when their teams or toolset keep it from them.
+const hiddenWindow = time.Minute
+
+// recordHidden audits a call on something that exists and was accepted but
+// that the caller may not use. It runs after the answer, on its own, so the
+// answer's timing does not tell a hidden name from an unknown one (security
+// review of the findings batch). Below: what it records.
+//
+// It audits a call on something that exists and was accepted but
+// that the caller's teams, or their toolset, keep from them (F26 R-03). The
+// answer stays that of an unknown name; the record says why, at most once a
+// minute per caller, server and reason. An unknown or unreviewed name is not
+// recorded: it would let anyone fill the audit.
+func (g *Gateway) recordHidden(ctx context.Context, p auth.Principal, kind, action string, match func(upstream.Item) bool) {
+	acc, err := g.access(ctx, p)
+	if err != nil {
+		return
+	}
+	for _, it := range g.Upstream.Items(p.OrgID) {
+		if it.Kind != kind || !match(it) {
+			continue
+		}
+		reason := ""
+		switch {
+		case !acc.Reaches(it.ServerID):
+			reason = "denied:not_in_team"
+		case it.Kind == upstream.KindTool && !acc.SeesTool(it.ServerID, it.Name):
+			reason = "denied:not_in_toolset"
+		default:
+			continue
+		}
+		st, err := g.Store.PinStatuses(ctx, p.OrgID, it.ServerID)
+		if err != nil || st[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] != store.PinAccepted {
+			continue
+		}
+		who := p.UserID
+		if who == "" {
+			who = p.TokenID
+		}
+		if !g.firstInWindow(string(p.OrgID) + "\x00" + who + "\x00" + it.ServerID + "\x00" + reason) {
+			return
+		}
+		g.recordRefusal(ctx, call{p: p, item: it, action: action}, ids.New(), reason, "refused")
+		return
+	}
+}
+
+// firstInWindow reports whether key was not seen in the last hiddenWindow,
+// and remembers it.
+func (g *Gateway) firstInWindow(key string) bool {
+	now := time.Now()
+	g.hiddenMu.Lock()
+	defer g.hiddenMu.Unlock()
+	if g.hidden == nil {
+		g.hidden = map[string]time.Time{}
+	}
+	if last, ok := g.hidden[key]; ok && now.Sub(last) < hiddenWindow {
+		return false
+	}
+	if len(g.hidden) >= 10000 {
+		for k, t := range g.hidden {
+			if now.Sub(t) >= hiddenWindow {
+				delete(g.hidden, k)
+			}
+		}
+	}
+	g.hidden[key] = now
+	return true
 }
