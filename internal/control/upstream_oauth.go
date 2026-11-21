@@ -133,6 +133,14 @@ func (a *API) configureOAuth(ctx context.Context, srv store.Server, req *oauthRe
 		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity, "oauth.scopes holds an invalid or repeated scope")
 	}
 	manual := req.AuthorizationEndpoint != "" || req.TokenEndpoint != ""
+	// F07 R-05: a client secret goes only where the admin says. Discovered,
+	// the authorization server is the MCP server's choice, so a secret needs
+	// the issuer named (it must be one the server names too). Hand-entered
+	// endpoints are named by the admin already.
+	if req.ClientSecret != "" && req.Issuer == "" && !manual {
+		return store.ServerOAuth{}, "", errorf(http.StatusUnprocessableEntity,
+			"with a client secret, give oauth.issuer too: the secret goes only to the authorization server you name, never to one the server picks")
+	}
 	d, err := a.OAuth.Discover(ctx, srv.Config.URL, srv.Transport, req.Issuer)
 	if manual {
 		// Endpoints by hand only for a server that does not say where its
@@ -180,7 +188,8 @@ func (a *API) configureOAuth(ctx context.Context, srv store.Server, req *oauthRe
 	}
 	o := store.ServerOAuth{Issuer: d.Server.Issuer, AuthorizationEndpoint: d.Server.AuthorizationEndpoint, TokenEndpoint: d.Server.TokenEndpoint,
 		RevocationEndpoint: d.Server.RevocationEndpoint, RegistrationEndpoint: d.Server.RegistrationEndpoint, IssParameter: d.Server.IssParameterSupported,
-		Resource: d.Resource, Scopes: scopes, Registration: method, TokenAuthMethod: "none", DiscoveredAt: time.Now().UTC()}
+		Resource: d.Resource, Scopes: scopes, Registration: method, TokenAuthMethod: "none", DiscoveredAt: time.Now().UTC(),
+		IssuerNamed: req.Issuer != ""}
 	secret := ""
 	switch method {
 	case upstreamauth.RegistrationAdmin:
@@ -228,7 +237,8 @@ func (a *API) manualOAuth(ctx context.Context, req *oauthReq, scopes []string) (
 	}
 	o := store.ServerOAuth{Issuer: req.Issuer, AuthorizationEndpoint: req.AuthorizationEndpoint, TokenEndpoint: req.TokenEndpoint,
 		RevocationEndpoint: req.RevocationEndpoint, Resource: req.Resource, Scopes: scopes, ClientID: req.ClientID,
-		Registration: store.RegistrationManual, TokenAuthMethod: method, HasClientSecret: req.ClientSecret != "", DiscoveredAt: time.Now().UTC()}
+		Registration: store.RegistrationManual, TokenAuthMethod: method, HasClientSecret: req.ClientSecret != "", DiscoveredAt: time.Now().UTC(),
+		IssuerNamed: true}
 	return o, req.ClientSecret, nil
 }
 

@@ -697,13 +697,36 @@ func (a *API) listPins(w http.ResponseWriter, r *http.Request, p auth.Principal)
 	if err != nil {
 		return err
 	}
-	// The definition a pending or blocked one would replace: the newest
-	// accepted one of the same name (pins come newest first).
-	accepted := map[[2]string]store.Pin{}
+	// What the server presents now; nil while it is not connected.
+	var current map[store.PinKey]bool
+	if st, ok := a.Upstream.State(s.ID); ok && len(st.Items) > 0 {
+		current = map[store.PinKey]bool{}
+		for _, it := range st.Items {
+			current[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] = true
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pins": pinViews(pins, current)})
+	return nil
+}
+
+// pinViews describes a server's pins for the review (newest first, as the
+// store lists them). serving marks an accepted definition the server presents
+// now, which is what the gateway serves; it is left out while what the server
+// presents is not known. previous is the definition a pending or blocked one
+// would replace: the one served now, else the newest accepted one (review of
+// control-plane batch 1).
+func pinViews(pins []store.Pin, current map[store.PinKey]bool) []map[string]any {
+	serving := func(pin store.Pin) bool {
+		return pin.Status == store.PinAccepted && current[store.PinKey{Kind: pin.Kind, Name: pin.Name, Hash: pin.Hash}]
+	}
+	before := map[[2]string]store.Pin{}
 	for _, pin := range pins {
 		k := [2]string{pin.Kind, pin.Name}
-		if _, seen := accepted[k]; !seen && pin.Status == store.PinAccepted {
-			accepted[k] = pin
+		if pin.Status != store.PinAccepted {
+			continue
+		}
+		if prev, seen := before[k]; !seen || (serving(pin) && !serving(prev)) {
+			before[k] = pin
 		}
 	}
 	out := make([]map[string]any, 0, len(pins))
@@ -712,13 +735,15 @@ func (a *API) listPins(w http.ResponseWriter, r *http.Request, p auth.Principal)
 			"definition": json.RawMessage(pin.Definition),
 			// F11: signs of hidden instructions, for the reviewer (a hint, never a decision).
 			"findings": scan.Scan([]byte(pin.Definition))}
-		if prev, ok := accepted[[2]string{pin.Kind, pin.Name}]; ok && pin.Status != store.PinAccepted {
+		if current != nil && pin.Status == store.PinAccepted {
+			v["serving"] = serving(pin)
+		}
+		if prev, ok := before[[2]string{pin.Kind, pin.Name}]; ok && pin.Status != store.PinAccepted {
 			v["previous"] = map[string]any{"hash": prev.Hash, "definition": json.RawMessage(prev.Definition)}
 		}
 		out = append(out, v)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"pins": out})
-	return nil
+	return out
 }
 
 // pinsAction names what a review decided: the count, then each definition as

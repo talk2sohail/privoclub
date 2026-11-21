@@ -351,3 +351,23 @@ proxy that checks a header will do.
    and does not keep you signed in: after the idle timeout (2 hours by
    default) without a real click, the app asks you to sign in again.
 
+## 21. Control-plane review findings (needs 0.18.0+ and the second account)
+
+1. **Self-approval in any case:** make an API token whose person is your
+   name in capitals (`BOSS` for `boss`) with role member, call a tool with an
+   **ask** rule through it, then open **Approvals** signed in as yourself:
+   the request is marked yours and cannot be approved by you.
+2. **Catalog, own app:** add GitHub from the catalog with an OAuth App's id
+   and secret: it works as before (the catalog names the issuer). Through the
+   API, the same request without `oauth.issuer` is refused with a message
+   naming it.
+3. **Outside the teams:** give a server to one team only. As the second
+   account (not in it), call one of its tools three times: each answer reads
+   like an unknown tool. **Activity → Tool calls**, filter decision
+   `denied:not_in_team`: one row.
+4. **What is served:** on a server's page, **Available to AI clients** lists
+   only what the server offers now; a changed tool's diff compares with the
+   version AI clients get today.
+5. **A server turned off** asks its provider for nothing; turned on again,
+   people's connections still work without reconnecting.
+

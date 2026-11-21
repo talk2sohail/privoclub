@@ -83,19 +83,23 @@ const (
 // ServerOAuth is what discovery and registration found for an oauth server.
 // It holds no secret: a client secret is a credential (PurposeOAuthClient).
 type ServerOAuth struct {
-	Issuer                string    `json:"issuer"`
-	AuthorizationEndpoint string    `json:"authorization_endpoint"`
-	TokenEndpoint         string    `json:"token_endpoint"`
-	RevocationEndpoint    string    `json:"revocation_endpoint,omitempty"`
-	RegistrationEndpoint  string    `json:"registration_endpoint,omitempty"`
-	IssParameter          bool      `json:"iss_parameter,omitempty"` // the AS sends iss in authorization responses
-	Resource              string    `json:"resource"`
-	Scopes                []string  `json:"scopes,omitempty"`
-	ClientID              string    `json:"client_id"`
-	Registration          string    `json:"registration"`
-	HasClientSecret       bool      `json:"has_client_secret,omitempty"`
-	TokenAuthMethod       string    `json:"token_auth_method,omitempty"` // none | client_secret_basic | client_secret_post
-	DiscoveredAt          time.Time `json:"discovered_at"`
+	Issuer                string   `json:"issuer"`
+	AuthorizationEndpoint string   `json:"authorization_endpoint"`
+	TokenEndpoint         string   `json:"token_endpoint"`
+	RevocationEndpoint    string   `json:"revocation_endpoint,omitempty"`
+	RegistrationEndpoint  string   `json:"registration_endpoint,omitempty"`
+	IssParameter          bool     `json:"iss_parameter,omitempty"` // the AS sends iss in authorization responses
+	Resource              string   `json:"resource"`
+	Scopes                []string `json:"scopes,omitempty"`
+	ClientID              string   `json:"client_id"`
+	Registration          string   `json:"registration"`
+	HasClientSecret       bool     `json:"has_client_secret,omitempty"`
+	// IssuerNamed says the admin named the authorization server (oauth.issuer)
+	// rather than Privo finding it from the MCP server: only then may a client
+	// secret be sent there (F07 R-05). Hand-entered settings are named too.
+	IssuerNamed     bool      `json:"issuer_named,omitempty"`
+	TokenAuthMethod string    `json:"token_auth_method,omitempty"` // none | client_secret_basic | client_secret_post
+	DiscoveredAt    time.Time `json:"discovered_at"`
 }
 
 // Credential is an encrypted secret attached to a server.

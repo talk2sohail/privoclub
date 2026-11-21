@@ -24,6 +24,7 @@ type Approval struct {
 	RequesterID     string
 	RequesterName   string
 	RequesterPerson string
+	RequesterUserID string // the member who asked; "" for a token of nobody (F05 R-04)
 	ServerID        string
 	ServerAlias     string
 	Tool            string
@@ -59,10 +60,10 @@ type ApprovalBinding struct {
 // CreateApproval stores a pending approval.
 func (s *Store) CreateApproval(ctx context.Context, org OrgID, a Approval) error {
 	_, err := s.w.ExecContext(ctx, `
-		INSERT INTO approvals (org_id, id, requester_id, requester_name, requester_person, server_id, server_alias, tool, args_digest, args, reason, rule_id, pin_hash, status, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+		INSERT INTO approvals (org_id, id, requester_id, requester_name, requester_person, requester_user_id, server_id, server_alias, tool, args_digest, args, reason, rule_id, pin_hash, status, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
 		ON CONFLICT DO NOTHING`,
-		org, a.ID, a.RequesterID, a.RequesterName, a.RequesterPerson, a.ServerID, a.ServerAlias, a.Tool, a.ArgsDigest, a.Args, a.Reason, a.RuleID, a.PinHash,
+		org, a.ID, a.RequesterID, a.RequesterName, a.RequesterPerson, a.RequesterUserID, a.ServerID, a.ServerAlias, a.Tool, a.ArgsDigest, a.Args, a.Reason, a.RuleID, a.PinHash,
 		ts(a.CreatedAt), ts(a.ExpiresAt))
 	return mapErr(err)
 }
@@ -94,14 +95,14 @@ func (s *Store) RestoreApproval(ctx context.Context, org OrgID, id string) error
 	return err
 }
 
-const approvalCols = `id, requester_id, requester_name, requester_person, server_id, server_alias, tool, args_digest, args, reason, rule_id, pin_hash, status,
+const approvalCols = `id, requester_id, requester_name, requester_person, requester_user_id, server_id, server_alias, tool, args_digest, args, reason, rule_id, pin_hash, status,
 	decided_by, decided_at, created_at, expires_at, consumed_at`
 
 func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	var a Approval
 	var decidedAt, consumedAt sql.NullString
 	var created, expires string
-	err := sc.Scan(&a.ID, &a.RequesterID, &a.RequesterName, &a.RequesterPerson, &a.ServerID, &a.ServerAlias, &a.Tool, &a.ArgsDigest, &a.Args,
+	err := sc.Scan(&a.ID, &a.RequesterID, &a.RequesterName, &a.RequesterPerson, &a.RequesterUserID, &a.ServerID, &a.ServerAlias, &a.Tool, &a.ArgsDigest, &a.Args,
 		&a.Reason, &a.RuleID, &a.PinHash, &a.Status, &a.DecidedBy, &decidedAt, &created, &expires, &consumedAt)
 	if err != nil {
 		return a, err

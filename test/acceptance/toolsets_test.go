@@ -102,3 +102,51 @@ func TestToolsetsLimitWhatATeamSees(t *testing.T) {
 		t.Fatalf("a member changed a toolset: %d", code)
 	}
 }
+
+// F26 R-03: a call on a server outside the caller's teams, or on a tool
+// their toolset hides, is answered like an unknown name, and the audit
+// records it once a minute per person, server and reason.
+func TestCallsOutsideTheTeamsAreAudited(t *testing.T) {
+	gh := newAcceptanceGitHub(t)
+	g := webGateway(t, gh)
+	boss := ownerOf(t, g, gh)
+	for _, team := range []string{"Designers", "Developers"} {
+		if code, out := boss.app(http.MethodPost, "/v1/teams", map[string]any{"name": team}, nil); code != http.StatusCreated {
+			t.Fatalf("team %s: %d %v", team, code, out)
+		}
+	}
+	addReviewed(t, g, boss, map[string]any{"alias": "kit", "transport": "http", "url": twoToolServer(t).URL + "/mcp", "teams": []string{"designers"}})
+	_, adaToken := join(t, g, gh, boss, "ada", 2)
+	_, bobToken := join(t, g, gh, boss, "bob", 3)
+	for _, m := range [][2]string{{"designers", "ada"}, {"developers", "bob"}} {
+		if code, out := boss.app(http.MethodPost, "/v1/teams/"+m[0]+"/members", map[string]any{"person": m[1]}, nil); code != http.StatusOK {
+			t.Fatalf("member %v: %d %v", m, code, out)
+		}
+	}
+	if code, out := boss.app(http.MethodPatch, "/v1/servers/kit/teams/designers", map[string]any{"tools": []string{"echo"}}, nil); code != http.StatusOK {
+		t.Fatalf("narrow: %d %v", code, out)
+	}
+	ada, bob := g.connect(adaToken), g.connect(bobToken)
+	unknown, _ := call(t, bob, "kit__nope", map[string]any{"text": "x"})
+	for range 3 {
+		outside, isErr := call(t, bob, "kit__echo", map[string]any{"text": "x"})
+		if !isErr || strings.ReplaceAll(outside, "kit__echo", "X") != strings.ReplaceAll(unknown, "kit__nope", "X") {
+			t.Fatalf("outside the teams: %q, unknown: %q", outside, unknown)
+		}
+	}
+	g.eventually("ada's toolset hides shout", 6*time.Second, func() bool { return !slices.Contains(toolList(t, ada), "kit__shout") })
+	if _, isErr := call(t, ada, "kit__shout", map[string]any{"text": "x"}); !isErr {
+		t.Fatal("a hidden tool answered")
+	}
+	count := func(decision string) int {
+		_, out := boss.app(http.MethodGet, "/v1/audit/events?limit=200&decision="+decision, nil, nil)
+		return len(list(out, "events"))
+	}
+	g.eventually("the refusals are in the audit", 6*time.Second, func() bool {
+		return count("denied:not_in_team") == 1 && count("denied:not_in_toolset") == 1
+	})
+	// An unknown name stays unrecorded.
+	if n := count("denied:unknown"); n != 0 {
+		t.Fatalf("%d records of an unknown name", n)
+	}
+}
