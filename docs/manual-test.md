@@ -407,3 +407,15 @@ proxy that checks a header will do.
    organisation. **Activity → Admin changes**: `signin.refused:not_in_org`.
 4. Unset the variable and redeploy: sign-in asks for no scope again.
 
+## 25. Arguments checked against the schema (needs 0.20.0+)
+
+1. With a server whose tools you accepted, ask your AI client to call one of
+   them with an argument of the wrong type or a made-up field (for example
+   "call echo with text set to the number 5").
+2. The client gets "The arguments do not match this tool's input schema, so
+   Privo did not send the call", naming the field. It usually corrects itself
+   and calls again.
+3. **Activity**: the call shows `refused:invalid_arguments`; the arguments
+   and the reason are not there. **Approvals** has no request for it, even
+   under an ask rule.
+4. A correct call still works, and still asks when a rule says so.

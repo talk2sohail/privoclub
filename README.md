@@ -118,6 +118,19 @@ everyone's connection. API: `PATCH /api/v1/servers/{alias}` with `url`,
 `headers` (`""` removes one) and `oauth_client` (`client_id`,
 `client_secret`).
 
+**Arguments checked** (0.20.0): every tool call's arguments are checked
+against the input schema of the definition you accepted, before rules and
+approvals. A call that does not match (a wrong type, a missing field, a field
+the schema does not allow) is refused with a reason the AI client can act on,
+never sent to the server and never turned into an approval request; Activity
+records it as `refused:invalid_arguments`, without the arguments or the
+reason. Draft 2020-12 and draft-07 schemas work. Privo never fetches a schema
+from elsewhere: a tool whose schema refers to another document, or that Privo
+cannot read, is marked with a warning in the review and its calls are refused
+(`refused:schema_unreadable`, with a warning on Health). So is a schema
+whose references loop, or that would cost too much to check; arguments too
+large to check within the limit are refused (`refused:arguments_too_costly`).
+
 **Restoring a member**: **People → Restore** (or
 `POST /api/v1/members/{person}/restore`) brings back a removed member with
 their GitHub account and roles; they sign in and make new tokens. Whoever may
