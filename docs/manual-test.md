@@ -337,3 +337,17 @@ proxy that checks a header will do.
    at the top. A provider that hangs is named with "did not answer within 10
    seconds" and what Privo was doing, never "context deadline exceeded".
 
+## 20. Sessions and tokens after the F14 review (needs 0.17.1+)
+
+1. **Tokens → Create an API token**, role **auditor**: no checkbox. Role
+   **owner**: a checkbox says what the token can do; **Create API token**
+   does not submit until it is ticked. **Activity → Admin changes**: the
+   `token.create:control:owner:<name>` event shows client `web`.
+2. The token shown once has **I copied it, hide it**: it disappears. Make
+   another and leave the page open: it goes by itself after 10 minutes.
+3. Revoke the owner token you just made.
+4. Optional, with the browser's developer tools: a request to
+   `/admin/api/v1/...` with a wrong `X-Privo-CSRF` header is refused (403),
+   and does not keep you signed in: after the idle timeout (2 hours by
+   default) without a real click, the app asks you to sign in again.
+

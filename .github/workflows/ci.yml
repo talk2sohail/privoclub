@@ -11,8 +11,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 on 2026-11-21
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5 on 2026-11-21
         with:
           go-version-file: go.mod
       - run: go vet ./...
@@ -22,19 +22,19 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 on 2026-11-21
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5 on 2026-11-21
         with:
           go-version-file: go.mod
-      - uses: golangci/golangci-lint-action@v8
+      - uses: golangci/golangci-lint-action@4afd733a84b1f43292c63897423277bb7f4313a9 # v8 on 2026-11-21
         with:
           version: latest
 
   vuln:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 on 2026-11-21
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5 on 2026-11-21
         with:
           go-version-file: go.mod
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
@@ -43,8 +43,8 @@ jobs:
     # Black-box suite against the built binary (test/acceptance). A failure blocks.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 on 2026-11-21
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5 on 2026-11-21
         with:
           go-version-file: go.mod
       - run: make acceptance
@@ -54,21 +54,25 @@ jobs:
     # matches the source.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 on 2026-11-21
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 on 2026-11-21
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: make ui-check
+      # F14 R-05: no install scripts run (web/.npmrc), production
+      # dependencies have no known vulnerability, and every package's
+      # registry signature checks.
+      - run: make ui-audit
 
   image:
     runs-on: ubuntu-latest
     needs: [test]
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 on 2026-11-21
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3 on 2026-11-21
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6 on 2026-11-21
         with:
           context: .
           push: false

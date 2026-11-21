@@ -1,4 +1,4 @@
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { api, seg } from "../api";
 import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
@@ -9,12 +9,23 @@ import { Copy, Empty, ErrorLine, formValues, useAction, when } from "../ui";
 
 export { claudeCommand } from "../clients";
 
+/** HIDE_TOKEN_MS is how long a token shown once stays on the page. */
+export const HIDE_TOKEN_MS = 10 * 60_000;
+
 export function Tokens({ session }: PageProps) {
   const can = session.can;
   const mine = useData<{ tokens: Token[] }>(can.use_gateway ? "/v1/me/tokens" : null);
   const all = useData<{ tokens: Token[] }>(can.manage_tokens ? "/v1/tokens" : null);
   const [created, setCreated] = useState<Token | null>(null);
   const [busy, run] = useAction();
+  const [apiRole, setAPIRole] = useState("auditor");
+  // F14 R-08: a token shown once does not stay in the page: it goes when the
+  // person hides it, and by itself after a few minutes.
+  useEffect(() => {
+    if (!created?.token) return;
+    const t = setTimeout(() => setCreated(null), HIDE_TOKEN_MS);
+    return () => clearTimeout(t);
+  }, [created]);
 
   const createMine = (e: Event) => {
     const form = e.currentTarget as HTMLFormElement;
@@ -31,10 +42,11 @@ export function Tokens({ session }: PageProps) {
     const form = e.currentTarget as HTMLFormElement;
     const f = formValues(e);
     void run(async () => {
-      setCreated(
-        await api<Token>("POST", "/v1/tokens", { name: (f.name ?? "").trim(), role: f.role, kind: "control", person: (f.person ?? "").trim() }),
-      );
+      const body: Record<string, unknown> = { name: (f.name ?? "").trim(), role: f.role, kind: "control", person: (f.person ?? "").trim() };
+      if (f.confirm === "yes") body.confirm = true;
+      setCreated(await api<Token>("POST", "/v1/tokens", body));
       form.reset();
+      setAPIRole("auditor");
       invalidate("/v1/tokens");
     }, "API token created. Copy it now: it is shown only once.");
   };
@@ -63,6 +75,12 @@ export function Tokens({ session }: PageProps) {
               <ClientSetup mcpURL={session.mcp_url} token={created.token} />
             </>
           )}
+          <div class="actions">
+            <button type="button" onClick={() => setCreated(null)}>
+              I copied it, hide it
+            </button>
+            <small class="meta">It also goes from this page by itself in {HIDE_TOKEN_MS / 60_000} minutes.</small>
+          </div>
         </section>
       )}
       {can.use_gateway && (
@@ -168,7 +186,7 @@ export function Tokens({ session }: PageProps) {
               </label>
               <label>
                 Role
-                <select name="role" defaultValue="auditor">
+                <select name="role" value={apiRole} onChange={(e) => setAPIRole((e.currentTarget as HTMLSelectElement).value)}>
                   {session.token_roles.map((r) => (
                     <option key={r} value={r}>
                       {r}
@@ -176,6 +194,12 @@ export function Tokens({ session }: PageProps) {
                   ))}
                 </select>
               </label>
+              {(apiRole === "owner" || apiRole === "admin") && (
+                <label class="inline">
+                  <input type="checkbox" name="confirm" value="yes" required /> I understand this token can do everything an {apiRole} can, without
+                  signing in, until it expires. I will keep it like a password.
+                </label>
+              )}
               <div class="actions">
                 <button type="submit" disabled={busy}>
                   Create API token

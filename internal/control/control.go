@@ -874,10 +874,11 @@ func IssueToken(ctx context.Context, s *store.Store, org store.OrgID, spec Token
 
 func (a *API) createToken(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	var req struct {
-		Name   string `json:"name"`
-		Role   string `json:"role"`
-		Kind   string `json:"kind"`
-		Person string `json:"person"`
+		Name    string `json:"name"`
+		Role    string `json:"role"`
+		Kind    string `json:"kind"`
+		Person  string `json:"person"`
+		Confirm bool   `json:"confirm"`
 	}
 	if err := decode(r, &req); err != nil {
 		return err
@@ -888,13 +889,25 @@ func (a *API) createToken(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if req.Kind == "" {
 		req.Kind = store.KindGateway
 	}
-	if (req.Role == store.RoleOwner || req.Role == store.RoleAdmin) && !p.Has(store.RoleOwner) {
+	elevated := req.Role == store.RoleOwner || req.Role == store.RoleAdmin
+	if elevated && !p.Has(store.RoleOwner) {
 		return errorf(http.StatusForbidden, "only owners can issue owner or admin tokens")
+	}
+	ev := store.AuditEvent{Actor: p.Name, ActorID: p.ActorID()}
+	// F14 R-07: in the browser, an owner or admin control token is a
+	// deliberate step: it does what the role does, without signing in, until
+	// it expires. The audit marks it as made in the browser.
+	if elevated && req.Kind == store.KindControl && p.Kind == KindSession {
+		if !req.Confirm {
+			return errorf(http.StatusUnprocessableEntity,
+				"an %s control token can do everything an %s can, without signing in, for %s; send confirm: true to create it", req.Role, req.Role, plainDuration(a.TokenTTL))
+		}
+		ev.Client = "web"
 	}
 	// No UserID: a token an administrator issues never belongs to a member,
 	// whatever person it names, so it cannot use anyone's accounts or teams.
 	plain, rec, err := IssueToken(r.Context(), a.Store, p.OrgID, TokenSpec{Name: req.Name, Role: req.Role, Kind: req.Kind, Person: req.Person, TTL: a.TokenTTL,
-		Event: store.AuditEvent{Actor: p.Name, ActorID: p.ActorID()}})
+		Event: ev})
 	if err != nil {
 		return err
 	}
@@ -1428,4 +1441,15 @@ func (a *API) patchApprovalSettings(w http.ResponseWriter, r *http.Request, p au
 	a.adminEvent(r.Context(), p, "approvals.allow_self="+strconv.FormatBool(*req.AllowSelf), "")
 	writeJSON(w, http.StatusOK, map[string]any{"allow_self": *req.AllowSelf})
 	return nil
+}
+
+// plainDuration says a lifetime in whole days, or hours under two days.
+func plainDuration(d time.Duration) string {
+	if h := int(d.Round(time.Hour) / time.Hour); h < 48 {
+		if h == 1 {
+			return "1 hour"
+		}
+		return fmt.Sprintf("%d hours", h)
+	}
+	return fmt.Sprintf("%d days", int(d.Round(24*time.Hour)/(24*time.Hour)))
 }

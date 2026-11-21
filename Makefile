@@ -4,7 +4,7 @@ VERSION := $(shell tr -d '[:space:]' < internal/buildinfo/VERSION)
 LDFLAGS := -s -w
 IMAGE   ?= privo:$(VERSION)
 
-.PHONY: all build test vet lint vuln acceptance image clean ui ui-test ui-check
+.PHONY: all build test vet lint vuln acceptance image clean ui ui-test ui-check ui-audit
 
 all: vet lint test build
 
@@ -44,6 +44,12 @@ ui-check: ui-test
 	cd web && npm run build
 	git diff --exit-code -- web/dist
 	test -z "$$(git status --porcelain -- web/dist)"
+
+# CI (F14 R-05): production dependencies have no known vulnerability and
+# every package's registry signature checks. Install scripts never run
+# (web/.npmrc).
+ui-audit:
+	cd web && npm audit --omit=dev && npm audit signatures
 
 clean:
 	rm -rf bin

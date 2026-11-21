@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -303,7 +304,8 @@ func TestBridgeNeedsSessionHeaderTokenOriginAndJSON(t *testing.T) {
 		{"no session", e.browser(), http.MethodGet, "", nil, http.StatusUnauthorized},
 		{"read without the header", b, http.MethodGet, "", map[string]string{csrfHeader: ""}, http.StatusForbidden},
 		{"wrong header", b, http.MethodPost, `{}`, map[string]string{csrfHeader: "nope"}, http.StatusForbidden},
-		{"token in the form, not the header", b, http.MethodPost, "csrf=" + csrf, map[string]string{csrfHeader: "", "Content-Type": "application/x-www-form-urlencoded"}, http.StatusForbidden},
+		{"token in the form, not the header", b, http.MethodPost, "csrf=" + csrf, map[string]string{csrfHeader: "", "Content-Type": "application/x-www-form-urlencoded"}, http.StatusUnsupportedMediaType},
+		{"token in a JSON body, not the header", b, http.MethodPost, `{"csrf":"` + csrf + `"}`, map[string]string{csrfHeader: ""}, http.StatusForbidden},
 		{"another origin", b, http.MethodPost, `{}`, map[string]string{"Origin": "https://evil.example"}, http.StatusForbidden},
 		{"no origin, cross-site fetch", b, http.MethodDelete, "", map[string]string{"Origin": "", "Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
 		{"a form body", b, http.MethodPost, "a=b", map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, http.StatusUnsupportedMediaType},
@@ -311,6 +313,12 @@ func TestBridgeNeedsSessionHeaderTokenOriginAndJSON(t *testing.T) {
 		{"broken JSON", b, http.MethodPost, `{"a":`, nil, http.StatusBadRequest},
 		{"too large", b, http.MethodPost, big, nil, http.StatusRequestEntityTooLarge},
 		{"PUT", b, http.MethodPut, `{}`, nil, http.StatusMethodNotAllowed},
+		// F14 R-06: a read or a delete carries no body, and a body that is
+		// not JSON is refused even when it is empty.
+		{"a GET with a body", b, http.MethodGet, `{}`, nil, http.StatusBadRequest},
+		{"a DELETE with a body", b, http.MethodDelete, `{}`, nil, http.StatusBadRequest},
+		{"an empty body sent as a form", b, http.MethodPost, "", map[string]string{"Content-Type": "application/x-www-form-urlencoded"}, http.StatusUnsupportedMediaType},
+		{"an empty body sent as text", b, http.MethodPost, "", map[string]string{"Content-Type": "text/plain"}, http.StatusUnsupportedMediaType},
 	}
 	for _, c := range cases {
 		res := c.b.call(c.method, "/admin/api/v1/policies", csrf, c.body, c.hdr)
@@ -337,5 +345,43 @@ func TestSignedOutSessionIsRefusedByTheBridge(t *testing.T) {
 	}
 	if res := b.call(http.MethodGet, "/admin/api/v1/servers", csrf, "", nil); res.StatusCode != http.StatusUnauthorized {
 		t.Errorf("after sign-out: %d", res.StatusCode)
+	}
+}
+
+// F14 R-03: only a request that passed every check keeps a session alive. A
+// refused one, or a page opened from another site, does not slide the idle
+// timeout.
+func TestOnlyAcceptedRequestsKeepTheSessionAlive(t *testing.T) {
+	e := newEnv(t)
+	b, csrf := e.appSignedIn(octo, "octo", store.RoleOwner)
+	e.api().answer(http.MethodGet, "/api/v1/policies", http.StatusOK, `{"policies":[]}`)
+	idle := e.opts.IdleTimeout
+
+	// Refused requests close to the end of the idle window...
+	e.clock.advance(idle - time.Minute)
+	b.call(http.MethodGet, "/admin/api/v1/policies", "wrong", "", nil)
+	b.call(http.MethodPost, "/admin/api/v1/policies", csrf, `{}`, map[string]string{"Origin": "https://evil.example"})
+	b.do(http.MethodGet, "/admin/servers", nil, map[string]string{"Sec-Fetch-Site": "cross-site"})
+	b.do(http.MethodGet, "/admin/servers", nil, map[string]string{"Sec-Fetch-Site": "same-site"})
+	// A browser without Fetch Metadata, following a link from another site.
+	b.do(http.MethodGet, "/admin/servers", nil, map[string]string{"Referer": "https://evil.example/page"})
+	b.do(http.MethodPost, "/admin/signout", url.Values{"csrf": {"stale"}}, map[string]string{"Origin": b.pub})
+	// ...did not keep it: two minutes later it is gone.
+	e.clock.advance(2 * time.Minute)
+	if res := b.call(http.MethodGet, "/admin/api/v1/policies", csrf, "", nil); res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("refused requests kept the session alive: %d %s", res.StatusCode, res.Body)
+	}
+
+	// An accepted request does keep it.
+	e2 := newEnv(t)
+	b2, csrf2 := e2.appSignedIn(octo, "octo", store.RoleOwner)
+	e2.api().answer(http.MethodGet, "/api/v1/policies", http.StatusOK, `{"policies":[]}`)
+	e2.clock.advance(idle - time.Minute)
+	if res := b2.call(http.MethodGet, "/admin/api/v1/policies", csrf2, "", nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("accepted: %d %s", res.StatusCode, res.Body)
+	}
+	e2.clock.advance(2 * time.Minute)
+	if res := b2.call(http.MethodGet, "/admin/api/v1/policies", csrf2, "", nil); res.StatusCode != http.StatusOK {
+		t.Fatalf("an accepted request did not keep the session alive: %d %s", res.StatusCode, res.Body)
 	}
 }

@@ -176,7 +176,7 @@ func apiError(w http.ResponseWriter, status int, msg string) {
 // appAuth checks a request from the app: a session, and for every request the
 // CSRF header; for a change also the origin.
 func (s *Server) appAuth(w http.ResponseWriter, r *http.Request) (store.User, bool) {
-	sess, u, ok := s.session(r)
+	sess, u, ok := s.lookup(r)
 	if !ok {
 		apiError(w, http.StatusUnauthorized, "not signed in")
 		return u, false
@@ -192,6 +192,9 @@ func (s *Server) appAuth(w http.ResponseWriter, r *http.Request) (store.User, bo
 		apiError(w, http.StatusForbidden, "the page is out of date; reload it")
 		return u, false
 	}
+	// Only now, every check passed, does the request keep the session alive
+	// (F14 R-03).
+	s.touch(r)
 	return u, true
 }
 
@@ -274,18 +277,31 @@ func (s *Server) bridge(w http.ResponseWriter, r *http.Request) {
 		apiError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	u, ok := s.appAuth(w, r)
-	if !ok {
-		return
+	// The shape of the request is checked before the session is touched
+	// (F14 R-06): only JSON, and no body on a read or a delete.
+	if ct := r.Header.Get("Content-Type"); ct != "" {
+		if mt, _, _ := mime.ParseMediaType(ct); mt != "application/json" {
+			apiError(w, http.StatusUnsupportedMediaType, "send JSON")
+			return
+		}
 	}
 	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAPIBody))
 	if err != nil {
 		apiError(w, http.StatusRequestEntityTooLarge, "the request is too large")
 		return
 	}
+	hasBody := len(bytes.TrimSpace(raw)) > 0
+	if hasBody && (r.Method == http.MethodGet || r.Method == http.MethodDelete) {
+		apiError(w, http.StatusBadRequest, "a "+r.Method+" takes no body")
+		return
+	}
+	u, ok := s.appAuth(w, r)
+	if !ok {
+		return
+	}
 	var body any
-	if len(bytes.TrimSpace(raw)) > 0 {
-		if mt, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type")); mt != "application/json" {
+	if hasBody {
+		if r.Header.Get("Content-Type") == "" {
 			apiError(w, http.StatusUnsupportedMediaType, "send JSON")
 			return
 		}
