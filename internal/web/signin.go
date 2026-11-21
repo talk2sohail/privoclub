@@ -149,6 +149,10 @@ func (s *Server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 	// with a valid invite or setup link.
 	if len(s.o.GitHub.OrgIDs) > 0 {
 		orgs, err := s.o.GitHub.Orgs(r.Context(), token)
+		if errors.Is(err, githubauth.ErrOrgsHidden) {
+			s.notInOrg(w, r, prof) // not shown is not a member, and it is audited
+			return
+		}
 		if err != nil {
 			s.githubFailed(w, "read the organisations", err)
 			return

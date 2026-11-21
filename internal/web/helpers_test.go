@@ -95,6 +95,8 @@ type fakeGitHub struct {
 	// each user's organisation ids, for /user/orgs (F05 A).
 	wantScope string
 	orgs      map[int64][]int64
+	// orgsStatus, when set, is the status /user/orgs answers with.
+	orgsStatus int
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -185,6 +187,10 @@ func (f *fakeGitHub) userOrgs(w http.ResponseWriter, r *http.Request) {
 	u, ok := f.tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
 	if !ok {
 		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+		return
+	}
+	if f.orgsStatus != 0 {
+		http.Error(w, `{"message":"Forbidden"}`, f.orgsStatus)
 		return
 	}
 	if r.URL.Query().Get("page") != "1" {

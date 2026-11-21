@@ -286,8 +286,8 @@ Tasks and tests:
 - [x] web: the check in the sign-in callback for setup, invite and sign-in, audited `signin.refused:not_in_org` under the strangers' bound (`TestSignInRefusedOutsideTheOrgs`, `TestNoReadOrgScopeWhenUnset`)
 - [x] Acceptance: `TestSignInLimitedToAGitHubOrg`; README; walkthrough section 24 (0.19.0)
 - [x] Security review 2026-11-21 (with F07 A): nothing at Medium or above; no bypass (every sign-in passes the callback check), fails closed
-- [ ] Review Low: a 401/403 from `/user/orgs` (read:org not granted) shows "could not reach GitHub" and is not audited; treat it as a refusal (`notInOrg`)
-- [ ] Review Low: membership is checked only at sign-in; sessions, OAuth client grants and tokens of someone who left the organisation last until they expire or are revoked. Document in the README, or recheck on refresh
+- [x] Review Low: a 401/403 from `/user/orgs` (read:org not granted) shows "could not reach GitHub" and is not audited; treat it as a refusal (`notInOrg`) **Fixed:** `githubauth.ErrOrgsHidden`, refused and audited as outside the organisations (`TestHiddenOrgsAreARefusal`)
+- [x] Review Low: membership is checked only at sign-in; sessions, OAuth client grants and tokens of someone who left the organisation last until they expire or are revoked. Document in the README, or recheck on refresh **Documented** in the README setting: remove the person on People, which ends everything at once. Rechecking during a session stays a later step
 
 **B. Step-up re-authentication.** Goal: actions that hand out power ask
 for a fresh sign-in, not just a session. Those actions are: an owner or

@@ -42,3 +42,27 @@ func TestNoReadOrgScopeWhenUnset(t *testing.T) {
 	e.gh.wantScope = "" // the fake fails on any scope
 	e.appSignedIn(octo, "octo", store.RoleOwner)
 }
+
+// When GitHub will not show the organisations (read:org not granted, or the
+// token refused), the person is refused as outside them, and it is audited;
+// it is not "could not reach GitHub" (review of F05 A, Low).
+func TestHiddenOrgsAreARefusal(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		e := newEnv(t, func(o *Options) { o.GitHub.OrgIDs = []int64{42} })
+		e.gh.wantScope = "read:org"
+		e.gh.orgsStatus = status
+		e.member(octo, "octo", store.RoleOwner)
+		res := e.signIn(e.browser(), octo)
+		if res.StatusCode != http.StatusForbidden || !strings.Contains(res.Body, "organisation") {
+			t.Fatalf("orgs answered %d: sign-in %d %s", status, res.StatusCode, res.Body)
+		}
+		evs, _ := e.st.RecentAdminEvents(t.Context(), e.org, 50)
+		found := false
+		for _, ev := range evs {
+			found = found || ev.Action == "signin.refused:not_in_org"
+		}
+		if !found {
+			t.Fatalf("orgs answered %d: the refusal is not audited", status)
+		}
+	}
+}

@@ -193,6 +193,11 @@ func (c *Client) User(ctx context.Context, accessToken string) (Profile, error) 
 	return p, nil
 }
 
+// ErrOrgsHidden means GitHub would not show the person's organisations: the
+// token lacks read:org (the person declined it) or was refused. It is not a
+// failure to reach GitHub, and the person is refused as outside them.
+var ErrOrgsHidden = errors.New("githubauth: GitHub did not show the organisations")
+
 // maxOrgPages bounds how many pages of 100 organisations are read.
 const maxOrgPages = 10
 
@@ -215,6 +220,9 @@ func (c *Client) Orgs(ctx context.Context, accessToken string) ([]int64, error) 
 		body, status, err := c.do(req)
 		if err != nil {
 			return nil, fmt.Errorf("githubauth: organisations: %w", err)
+		}
+		if status == http.StatusUnauthorized || status == http.StatusForbidden {
+			return nil, ErrOrgsHidden
 		}
 		if status != http.StatusOK {
 			return nil, fmt.Errorf("githubauth: organisations: GitHub answered with status %d", status)
