@@ -25,6 +25,7 @@ const (
 	purposeSignIn = "signin"
 	purposeSetup  = "setup"  // claiming a setup link (ADR 0016)
 	purposeInvite = "invite" // claiming an invite (ADR 0017)
+	purposeLink   = "link"   // a signed-in member links another sign-in (ADR 0034)
 )
 
 // maxSealedCookie bounds what is decoded from the cookie. A sealed sign-in is
@@ -45,6 +46,15 @@ type Keys interface {
 // signIn is what the callback needs to finish a sign-in that start began.
 type signIn struct {
 	Purpose string `json:"p"`
+	// Provider is kindGitHub or kindOIDC: a callback opens only its own.
+	// Empty is GitHub, for cookies sealed before ADR 0034.
+	Provider string `json:"pv,omitempty"`
+	// Nonce is the OIDC nonce the ID token must carry.
+	Nonce string `json:"n,omitempty"`
+	// User and Session are the member and session a link was started in;
+	// the callback must arrive in the same session.
+	User    string `json:"u,omitempty"`
+	Session string `json:"s,omitempty"`
 	// Link is the id of the setup link or invite being claimed, by purpose.
 	Link     string `json:"l,omitempty"`
 	Verifier string `json:"v"` // PKCE code verifier
@@ -121,14 +131,24 @@ func (s *Server) sealSignIn(ctx context.Context, state string, in signIn) (strin
 // openSignIn reads a sign-in cookie for the state a callback brought. It is
 // false for anything that is not a cookie this Privo made for exactly that
 // state and that has not expired; it never says which.
-func (s *Server) openSignIn(ctx context.Context, state, cookie string) (signIn, bool) {
+func (s *Server) openSignIn(ctx context.Context, state, cookie, kind string) (signIn, bool) {
 	var in signIn
 	if !validSecret(state) || !s.open(ctx, "signin", state, cookie, maxSealedCookie, &in) {
 		return signIn{}, false
 	}
 	switch in.Purpose {
 	case purposeSignIn, purposeSetup, purposeInvite:
+	case purposeLink:
+		if in.User == "" || in.Session == "" {
+			return signIn{}, false
+		}
 	default:
+		return signIn{}, false
+	}
+	if in.Provider == "" {
+		in.Provider = kindGitHub
+	}
+	if in.Provider != kind || (kind == kindOIDC && in.Nonce == "") {
 		return signIn{}, false
 	}
 	if in.Verifier == "" || s.now().Unix() >= in.Expires {

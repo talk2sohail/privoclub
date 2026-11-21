@@ -419,3 +419,26 @@ proxy that checks a header will do.
    and the reason are not there. **Approvals** has no request for it, even
    under an ask rule.
 4. A correct call still works, and still asks when a rule says so.
+
+## 26. Sign in with OpenID Connect (needs 0.21.0+)
+
+Use a Google Workspace or Microsoft Entra test tenant (see
+`docs/deploy-coolify.md`, "Sign in with Google, Microsoft or another
+provider").
+
+1. Set the `PRIVO_OIDC_*` variables and redeploy. The sign-in page shows
+   "Continue with GitHub" and "Continue with <your provider>".
+2. Signed in with GitHub, click your name at the top: **Your account** lists
+   GitHub. **Remove** is greyed out (your only way in).
+3. **Link <your provider>**: you go to the provider, sign in, and come back
+   to "Linked". The page now lists both; Activity shows `identity.link:oidc`.
+4. Sign out, sign in with the provider: you are the same person.
+5. Invite someone and open the invite in a private window: both buttons are
+   there; join with the provider.
+6. Sign in with a provider account that is not a member, using the same
+   email as a member: "cannot sign in". Nothing was linked by email.
+7. With `PRIVO_OIDC_ALLOWED_DOMAINS` set (Google): a personal Gmail account
+   is refused ("cannot sign in here"), audited `signin.refused:not_allowed`.
+8. Optional: remove the `PRIVO_GITHUB_*` variables and redeploy. Only your
+   provider is offered; Health warns about members who only had GitHub.
+

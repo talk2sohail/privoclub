@@ -83,6 +83,15 @@
 #github_api_url: https://api.github.com
 # Only members of these GitHub organisations sign in (numeric ids):
 #github_org_ids: 12345678,87654321
+# OpenID Connect sign-in beside GitHub (ADR 0034): Google, Microsoft or any
+# provider. Microsoft's issuer names one tenant. The secret is a file mount.
+#oidc_issuer: https://accounts.google.com
+#oidc_client_id: 1234-abc.apps.googleusercontent.com
+#oidc_client_secret_file: /run/secrets/privo_oidc_client_secret
+#oidc_name: Google
+# Only these domains sign in (Google: the Workspace domain; other providers:
+# a verified email's domain; not with Microsoft, where the tenant limits):
+#oidc_allowed_domains: example.com
 # How long a browser session lasts: idle, and in total.
 #session_idle_timeout: 2h
 #session_max_age: 12h

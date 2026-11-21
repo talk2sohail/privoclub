@@ -314,7 +314,7 @@ func (a *API) telemetryCalls(w http.ResponseWriter, r *http.Request, p auth.Prin
 
 var (
 	diagLevels     = []string{store.LevelInfo, store.LevelWarn, store.LevelError}
-	diagCategories = []string{store.CategoryUpstream, store.CategoryGrant, store.CategoryGateway, store.CategoryAudit, store.CategoryLifecycle}
+	diagCategories = []string{store.CategoryUpstream, store.CategoryGrant, store.CategoryGateway, store.CategoryAudit, store.CategoryLifecycle, store.CategorySignIn}
 )
 
 func (a *API) telemetryLogs(w http.ResponseWriter, r *http.Request, p auth.Principal) error {

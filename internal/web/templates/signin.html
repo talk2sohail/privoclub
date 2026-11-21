@@ -1,10 +1,10 @@
 {{define "content"}}
 <section class="card narrow">
   <h1>Sign in to Privo</h1>
-  <p>Privo uses your GitHub account to know who you are. Only people who were added as members of this Privo can sign in.</p>
-  <form method="post" action="/auth/github/start">
-{{if .ReturnTo}}    <input type="hidden" name="return_to" value="{{.ReturnTo}}">
-{{end}}    <button type="submit" class="primary">Continue with GitHub</button>
+  <p>Privo uses the account you sign in with to know who you are. Only people who were added as members of this Privo can sign in.</p>
+{{range .Providers}}  <form method="post" action="{{.Action}}">
+{{if $.ReturnTo}}    <input type="hidden" name="return_to" value="{{$.ReturnTo}}">
+{{end}}    <button type="submit" class="primary">{{.Label}}</button>
   </form>
-</section>
+{{end}}</section>
 {{end}}

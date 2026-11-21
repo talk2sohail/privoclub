@@ -1424,9 +1424,47 @@ Acceptance:
    `nonce`. `email_verified` is required when domains are restricted.
 
 Tasks and tests:
-- [ ] ADR 0034; `internal/oidcauth` (`TestIDTokenChecks`, `TestNonceBound`, `TestWrongAudienceRefused`)
-- [ ] web: provider choice, linking (`TestLinkOnlyWhileSignedIn`, `TestNoEmailMatching`)
-- [ ] Acceptance with a fake OIDC provider
+- [x] ADR 0034 (accepted by the owner 2026-11-22)
+- [x] `internal/config`: `PRIVO_OIDC_*`, Microsoft single tenant, domains (`TestOIDCSettings`)
+- [x] `internal/oidcauth` with go-oidc v3.21.0 (`TestSignInWorks`, `TestIDTokenChecks`, `TestNonceBound`, `TestWrongAudienceRefused`,
+  `TestDiscoveryIssuerMustMatch`, `TestRejectedCodeSaysNothing`, `TestGoogleNeedsHostedDomain`, `TestGenericDomainNeedsVerifiedEmail`,
+  `TestMicrosoftEmailNeverTrusted`, `TestLargeAnswersAreRefused`, `TestOnlyAsymmetricAlgorithms`); a fake provider in
+  `internal/oidcauth/oidcfake`. Mutation check: each of Privo's own checks (nonce, azp, iat, at_hash, hd, verified
+  email, the size cap) broken one at a time makes a test fail
+- [x] Store: `LinkIdentity`, `UnlinkIdentity` (never the last), `Identities`, `MembersWithoutProviders`
+  (`TestIdentitiesLinkListUnlink`, `TestMembersWithoutProviders`); claims take any provider
+- [x] web: provider choice on sign-in, setup and invite pages; linking bound to the session
+  (`TestOIDCSetupAndSignIn`, `TestNoEmailMatching`, `TestLinkOnlyWhileSignedIn`, `TestUnlinkNeverTheLast`,
+  `TestOIDCOnlyInstance`, `TestCallbackOpensOnlyItsProvider`, `TestOIDCDomainRefusalIsAudited`)
+- [x] App: **Your account** (the name in the header): sign-ins, link, remove (Vitest "your account")
+- [x] Acceptance `TestSignInWithOpenIDConnect` (an invite joined with OIDC, a link while signed in, a token for
+  another client refused, GitHub switched off afterwards with the warning on Health, the secret nowhere)
+- [x] Docs: README, `docs/deploy-coolify.md`, `docs/manual-test.md` section 26, version 0.21.0
+- [x] Independent security review 2026-11-22 (sign-in): 0 Critical, 0 High, 1 Medium, 4 Low, 4 Info. Fixed:
+  - M-1: the domain limit read `strings.ToLower` of the email, which maps `İnc.com` onto `inc.com`, a different
+    registrable domain: a domain with anything but ASCII never matches now (`TestNonASCIIDomainsNeverMatch`)
+  - L-1: discovery held the provider's lock during the network call, and every page took it for the CSP; a
+    visitor who gave up failed it for 30 s. One discovery runs in the background with its own time limit, the
+    sign-in origin is read without a lock (`TestSlowDiscoveryBlocksNobody`)
+  - L-2: the key set URL must be https too (`TestPlainHTTPKeySetIsRefused`)
+  - L-3: sign-ins, links and unlinks name the provider (the issuer) and subject in the audit item
+  - L-4: unlinking counts only providers set up now (`TestIdentitiesLinkListUnlink`), and ends the member's other
+    sessions, which may have come through the identity removed
+  - I-1: Microsoft's other hosts (login.microsoft.com, login.windows.net, sts.windows.net, B2C, CIAM) get the
+    Microsoft rules, and the personal-accounts tenant is refused like `consumers` (`TestOIDCSettings`)
+  - I-3: the sign-in, setup and invite pages set their CSP again after discovery
+  Left, as accepted in the ADR: a stolen session can link the thief's own account (step-up, ADR 0030, will ask
+  for a fresh sign-in); I-2 below; I-4: a refused stranger's email is the actor of `signin.denied`, bounded by
+  the stranger limiter (F05 R-02)
+
+As built (ADR 0034):
+- The key set is fetched again by go-oidc on an unknown key id, not limited
+  by Privo to once a minute as point 4 says. ID tokens reach Privo only from
+  the token endpoint over TLS, never from the browser, so nobody but the
+  provider can make it fetch.
+- A sign-in records its identity as `kind:subject` in the audit event's item
+  (`signin`, `oidc:<sub>`); a provider that cannot be reached is a warning on
+  Health under the new category "Signing in to Privo".
 
 **B. SAML 2.0 and group mapping.**
 - SAML sign-in, with signed assertions required, the audience checked,

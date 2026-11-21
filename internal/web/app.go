@@ -40,7 +40,7 @@ const (
 // loads a page; these are for a first visit, a reload or a link.
 var appPages = []string{
 	"/admin/start", "/admin/servers", "/admin/servers/{alias}", "/admin/rules", "/admin/people", "/admin/teams",
-	"/admin/tokens", "/admin/clients", "/admin/activity", "/admin/approvals", "/admin/connections",
+	"/admin/tokens", "/admin/clients", "/admin/activity", "/admin/approvals", "/admin/connections", "/admin/account",
 }
 
 var assetNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
@@ -111,6 +111,8 @@ func (s *Server) appRoutes(mux *http.ServeMux) {
 		mux.Handle("GET "+p, s.appWrap(s.appPage))
 	}
 	mux.Handle("GET /admin/api/session", s.appWrap(s.sessionInfo))
+	mux.Handle("GET /admin/api/me/identities", s.appWrap(s.identitiesAPI))
+	mux.Handle("POST /admin/api/me/identities/unlink", s.appWrap(s.unlinkAPI))
 	mux.Handle("/admin/api/v1/{path...}", s.appWrap(s.bridge))
 	if s.connections() {
 		mux.Handle("GET /admin/api/me/connections", s.appWrap(s.myConnections))
@@ -121,7 +123,7 @@ func (s *Server) appRoutes(mux *http.ServeMux) {
 // appWrap is wrap with the app's CSP.
 func (s *Server) appWrap(h http.HandlerFunc) http.Handler {
 	return s.wrap(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Security-Policy", appCSP)
+		w.Header().Set("Content-Security-Policy", s.appPolicy())
 		h(w, r)
 	})
 }
@@ -165,6 +167,22 @@ func (s *Server) appPage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(s.app.index)
+}
+
+// appPolicy is appCSP with the sign-in providers in form-action: the account
+// page's "Link" buttons post to /auth/*/start, which goes on to the
+// provider (ADR 0034 point 7).
+func (s *Server) appPolicy() string {
+	site := s.policy()
+	i := strings.Index(site, "form-action ")
+	if i < 0 {
+		return appCSP
+	}
+	fa := site[i:]
+	if j := strings.Index(fa, ";"); j >= 0 {
+		fa = fa[:j]
+	}
+	return strings.Replace(appCSP, "form-action 'self'", fa, 1)
 }
 
 func apiError(w http.ResponseWriter, status int, msg string) {

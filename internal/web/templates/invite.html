@@ -2,10 +2,10 @@
 <section class="card narrow">
   <h1>Join Privo</h1>
   <p>You are invited as <strong>{{.Person}}</strong> with the role <strong>{{.Role}}</strong>. The invite works once and expires at {{.Expires}}.</p>
-  <p>Sign in with the GitHub account you will use for work. It becomes your account here.</p>
-  <form method="post" action="/auth/github/start">
-    <input type="hidden" name="invite_token" value="{{.InviteToken}}">
-    <button type="submit" class="primary">Continue with GitHub</button>
+  <p>Sign in with the account you will use for work. It becomes your account here.</p>
+{{range .Providers}}  <form method="post" action="{{.Action}}">
+    <input type="hidden" name="invite_token" value="{{$.InviteToken}}">
+    <button type="submit" class="primary">{{.Label}}</button>
   </form>
-</section>
+{{end}}</section>
 {{end}}

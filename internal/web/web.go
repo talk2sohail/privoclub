@@ -27,6 +27,7 @@ import (
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/githubauth"
 	"privo.club/privo/internal/ids"
+	"privo.club/privo/internal/oidcauth"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/upstreamauth"
 )
@@ -55,6 +56,9 @@ type Store interface {
 	SetupLink(ctx context.Context, org store.OrgID, secretHash string, now time.Time) (store.SetupLink, error)
 	ClaimSetup(ctx context.Context, org store.OrgID, c store.Claim, ev store.AuditEvent) (store.User, error)
 	UserByIdentity(ctx context.Context, org store.OrgID, provider, subject string) (store.User, error)
+	Identities(ctx context.Context, org store.OrgID, userID string) ([]store.Identity, error)
+	LinkIdentity(ctx context.Context, org store.OrgID, userID string, id store.Identity, ev store.AuditEvent) error
+	UnlinkIdentity(ctx context.Context, org store.OrgID, userID, provider, subject string, usable []string, keepSession string, ev store.AuditEvent) error
 	CreateSession(ctx context.Context, org store.OrgID, s store.Session, ev store.AuditEvent) error
 	SessionByHash(ctx context.Context, org store.OrgID, hash string, now time.Time, idle time.Duration) (store.Session, store.User, error)
 	TouchSession(ctx context.Context, org store.OrgID, hash string, now time.Time) error
@@ -89,13 +93,20 @@ type API interface {
 
 // Options configure a Server.
 type Options struct {
-	Store     Store
-	Org       store.OrgID
-	Audit     Auditor
-	Logger    *slog.Logger
-	Now       func() time.Time
+	Store  Store
+	Org    store.OrgID
+	Audit  Auditor
+	Logger *slog.Logger
+	Now    func() time.Time
+	// GitHub and OIDC are the sign-in providers (ADR 0016, ADR 0034); at
+	// least one is needed. OIDCName is the OIDC provider's label.
 	GitHub    *githubauth.Client
+	OIDC      *oidcauth.Client
+	OIDCName  string
 	PublicURL *url.URL
+	// Diagnose, when set, puts a warning on Health (a sign-in provider that
+	// cannot be reached).
+	Diagnose func(ctx context.Context, message string)
 	// IdleTimeout and MaxAge bound a session (defaults 2h and 12h).
 	IdleTimeout, MaxAge time.Duration
 	// Keys seals the cookie of a sign-in in flight (ADR 0016 amendment 1).
@@ -131,7 +142,8 @@ type Server struct {
 	origin          string // the public origin, as browsers send it in Origin
 	secure          bool
 	csp             string
-	callback        string
+	callback        string // GitHub's
+	oidcCallbackURL string
 	connectCallback string
 	missing         []string
 	// One cookie per flow, so two flows in one browser cannot end each other
@@ -171,12 +183,19 @@ func New(o Options) *Server {
 		s.origin = originOf(u)
 		s.secure = u.Scheme == "https"
 		s.callback = s.origin + "/auth/github/callback"
+		s.oidcCallbackURL = s.origin + "/auth/oidc/callback"
 		s.connectCallback = upstreamauth.CallbackURL(&url.URL{Scheme: u.Scheme, Host: u.Host})
 	}
+	// Chrome applies form-action to the redirect that follows a form post,
+	// so the sign-in form may only go on to the providers themselves. The
+	// OIDC provider's sign-in address is known after discovery; wrap adds it.
 	if o.GitHub != nil && o.GitHub.BaseURL != nil {
-		// Chrome applies form-action to the redirect that follows a form post,
-		// so the sign-in form may only go on to GitHub itself.
 		s.csp = strings.Replace(s.csp, "form-action 'self'", "form-action 'self' "+originOf(o.GitHub.BaseURL), 1)
+	}
+	if o.OIDC != nil {
+		if iu, err := url.Parse(o.OIDC.Issuer); err == nil && iu.Host != "" {
+			s.csp = strings.Replace(s.csp, "form-action 'self'", "form-action 'self' "+originOf(iu), 1)
+		}
 	}
 	s.sessionCookie, s.signInCookie, s.connectCookie = "privo_session", "privo_signin", "privo_oauth"
 	if s.secure {
@@ -192,11 +211,24 @@ func New(o Options) *Server {
 		}
 		s.app = a
 	}
-	s.enabled = len(s.missing) == 0 && o.Store != nil && o.Audit != nil && o.GitHub != nil && o.PublicURL != nil && o.API != nil && s.app != nil && o.Keys != nil
+	s.enabled = len(s.missing) == 0 && o.Store != nil && o.Audit != nil && (o.GitHub != nil || o.OIDC != nil) && o.PublicURL != nil && o.API != nil && s.app != nil && o.Keys != nil
 	if !s.enabled && len(s.missing) == 0 {
 		s.missing = []string{"the admin site is not wired up"}
 	}
 	return s
+}
+
+// policy is the CSP of the site's pages: s.csp, and once discovery has run,
+// the OIDC provider's sign-in address in form-action when it is not on the
+// issuer's origin.
+func (s *Server) policy() string {
+	if s.o.OIDC == nil {
+		return s.csp
+	}
+	if extra := s.o.OIDC.AuthOrigin(); extra != "" && !strings.Contains(s.csp, " "+extra+";") && !strings.Contains(s.csp, " "+extra+" ") {
+		return strings.Replace(s.csp, "form-action 'self'", "form-action 'self' "+extra, 1)
+	}
+	return s.csp
 }
 
 // originOf is scheme://host as a browser writes it in an Origin header: a
@@ -238,8 +270,14 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /admin/{$}", s.wrap(s.home))
 	mux.Handle("GET /admin/signin", s.wrap(s.signInPage))
 	mux.Handle("GET /admin/setup/{token}", s.wrap(s.setupPage))
-	mux.Handle("POST /auth/github/start", s.wrap(s.start))
-	mux.Handle("GET /auth/github/callback", s.wrap(s.callbackHandler))
+	if s.o.GitHub != nil {
+		mux.Handle("POST /auth/github/start", s.wrap(s.startGitHub))
+		mux.Handle("GET /auth/github/callback", s.wrap(s.callbackHandler))
+	}
+	if s.o.OIDC != nil {
+		mux.Handle("POST /auth/oidc/start", s.wrap(s.startOIDC))
+		mux.Handle("GET /auth/oidc/callback", s.wrap(s.oidcCallback))
+	}
 	mux.Handle("POST /admin/signout", s.wrap(s.signOut))
 	mux.Handle("GET /admin/invite/{token}", s.wrap(s.invitePage))
 	s.appRoutes(mux)
@@ -293,7 +331,7 @@ const referrerPolicy = "same-origin"
 func (s *Server) wrap(h http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hd := w.Header()
-		hd.Set("Content-Security-Policy", s.csp)
+		hd.Set("Content-Security-Policy", s.policy())
 		hd.Set("Cache-Control", "no-store")
 		hd.Set("Referrer-Policy", referrerPolicy)
 		hd.Set("X-Content-Type-Options", "nosniff")
@@ -326,6 +364,9 @@ type pageData struct {
 
 	// consent page (oauth.go)
 	ClientName, ClientHost, RedirectHost, Sealed string
+
+	// sign-in, setup and invite pages: one button per provider
+	Providers []button
 
 	// sign-in, invite and connect pages
 	ReturnTo         string
@@ -405,7 +446,7 @@ func (s *Server) signInPage(w http.ResponseWriter, r *http.Request) {
 		redirect(w, next)
 		return
 	}
-	s.render(w, http.StatusOK, "signin", pageData{Title: "Sign in", ReturnTo: next})
+	s.render(w, http.StatusOK, "signin", pageData{Title: "Sign in", ReturnTo: next, Providers: s.withButtons(w, r)})
 }
 
 // ---- cookies, sessions and request checks

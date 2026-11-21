@@ -3,6 +3,7 @@
 import type { ComponentChildren } from "preact";
 import { useEffect } from "preact/hooks";
 import type { Can, Session } from "./api";
+import { Account } from "./pages/account";
 import { Activity } from "./pages/activity";
 import { Approvals } from "./pages/approvals";
 import { Connections } from "./pages/connections";
@@ -49,6 +50,7 @@ const routes: Route[] = [
   { pattern: "/admin/activity", allowed: (c) => c.activity, render: (p) => <Activity {...p} /> },
   { pattern: "/admin/approvals", allowed: (c) => c.decide, render: (p) => <Approvals {...p} /> },
   { pattern: "/admin/connections", allowed: (c) => c.connections, render: (p) => <Connections {...p} /> },
+  { pattern: "/admin/account", allowed: () => true, render: (p) => <Account {...p} /> },
 ];
 
 function currentPage(session: Session, loc: string): ComponentChildren {
@@ -117,10 +119,10 @@ export function App({ session }: { session: Session }) {
             ))}
         </nav>
         <form class="who" method="post" action="/admin/signout">
-          <span>
+          <Link href="/admin/account" class="who-link" title="Your account and how you sign in">
             {u.name}
             {u.name !== u.person && <small> {u.person}</small>} <small>{roleText(u.roles)}</small>
-          </span>
+          </Link>
           <input type="hidden" name="csrf" value={session.csrf} />
           <button type="submit" class="link">
             Sign out

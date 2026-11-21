@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"privo.club/privo/internal/auth"
-	"privo.club/privo/internal/githubauth"
 	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/store"
@@ -85,10 +84,10 @@ func (s *Server) invitePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.render(w, http.StatusOK, "invite", pageData{Title: "Join Privo", InviteToken: token, Person: in.Person, Role: strings.Join(in.Roles, ", "),
-		Expires: in.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC")})
+		Expires: in.ExpiresAt.UTC().Format("2006-01-02 15:04 UTC"), Providers: s.withButtons(w, r)})
 }
 
-func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, in signIn, p githubauth.Profile) {
+func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, in signIn, id identity) {
 	secret, sess, err := s.newSession("")
 	if err != nil {
 		s.log.Error("web: start session", "err", err)
@@ -98,15 +97,15 @@ func (s *Server) finishInvite(w http.ResponseWriter, r *http.Request, in signIn,
 	userID := ids.New()
 	sess.UserID = userID
 	u, err := s.o.Store.ClaimInvite(r.Context(), s.o.Org, store.Claim{
-		LinkID: in.Link, UserID: userID, Subject: p.Subject(), Login: p.Login,
-		DisplayName: displayName(p), Session: sess, Now: s.now(),
-	}, s.event("invite.claim", strings.ToLower(p.Login), "github:"+p.Subject(), "allow", "ok"))
+		LinkID: in.Link, UserID: userID, Provider: id.Provider, Subject: id.Subject, Login: id.Login,
+		DisplayName: id.display(), Session: sess, Now: s.now(),
+	}, s.event("invite.claim", id.person, id.ref(), "allow", "ok"))
 	switch {
 	case errors.Is(err, store.ErrSetupUnavailable):
 		s.notFoundInvite(w)
 		return
 	case errors.Is(err, store.ErrIdentityExists):
-		s.messageLink(w, http.StatusConflict, "This GitHub account is already a member", "/admin/signin", "Sign in instead",
+		s.messageLink(w, http.StatusConflict, "This "+s.label(id.Kind)+" account is already a member", "/admin/signin", "Sign in instead",
 			"The invite has not been used up.")
 		return
 	case errors.Is(err, store.ErrConflict):
