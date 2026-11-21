@@ -371,3 +371,15 @@ proxy that checks a header will do.
 5. **A server turned off** asks its provider for nothing; turned on again,
    people's connections still work without reconnecting.
 
+## 22. Grants revoked at the provider (needs 0.18.1+ and the second account)
+
+1. As the second account, connect a server that signs people in with their
+   own account (GitHub, Linear, Notion…), then check the provider's list of
+   authorized apps (GitHub: Settings → Applications → Authorized OAuth Apps):
+   Privo is there.
+2. As the owner, **People → Remove** the second account. Within a minute the
+   provider's list no longer shows Privo for them (where the provider offers
+   revocation; GitHub does for OAuth Apps).
+3. Restore them, connect again, then delete the server (or change its OAuth
+   client id under **Edit**): the same happens.
+

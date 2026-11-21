@@ -211,7 +211,17 @@ func (s *Service) Save(ctx context.Context, org store.OrgID, srv store.Server, u
 	if err != nil {
 		return store.Grant{}, err
 	}
-	return s.Store.SaveGrant(ctx, org, store.Grant{ServerID: srv.ID, UserID: user.ID, Scopes: tok.Scope, ConnectedAt: s.now(), Credential: c}, catalogOK, ev)
+	// The grant this one replaces is not revoked at the provider: it was
+	// issued to the same client for the same person, and providers that
+	// revoke the whole authorization (Google), or hand back the same refresh
+	// token, would end the new grant with it (security review of F07 R-04).
+	// A new client id ends connections through an edit, which revokes them
+	// under the old client.
+	g, err := s.Store.SaveGrant(ctx, org, store.Grant{ServerID: srv.ID, UserID: user.ID, Scopes: tok.Scope, ConnectedAt: s.now(), Credential: c}, catalogOK, ev)
+	if err == nil {
+		s.forgetUnsaved(string(org) + "\x00" + srv.ID + "\x00" + user.ID)
+	}
+	return g, err
 }
 
 // SaveKey stores a person's own API key for a server (ADR 0023), sealed to
@@ -500,6 +510,88 @@ func (s *Service) forgetUnsaved(key string) {
 	s.mu.Unlock()
 }
 
+// Revocation is a grant's token, read before the grant is deleted, to revoke
+// at the provider once it is (F07 R-04). It holds a token in memory only
+// until it is sent.
+type Revocation struct {
+	alias    string
+	endpoint upstreamauth.Endpoint
+	token    string
+	hint     string
+}
+
+// Revocations reads what to revoke for grants about to be deleted: the
+// refresh token, else the access token, of each OAuth grant whose server
+// offers revocation. A person's own API key cannot be revoked by Privo and
+// is skipped, as is any grant that cannot be read.
+func (s *Service) Revocations(ctx context.Context, org store.OrgID, srv store.Server, gs []store.Grant) []Revocation {
+	if s.Auth == nil || len(gs) == 0 {
+		return nil
+	}
+	if cur, err := s.current(ctx, org, srv); err == nil {
+		srv = cur
+	}
+	if srv.Config.Auth != store.AuthOAuth {
+		return nil
+	}
+	e, err := s.Endpoint(ctx, org, srv)
+	if err != nil || e.RevocationEndpoint == "" {
+		return nil
+	}
+	var out []Revocation
+	for _, g := range gs {
+		if len(g.Credential.Ciphertext) == 0 {
+			// A listed grant comes without its credential: read it.
+			full, err := s.Store.Grant(ctx, org, srv.ID, g.UserID)
+			if err != nil {
+				continue
+			}
+			g = full
+		}
+		if g.Credential.Purpose != store.PurposeOAuthGrant {
+			continue
+		}
+		tok, err := s.token(ctx, org, g)
+		if err != nil {
+			continue
+		}
+		r := Revocation{alias: srv.Alias, endpoint: e, token: tok.RefreshToken, hint: "refresh_token"}
+		if r.token == "" {
+			r.token, r.hint = tok.AccessToken, "access_token"
+		}
+		if r.token != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// Revoke sends revocations to their providers, all at once and within 10
+// seconds, so tokens are held no longer than that; best effort: a failure
+// is logged with fixed text and never undoes the deletion.
+func (s *Service) Revoke(ctx context.Context, rs []Revocation) {
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, r := range rs {
+		wg.Go(func() {
+			if err := s.Auth.Revoke(rctx, r.endpoint, r.token, r.hint); err != nil {
+				s.logger().Warn("revoking an upstream grant at the provider failed", "server", r.alias)
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// RevokeLater revokes in the background, so the request that deleted the
+// grants does not wait on providers.
+func (s *Service) RevokeLater(ctx context.Context, rs []Revocation) {
+	if len(rs) == 0 {
+		return
+	}
+	go s.Revoke(context.WithoutCancel(ctx), rs)
+}
+
 // Disconnect revokes the person's grant at the authorization server when it
 // offers revocation (best effort) and deletes it with the audit record ev.
 func (s *Service) Disconnect(ctx context.Context, org store.OrgID, srv store.Server, userID string, ev store.AuditEvent) error {
@@ -508,22 +600,7 @@ func (s *Service) Disconnect(ctx context.Context, org store.OrgID, srv store.Ser
 	if err != nil {
 		return err
 	}
-	if cur, err := s.current(ctx, org, srv); err == nil {
-		srv = cur
-	}
-	if tok, err := s.token(ctx, org, g); err == nil {
-		if e, err := s.Endpoint(ctx, org, srv); err == nil {
-			t, hint := tok.RefreshToken, "refresh_token"
-			if t == "" {
-				t, hint = tok.AccessToken, "access_token"
-			}
-			rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-			if err := s.Auth.Revoke(rctx, e, t, hint); err != nil {
-				s.logger().Warn("revoking an upstream grant failed; deleting it anyway", "server", srv.Alias, "err", err)
-			}
-			cancel()
-		}
-	}
+	s.Revoke(ctx, s.Revocations(ctx, org, srv, []store.Grant{g}))
 	return s.Store.DeleteGrant(ctx, org, srv.ID, userID, ev)
 }
 

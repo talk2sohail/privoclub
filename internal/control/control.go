@@ -671,9 +671,13 @@ func (a *API) deleteServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err != nil {
 		return err
 	}
+	// Everyone's grants go with the server; they are revoked at the provider
+	// too, read now and sent once the server is gone (F07 R-04).
+	revoke := a.serverRevocations(r.Context(), p.OrgID, s)
 	if err := a.Store.DeleteServer(r.Context(), p.OrgID, s.ID); err != nil {
 		return err
 	}
+	a.revokeLater(r.Context(), revoke)
 	a.adminEvent(r.Context(), p, "server.delete", s.Alias)
 	if err := a.Upstream.Sync(r.Context(), p.OrgID); err != nil {
 		return err
@@ -1477,4 +1481,44 @@ func plainDuration(d time.Duration) string {
 		return fmt.Sprintf("%d hours", h)
 	}
 	return fmt.Sprintf("%d days", int(d.Round(24*time.Hour)/(24*time.Hour)))
+}
+
+// serverRevocations reads, before a server's grants are deleted, what to
+// revoke at its provider (F07 R-04). Nothing without the grants service.
+func (a *API) serverRevocations(ctx context.Context, org store.OrgID, s store.Server) []grants.Revocation {
+	if a.Grants == nil || !s.Config.PerPerson() {
+		return nil
+	}
+	gs, err := a.Store.ListServerGrants(ctx, org, s.ID)
+	if err != nil {
+		return nil
+	}
+	return a.Grants.Revocations(ctx, org, s, gs)
+}
+
+// userRevocations reads, before a member's grants are deleted, what to
+// revoke at each provider (F07 R-04).
+func (a *API) userRevocations(ctx context.Context, org store.OrgID, userID string) []grants.Revocation {
+	if a.Grants == nil {
+		return nil
+	}
+	gs, err := a.Store.ListGrants(ctx, org, userID)
+	if err != nil {
+		return nil
+	}
+	var out []grants.Revocation
+	for _, g := range gs {
+		s, err := a.Store.ServerByID(ctx, org, g.ServerID)
+		if err != nil {
+			continue
+		}
+		out = append(out, a.Grants.Revocations(ctx, org, s, []store.Grant{g})...)
+	}
+	return out
+}
+
+func (a *API) revokeLater(ctx context.Context, rs []grants.Revocation) {
+	if a.Grants != nil {
+		a.Grants.RevokeLater(ctx, rs)
+	}
 }
