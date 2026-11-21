@@ -39,4 +39,4 @@ Target protocol: MCP 2026-07-28, with 2025-11-25 compatibility.
 | [0027](0027-rule-conditions-grants-and-yaml.md) | Rules look at arguments; grants only replace an ask; rules as YAML | Accepted 2026-11-21; built in 0.15.0 (numbered 0024 on its first branch) |
 | [0028](0028-audit-signing-key-and-checkpoints.md) | The audit signing key comes from the master key; checkpoints anyone can check | Accepted 2026-11-21; built in 0.16.0 (numbered 0025 on its first branch) |
 | [0029](0029-editing-a-server.md) | Editing a server: a new address ends connections, drops static secrets and sends tools back to review | Accepted 2026-11-21; built in 0.17.0 |
-| [0034](0034-sign-in-with-openid-connect.md) | Sign-in with OpenID Connect: identities by issuer and subject, linking only while signed in, never by email | Proposed 2026-11-22 |
+| [0034](0034-sign-in-with-openid-connect.md) | Sign-in with OpenID Connect: identities by issuer and subject, linking only while signed in, never by email | Accepted 2026-11-22 |

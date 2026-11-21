@@ -1,6 +1,6 @@
 # 0034. Sign-in with OpenID Connect (Google, Microsoft, any provider)
 
-- Status: Proposed, 2026-11-22
+- Status: Accepted, 2026-11-22 by the owner (proposed the same day)
 - Date: 2026-11-22
 - Amends: 0016 (GitHub becomes one sign-in provider among others), 0011
   identity sequence points 1 and 2 (generic OIDC before Google and Microsoft
