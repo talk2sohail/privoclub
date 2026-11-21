@@ -56,6 +56,7 @@ curl localhost:8080/livez
 | `PRIVO_GITHUB_CLIENT_ID` | unset | Client ID of the GitHub OAuth App that signs people in to the admin site (ADR 0016). Web sign-in is on only when this, the client secret and `PRIVO_PUBLIC_URL` are all set; otherwise `/admin` and `/auth` answer 503 |
 | `PRIVO_GITHUB_CLIENT_SECRET_FILE` / `PRIVO_GITHUB_CLIENT_SECRET` | unset | The OAuth App's client secret. Prefer the file form (a Coolify file mount); the plain variable is never accepted in the config file |
 | `PRIVO_GITHUB_BASE_URL` / `PRIVO_GITHUB_API_URL` | `https://github.com` / `https://api.github.com` | Where people sign in and where the profile is read; set both for GitHub Enterprise Server (https unless loopback; a private address needs `PRIVO_EGRESS_ALLOW_CIDRS`) |
+| `PRIVO_GITHUB_ORG_IDS` | unset | Numeric ids of the GitHub organisations whose members may sign in, comma-separated (0.19.0); `https://api.github.com/orgs/<name>` shows an organisation's `id`. Set, sign-in asks GitHub for `read:org` and refuses anyone in none of them, invite or not. An organisation that restricts OAuth App access must allow Privo's app, or its members are refused. Membership is checked at each sign-in only: when someone leaves the organisation, remove them on **People**, which ends their sessions, tokens and connections at once |
 | `PRIVO_SESSION_IDLE_TIMEOUT` | `2h` | A browser session ends after this long without a request (1m to 24h) |
 | `PRIVO_SESSION_MAX_AGE` | `12h` | A browser session ends this long after sign-in whatever happens (5m to 720h) |
 | `PRIVO_OAUTH_SERVER` | `off` | `on` lets AI clients sign in to the gateway with OAuth instead of a pasted token (ADR 0022): Privo becomes the authorization server for `/mcp`. Needs web sign-in. Off, `/oauth` answers 503 and personal tokens are the only way in |
@@ -190,6 +191,10 @@ on the admin site, or follows the link their AI client shows on the first call.
 A person disconnects there; an admin lists and removes connections with
 `GET /api/v1/servers/<alias>/connections` and
 `DELETE /api/v1/servers/<alias>/connections/<person>`.
+Admins see everyone's connections across servers on **Connections →
+Everyone's connections** (`GET /api/v1/connections?person=&server=`, 0.19.0),
+with those unused for 90 days marked; **End** revokes at the provider and
+deletes.
 
 **A server that does not say where its people sign in** (no protected
 resource metadata, common before the MCP authorization spec): give its

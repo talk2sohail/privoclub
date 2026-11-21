@@ -81,6 +81,8 @@
 # GitHub Enterprise Server only (a private address also needs egress_allow_cidrs).
 #github_base_url: https://github.com
 #github_api_url: https://api.github.com
+# Only members of these GitHub organisations sign in (numeric ids):
+#github_org_ids: 12345678,87654321
 # How long a browser session lasts: idle, and in total.
 #session_idle_timeout: 2h
 #session_max_age: 12h

@@ -260,7 +260,7 @@ verifier are stored in the clear for the life of a session and ten minutes.
 
 - [ ] Orgs and groups (invites came with F07, bound by the numeric GitHub id; the People page with role changes and removal came with F14; teams with F26)
 - [ ] Google and Microsoft OIDC; magic-link fallback
-- [ ] Restrict sign-in by GitHub organisation membership (`read:org`)
+- [x] Restrict sign-in by GitHub organisation membership (`read:org`) (F05 A, 0.19.0)
 - [ ] Step-up re-authentication for high-risk actions
 - [x] Sessions accepted by the admin API for the UI (F14): through `/admin/api/v1`, never on `/api/v1` (ADR 0019)
 - [x] Approvals page: page through more than 50 pending approvals; show decided ones (done with F10's second slice: `ListApprovalsPage`, pending and history with a cursor)
@@ -272,21 +272,22 @@ only its own GitHub organisation's people, even with an invite link that
 leaked.
 
 Acceptance:
-1. `PRIVO_GITHUB_ORGS=acme,acme-labs` (unset: anyone with an invite, as
-   today). Sign-in asks for `read:org` only when it is set.
+1. `PRIVO_GITHUB_ORG_IDS=12345678,87654321` (unset: anyone with an invite,
+   as today). Sign-in asks for `read:org` only when it is set.
 2. Signing in (setup, invite, every later sign-in) is refused, audited as
    `signin.refused:not_in_org`, when the person is in none of them. The
    check uses the numeric org ids, which survive renames.
-3. A person who leaves the organisation cannot sign in again. Their
-   sessions end when the next sign-in check fails, or within the idle
-   timeout.
+3. A person who leaves the organisation cannot sign in again; a session
+   already open lasts until its idle timeout or maximum age (12 hours by
+   default). Checking membership during a session is a later step.
 
 Tasks and tests:
-- [ ] Config `PRIVO_GITHUB_ORGS` (ADR 0015 registry); githubauth `Orgs` call
-  (`TestOrgsUsesTheNumericID`)
-- [ ] web: the check in the sign-in callback
-  (`TestSignInRefusedOutsideTheOrgs`, `TestNoReadOrgScopeWhenUnset`)
-- [ ] Acceptance: `TestSignInLimitedToAGitHubOrg`; docs; walkthrough
+- [x] Config `PRIVO_GITHUB_ORG_IDS` (numeric ids; names can be re-registered) in the registry, README and example (`TestGitHubOrgIDs`); githubauth `Orgs`, paged, malformed answers fail (`TestOrgsUsesTheNumericID`, `TestAuthorizeAsksReadOrgOnlyWhenNeeded`)
+- [x] web: the check in the sign-in callback for setup, invite and sign-in, audited `signin.refused:not_in_org` under the strangers' bound (`TestSignInRefusedOutsideTheOrgs`, `TestNoReadOrgScopeWhenUnset`)
+- [x] Acceptance: `TestSignInLimitedToAGitHubOrg`; README; walkthrough section 24 (0.19.0)
+- [x] Security review 2026-11-21 (with F07 A): nothing at Medium or above; no bypass (every sign-in passes the callback check), fails closed
+- [x] Review Low: a 401/403 from `/user/orgs` (read:org not granted) shows "could not reach GitHub" and is not audited; treat it as a refusal (`notInOrg`) **Fixed:** `githubauth.ErrOrgsHidden`, refused and audited as outside the organisations (`TestHiddenOrgsAreARefusal`)
+- [x] Review Low: membership is checked only at sign-in; sessions, OAuth client grants and tokens of someone who left the organisation last until they expire or are revoked. Document in the README, or recheck on refresh **Documented** in the README setting: remove the person on People, which ends everything at once. Rechecking during a session stays a later step
 
 **B. Step-up re-authentication.** Goal: actions that hand out power ask
 for a fresh sign-in, not just a session. Those actions are: an owner or
@@ -546,7 +547,7 @@ until URL elicitation lands.
 - [ ] URL-mode elicitation (2025-11-25) and input-required (2026-07-28) for the connect link
 - [ ] Shared org-wide credentials, only by explicit admin choice and with a policy limiting the tools
 - [ ] Scope step-up on `insufficient_scope`
-- [ ] Admin page of everyone's connections (a server's page lists its connected people since F14; a page across servers is still to do)
+- [x] Admin page of everyone's connections (F07 A, 0.19.0)
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ### Next slices (spec 2026-11-21)
@@ -567,9 +568,9 @@ Acceptance:
    unchanged.
 
 Tasks and tests:
-- [ ] Store: `ListAllGrants` (paged, org-scoped) (`TestListAllGrantsIsOrgScopedAndPaged`)
-- [ ] API (`TestConnectionsAcrossServers`, `TestEndingAConnectionRevokes`)
-- [ ] App page; Vitest; walkthrough
+- [x] Store: `ListAllGrants` (paged, org-scoped) (`TestListAllGrantsIsOrgScopedAndPaged`)
+- [x] API: `GET /api/v1/connections` (`TestConnectionsAcrossServers`); ending one is the existing `DELETE /api/v1/servers/{alias}/connections/{person}`, which revokes at the provider (`TestDisconnectRevokesAndDeletes`)
+- [x] App: **Connections → Everyone's connections** for admins (filters, unused marked, End with a second click); Vitest; walkthrough section 23 (0.19.0)
 
 **B. Scope step-up on `insufficient_scope`.** Goal: a call refused for a
 missing scope tells the person what to grant and lets them do it, instead

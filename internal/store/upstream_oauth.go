@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -190,6 +191,7 @@ type Grant struct {
 	LastUsedAt  time.Time
 	RefreshedAt time.Time
 	Credential  Credential
+	Kind        string // in ListAllGrants: PurposeOAuthGrant or PurposeKeyGrant
 }
 
 // SaveGrant stores a person's grant for a server, replacing an earlier one and
@@ -519,4 +521,75 @@ func grantServers(ctx context.Context, tx *sql.Tx, org OrgID, userID string, cat
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// GrantQuery filters ListAllGrants. Empty fields do not filter.
+type GrantQuery struct {
+	Person string // exactly
+	Server string // the alias, exactly
+	After  string // cursor: the next of the previous page
+	Limit  int    // 1 to 500, default 100
+}
+
+// ErrBadGrantQuery is returned for a cursor this store did not make.
+var ErrBadGrantQuery = errors.New("store: bad grant query")
+
+// ListAllGrants lists the org's grants across servers (F07 A), by server
+// alias then person, with each one's kind and never its credential, and the
+// cursor of the next page ("" on the last).
+func (s *Store) ListAllGrants(ctx context.Context, org OrgID, q GrantQuery) ([]Grant, string, error) {
+	if q.Limit <= 0 || q.Limit > 500 {
+		q.Limit = 100
+	}
+	where := `g.org_id = ?`
+	args := []any{org}
+	if q.Person != "" {
+		where += ` AND u.person = ?`
+		args = append(args, q.Person)
+	}
+	if q.Server != "" {
+		where += ` AND srv.alias = ?`
+		args = append(args, q.Server)
+	}
+	if q.After != "" {
+		alias, person, ok := strings.Cut(q.After, "\x00")
+		if !ok || alias == "" || person == "" {
+			return nil, "", ErrBadGrantQuery
+		}
+		where += ` AND (srv.alias > ? OR (srv.alias = ? AND u.person > ?))`
+		args = append(args, alias, alias, person)
+	}
+	args = append(args, q.Limit+1)
+	rows, err := s.r.QueryContext(ctx, `
+		SELECT g.server_id, srv.alias, g.user_id, u.person, g.scopes, g.catalog, g.connected_at, g.last_used_at, g.refreshed_at, c.purpose
+		FROM upstream_grants g
+		JOIN servers srv ON srv.org_id = g.org_id AND srv.id = g.server_id
+		JOIN users u ON u.org_id = g.org_id AND u.id = g.user_id
+		JOIN credentials c ON c.org_id = g.org_id AND c.id = g.credential_id
+		WHERE `+where+`
+		ORDER BY srv.alias, u.person LIMIT ?`, args...)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []Grant
+	for rows.Next() {
+		var g Grant
+		var connected, used, refreshed string
+		if err := rows.Scan(&g.ServerID, &g.Alias, &g.UserID, &g.Person, &g.Scopes, &g.Catalog, &connected, &used, &refreshed, &g.Kind); err != nil {
+			return nil, "", err
+		}
+		g.ConnectedAt, g.LastUsedAt, g.RefreshedAt = parseTS(connected), parseTS(used), parseTS(refreshed)
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, "", err
+	}
+	next := ""
+	if len(out) > q.Limit {
+		out = out[:q.Limit]
+		last := out[len(out)-1]
+		next = last.Alias + "\x00" + last.Person
+	}
+	return out, next, nil
 }

@@ -258,3 +258,16 @@ export type LogEntry = {
 
 /** A person's own request that waits for a decision (F10). */
 export type MyApproval = { id: string; server: string; tool: string; requester: string; reason: string; created_at: string; expires_at: string };
+
+// A person's connection to a server, as an admin sees it (F07 A). Never a token.
+export type AnyConnection = {
+  server: string;
+  person: string;
+  kind: "oauth" | "key";
+  scopes: string;
+  catalog: boolean;
+  connected_at: string;
+  last_used_at: string;
+  refreshed_at: string;
+  unused: boolean;
+};

@@ -145,6 +145,23 @@ func (s *Server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 		s.githubFailed(w, "read the profile", err)
 		return
 	}
+	// F05 A: only members of the configured organisations sign in, also
+	// with a valid invite or setup link.
+	if len(s.o.GitHub.OrgIDs) > 0 {
+		orgs, err := s.o.GitHub.Orgs(r.Context(), token)
+		if errors.Is(err, githubauth.ErrOrgsHidden) {
+			s.notInOrg(w, r, prof) // not shown is not a member, and it is audited
+			return
+		}
+		if err != nil {
+			s.githubFailed(w, "read the organisations", err)
+			return
+		}
+		if !s.o.GitHub.InOrgs(orgs) {
+			s.notInOrg(w, r, prof)
+			return
+		}
+	}
 
 	switch in.Purpose {
 	case purposeSetup:
@@ -174,6 +191,22 @@ func displayName(p githubauth.Profile) string {
 		return p.Name
 	}
 	return p.Login
+}
+
+// notInOrg answers a GitHub account outside the organisations sign-in is
+// limited to (F05 A). It is audited like a refused stranger, with the same
+// bound on how many rows a stranger can make Privo write.
+func (s *Server) notInOrg(w http.ResponseWriter, r *http.Request, p githubauth.Profile) {
+	record, skipped := s.denials.record(p.Subject(), false, s.now())
+	s.deniedSummary(r.Context(), skipped)
+	if record {
+		ev := s.event("signin.refused:not_in_org", p.Login, "github:"+p.Subject(), "deny", "denied")
+		if err := s.o.Audit.Admin(r.Context(), s.o.Org, ev); err != nil {
+			s.log.Error("web: audit", "action", "signin.refused:not_in_org", "err", err)
+		}
+	}
+	s.message(w, http.StatusForbidden, "This GitHub account cannot sign in",
+		"This Privo accepts only members of its GitHub organisation. If you are one, check that the organisation lets you share your membership with Privo's GitHub app.")
 }
 
 // denied is the single answer for an account that is not a member: a stranger

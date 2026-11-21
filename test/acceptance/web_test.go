@@ -48,6 +48,10 @@ type acceptanceGitHub struct {
 	grants  map[string]fakeGrant
 	tokens  map[string]fakeGitHubUser
 	secrets []string // codes and access tokens it handed out
+	// orgs are each user's organisation ids (F05 A); scopes the scope each
+	// authorization asked for, in order.
+	orgs   map[int][]int64
+	scopes []string
 }
 
 type fakeGrant struct {
@@ -66,6 +70,7 @@ func newAcceptanceGitHub(t *testing.T) *acceptanceGitHub {
 			return
 		}
 		f.mu.Lock()
+		f.scopes = append(f.scopes, q.Get("scope"))
 		code := "code-" + randomHex(10)
 		f.grants[code] = fakeGrant{challenge: q.Get("code_challenge"), redirect: q.Get("redirect_uri"), user: f.as}
 		f.secrets = append(f.secrets, code)
@@ -104,6 +109,22 @@ func newAcceptanceGitHub(t *testing.T) *acceptanceGitHub {
 			return
 		}
 		_, _ = fmt.Fprintf(w, `{"login":%q,"id":%d,"name":%q}`, u.Login, u.ID, u.Name)
+	})
+	mux.HandleFunc("GET /api/user/orgs", func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		u, ok := f.tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+		if !ok {
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+			return
+		}
+		var parts []string
+		if r.URL.Query().Get("page") == "1" {
+			for _, id := range f.orgs[u.ID] {
+				parts = append(parts, fmt.Sprintf(`{"login":"org%d","id":%d}`, id, id))
+			}
+		}
+		_, _ = w.Write([]byte("[" + strings.Join(parts, ",") + "]"))
 	})
 	f.srv = httptest.NewServer(mux)
 	t.Cleanup(f.srv.Close)

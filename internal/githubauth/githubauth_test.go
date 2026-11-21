@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -291,5 +292,49 @@ func TestTransportErrorsDoNotPrintURLs(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "127.0.0.1:1/login") {
 		t.Errorf("the error prints the URL: %v", err)
+	}
+}
+
+// F05 A: read:org is asked for only when organisations are checked.
+func TestAuthorizeAsksReadOrgOnlyWhenNeeded(t *testing.T) {
+	c := newClient(t, http.NotFoundHandler())
+	if u := c.AuthorizeURL("https://p.example/cb", "s", "c"); strings.Contains(u, "scope=") {
+		t.Fatalf("a scope without organisations: %s", u)
+	}
+	c.OrgIDs = []int64{42}
+	if u := c.AuthorizeURL("https://p.example/cb", "s", "c"); !strings.Contains(u, "scope=read%3Aorg") {
+		t.Fatalf("no read:org with organisations: %s", u)
+	}
+}
+
+// The organisations are read by numeric id, page by page; logins are ignored
+// (an organisation's old name can be registered by someone else).
+func TestOrgsUsesTheNumericID(t *testing.T) {
+	c := newClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/user/orgs" || r.Header.Get("Authorization") != "Bearer tok" {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Query().Get("page") {
+		case "1":
+			var b strings.Builder
+			b.WriteString("[")
+			for i := range 100 {
+				if i > 0 {
+					b.WriteString(",")
+				}
+				fmt.Fprintf(&b, `{"login":"acme","id":%d}`, 1000+i)
+			}
+			b.WriteString("]")
+			_, _ = w.Write([]byte(b.String()))
+		case "2":
+			_, _ = w.Write([]byte(`[{"login":"acme","id":42}]`))
+		default:
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	ids, err := c.Orgs(t.Context(), "tok")
+	if err != nil || len(ids) != 101 || !slices.Contains(ids, 42) {
+		t.Fatalf("orgs: %d %v", len(ids), err)
 	}
 }

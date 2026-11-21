@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -42,6 +44,10 @@ type Web struct {
 	// (PRIVO_GITHUB_API_URL). Both follow the public URL rule: https, except
 	// loopback. GitHub Enterprise Server sets both.
 	BaseURL, APIURL *url.URL
+	// OrgIDs, when set, limit sign-in to members of these GitHub
+	// organisations, by numeric id (PRIVO_GITHUB_ORG_IDS, F05 A): an
+	// organisation's old name can be registered by someone else.
+	OrgIDs []int64
 	// IdleTimeout and MaxAge bound a browser session (PRIVO_SESSION_IDLE_TIMEOUT,
 	// PRIVO_SESSION_MAX_AGE).
 	IdleTimeout, MaxAge time.Duration
@@ -174,6 +180,22 @@ func LoadWeb(getenv func(string) string) (Web, error) {
 		w.OAuthClients = v
 	default:
 		errs = append(errs, fmt.Errorf("PRIVO_OAUTH_CLIENTS %q: must be %s, %s or %s", v, OAuthClientsKnown, OAuthClientsApproved, OAuthClientsAny))
+	}
+
+	if raw := strings.TrimSpace(getenv("PRIVO_GITHUB_ORG_IDS")); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			id, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64)
+			if err != nil || id <= 0 {
+				errs = append(errs, errors.New("PRIVO_GITHUB_ORG_IDS: must be numeric organisation ids, separated by commas (https://api.github.com/orgs/<name> shows an organisation's \"id\")"))
+				break
+			}
+			if !slices.Contains(w.OrgIDs, id) {
+				w.OrgIDs = append(w.OrgIDs, id)
+			}
+		}
+		if len(w.OrgIDs) > 20 {
+			errs = append(errs, errors.New("PRIVO_GITHUB_ORG_IDS: at most 20 organisations"))
+		}
 	}
 
 	if len(errs) > 0 {

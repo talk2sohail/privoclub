@@ -99,6 +99,7 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("GET /api/v1/servers/{alias}/pins", wrap(auth.PermManageServers, a.listPins))
 	mux.Handle("GET /api/v1/servers/{alias}/connections", wrap(auth.PermManageServers, a.listConnections))
 	mux.Handle("DELETE /api/v1/servers/{alias}/connections/{person}", wrap(auth.PermManageServers, a.deleteConnection))
+	mux.Handle("GET /api/v1/connections", wrap(auth.PermManageServers, a.listAllConnections))
 	mux.Handle("POST /api/v1/invites", wrap(auth.PermManageTokens, a.createInvite))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", wrap(auth.PermManageServers, a.acceptPins))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:block", wrap(auth.PermManageServers, a.blockPins))
@@ -1521,4 +1522,35 @@ func (a *API) revokeLater(ctx context.Context, rs []grants.Revocation) {
 	if a.Grants != nil {
 		a.Grants.RevokeLater(ctx, rs)
 	}
+}
+
+// unusedAfter is how long a connection may go unused before the list marks it.
+const unusedAfter = 90 * 24 * time.Hour
+
+// listAllConnections lists everyone's connections across servers (F07 A):
+// who connected what, of which kind, when, and whether it went unused. It
+// never holds a token. Filters: person, server; a cursor: after.
+func (a *API) listAllConnections(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	gs, next, err := a.Store.ListAllGrants(r.Context(), p.OrgID, store.GrantQuery{Person: q.Get("person"), Server: q.Get("server"), After: q.Get("after"), Limit: limit})
+	if errors.Is(err, store.ErrBadGrantQuery) {
+		return errorf(http.StatusBadRequest, "after must be the next value of a previous page")
+	}
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	out := make([]map[string]any, 0, len(gs))
+	for _, g := range gs {
+		kind := "oauth"
+		if g.Kind == store.PurposeKeyGrant {
+			kind = "key"
+		}
+		out = append(out, map[string]any{"server": g.Alias, "person": g.Person, "kind": kind, "scopes": g.Scopes, "catalog": g.Catalog,
+			"connected_at": g.ConnectedAt, "last_used_at": g.LastUsedAt, "refreshed_at": g.RefreshedAt,
+			"unused": now.Sub(g.LastUsedAt) > unusedAfter})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"connections": out, "next": next})
+	return nil
 }
