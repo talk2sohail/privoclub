@@ -1,6 +1,6 @@
 # 0029. Editing a server: what an edit keeps and what it ends
 
-- Status: Proposed, 2026-11-21
+- Status: Accepted, 2026-11-21 by the owner (proposed 2026-11-21); built in 0.17.0
 - Date: 2026-11-21
 - Related: 0008 (egress), 0017 (each person's own grant), 0023 (each person's
   own key, OAuth settings entered by hand), F11 (accepted definitions)

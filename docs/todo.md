@@ -501,7 +501,7 @@ until URL elicitation lands.
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
 ## F08. Toolsets
-Status: In progress (first slice built and reviewed 2026-11-20, ported onto main as 0.14.0 on 2026-11-21; ADR 0026 proposed; the owner's walkthrough, `docs/manual-test.md` section 16, open)
+Status: In progress (first slice built and reviewed 2026-11-20, ported onto main as 0.14.0 on 2026-11-21; ADR 0026 accepted 2026-11-21; the owner's walkthrough, `docs/manual-test.md` section 16, open)
 ADRs: 0020, 0026
 
 Goal: an admin gives a team some of a server's tools rather than all of
@@ -550,7 +550,7 @@ Tasks and the tests that name them:
 - [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
 
 ## F09. Policies
-Status: In progress (core done, reviewed; second slice built 2026-11-20, ported onto main as 0.15.0 on 2026-11-21, ADR 0027 proposed)
+Status: In progress (core done, reviewed; second slice built 2026-11-20, ported onto main as 0.15.0 on 2026-11-21, ADR 0027 accepted 2026-11-21)
 ADRs: 0001, 0011, 0014, 0027
 
 - [x] Allow, deny, ask rules by server alias, tool pattern, subject (`*`, `role:`, `token:`); priority, ties deny > ask > allow; expiring rules (`internal/policy`)
@@ -710,7 +710,7 @@ text, with characters a person cannot see made visible (⟦U+200B⟧).
 - [ ] From that review: `previous` and "Available to AI clients" should follow the definition the gateway serves now, not the newest accepted one by time; route token events through `audit.Writer`; refuse refreshing a disabled server's grant
 
 ## F12. Audit log
-Status: In progress (second slice built 2026-11-21, ported onto main as 0.16.0; ADR 0028 proposed)
+Status: In progress (second slice built 2026-11-21, ported onto main as 0.16.0; ADR 0028 accepted 2026-11-21)
 ADRs: 0001, 0002, 0006, 0028
 
 - [x] Synchronous intent record; batched completion; bounded queue that refuses rather than drops
