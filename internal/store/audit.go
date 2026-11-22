@@ -100,7 +100,7 @@ func (s *Store) RecentAdminEvents(ctx context.Context, org OrgID, limit int) ([]
 		limit = 50
 	}
 	rows, err := s.r.QueryContext(ctx, `
-		SELECT id, call_id, ts, actor, actor_id, user_id, client, server, action, decision, outcome
+		SELECT id, call_id, ts, actor, actor_id, user_id, client, server, item, action, decision, outcome
 		FROM audit_events
 		WHERE org_id = ? AND phase = 'admin'
 		ORDER BY ts DESC, id DESC LIMIT ?`, org, limit)
@@ -112,7 +112,7 @@ func (s *Store) RecentAdminEvents(ctx context.Context, org OrgID, limit int) ([]
 	for rows.Next() {
 		e := AuditEvent{Phase: "admin"}
 		var at string
-		if err := rows.Scan(&e.ID, &e.CallID, &at, &e.Actor, &e.ActorID, &e.UserID, &e.Client, &e.Server, &e.Action, &e.Decision, &e.Outcome); err != nil {
+		if err := rows.Scan(&e.ID, &e.CallID, &at, &e.Actor, &e.ActorID, &e.UserID, &e.Client, &e.Server, &e.Item, &e.Action, &e.Decision, &e.Outcome); err != nil {
 			return nil, err
 		}
 		e.Time = parseTS(at)

@@ -53,6 +53,7 @@ const (
 	CategoryGateway   = "gateway"
 	CategoryAudit     = "audit"
 	CategoryLifecycle = "lifecycle"
+	CategorySignIn    = "signin" // people signing in to Privo (ADR 0034)
 )
 
 // Diagnostic is one operational event.

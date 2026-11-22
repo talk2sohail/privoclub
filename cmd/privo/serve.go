@@ -28,6 +28,7 @@ import (
 	"privo.club/privo/internal/health"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/oauthserver"
+	"privo.club/privo/internal/oidcauth"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/server"
 	"privo.club/privo/internal/store"
@@ -249,7 +250,7 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 		logger.Warn("PRIVO_OAUTH_SERVER is on but web sign-in is not set up; the authorization server stays off")
 	}
 
-	site := adminSite(webCfg, cfg, policy, st, org.ID, aw, logger, siteConnections{grants: grantSvc, oauth: oauthClient, upstream: mgr, api: api, keys: kr, authServer: authServer})
+	site := adminSite(ctx, webCfg, cfg, policy, st, org.ID, aw, logger, siteConnections{grants: grantSvc, oauth: oauthClient, upstream: mgr, api: api, keys: kr, authServer: authServer, rec: rec})
 	siteCtx, stopSite := context.WithCancel(ctx)
 	siteDone := make(chan struct{})
 	go func() { site.Run(siteCtx, 10*time.Minute); close(siteDone) }()
@@ -392,6 +393,8 @@ type siteConnections struct {
 	keys     *keyring.Keyring // seals the cookie of a sign-in in flight (ADR 0016 amendment 1)
 	// authServer is Privo's own authorization server; nil while it is off.
 	authServer *oauthserver.Server
+	// rec puts sign-in warnings on Health.
+	rec *telemetry.Recorder
 }
 
 // pruneEvery runs a clean-up now and then until ctx ends. Correctness never
@@ -413,7 +416,7 @@ func pruneEvery(ctx context.Context, every time.Duration, logger *slog.Logger, w
 
 // adminSite builds the admin website (ADR 0016). With anything missing it is
 // still returned, off: it answers 503 and says which settings to add.
-func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *store.Store, org store.OrgID, aw *audit.Writer, logger *slog.Logger, conn siteConnections) *web.Server {
+func adminSite(ctx context.Context, webCfg config.Web, cfg config.Config, policy egress.Policy, st *store.Store, org store.OrgID, aw *audit.Writer, logger *slog.Logger, conn siteConnections) *web.Server {
 	opts := web.Options{Store: st, Org: org, Audit: aw, Logger: logger, PublicURL: cfg.PublicURL, App: webapp.Dist(),
 		IdleTimeout: webCfg.IdleTimeout, MaxAge: webCfg.MaxAge, Missing: webCfg.Missing(cfg.PublicURL)}
 	if conn.grants != nil && conn.oauth != nil && conn.upstream != nil {
@@ -428,15 +431,48 @@ func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *s
 	if conn.authServer != nil {
 		opts.AuthServer = conn.authServer
 	}
+	var providers []string // the sign-ins that work, as identities name them
 	if len(opts.Missing) == 0 {
-		opts.GitHub = &githubauth.Client{ClientID: webCfg.ClientID, ClientSecret: webCfg.ClientSecret.Reveal(), BaseURL: webCfg.BaseURL, APIURL: webCfg.APIURL, OrgIDs: webCfg.OrgIDs,
-			HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1})}
+		if webCfg.GitHubOn() {
+			opts.GitHub = &githubauth.Client{ClientID: webCfg.ClientID, ClientSecret: webCfg.ClientSecret.Reveal(), BaseURL: webCfg.BaseURL, APIURL: webCfg.APIURL, OrgIDs: webCfg.OrgIDs,
+				HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1})}
+			providers = append(providers, store.ProviderGitHub)
+		}
+		if o := webCfg.OIDC; o != nil {
+			opts.OIDC = &oidcauth.Client{Issuer: o.Issuer, ClientID: o.ClientID, ClientSecret: o.ClientSecret.Reveal(), Kind: o.Kind,
+				AllowedDomains: o.AllowedDomains, HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1})}
+			opts.OIDCName = o.Name
+			providers = append(providers, o.Issuer)
+		}
+		if conn.rec != nil {
+			opts.Diagnose = func(_ context.Context, msg string) {
+				conn.rec.Diagnose(org, store.Diagnostic{Level: store.LevelWarn, Category: store.CategorySignIn, Message: msg})
+			}
+		}
 	}
 	site := web.New(opts)
 	if len(opts.Missing) > 0 {
-		logger.Info("admin site is off: sign-in with GitHub is not set up", "missing", opts.Missing)
-	} else {
-		logger.Info("admin site is on", "sign_in", webCfg.BaseURL.Host, "session_idle", webCfg.IdleTimeout.String(), "session_max_age", webCfg.MaxAge.String())
+		logger.Info("admin site is off: sign-in is not set up", "missing", opts.Missing)
+		return site
+	}
+	var names []string
+	if opts.GitHub != nil {
+		names = append(names, webCfg.BaseURL.Host)
+	}
+	if opts.OIDC != nil {
+		names = append(names, opts.OIDC.Issuer)
+	}
+	logger.Info("admin site is on", "sign_in", names, "session_idle", webCfg.IdleTimeout.String(), "session_max_age", webCfg.MaxAge.String())
+	// ADR 0034 point 9: members whose every sign-in is with a provider that
+	// is no longer set up cannot sign in. Say so, once, at startup.
+	if n, err := st.MembersWithoutProviders(ctx, org, providers); err != nil {
+		logger.Error("counting members without a usable sign-in", "err", err)
+	} else if n > 0 {
+		msg := fmt.Sprintf("%d active members cannot sign in: none of their sign-ins is with a provider that is set up now", n)
+		logger.Warn(msg)
+		if conn.rec != nil {
+			conn.rec.Diagnose(org, store.Diagnostic{Level: store.LevelWarn, Category: store.CategorySignIn, Message: msg})
+		}
 	}
 	return site
 }

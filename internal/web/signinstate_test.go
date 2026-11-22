@@ -304,17 +304,17 @@ func TestSignInCookieCarriesPurposeLinkAndReturn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	in, ok := e.srv.openSignIn(context.Background(), strings.Repeat("C", 43), sealed)
+	in, ok := e.srv.openSignIn(context.Background(), strings.Repeat("C", 43), sealed, kindGitHub)
 	if !ok || returnToRe.MatchString(in.ReturnTo) {
 		t.Fatalf("openSignIn = %+v, %v", in, ok)
 	}
 	// A purpose Privo does not know is not a sign-in.
 	sealed, _ = e.srv.sealSignIn(context.Background(), strings.Repeat("C", 43), signIn{Purpose: "connect", Verifier: "v", Expires: e.clock.now().Add(time.Minute).Unix()})
-	if _, ok := e.srv.openSignIn(context.Background(), strings.Repeat("C", 43), sealed); ok {
+	if _, ok := e.srv.openSignIn(context.Background(), strings.Repeat("C", 43), sealed, kindGitHub); ok {
 		t.Error("an unknown purpose was accepted")
 	}
 	sealed, _ = e.srv.sealSignIn(context.Background(), strings.Repeat("C", 43), signIn{Purpose: purposeSignIn, Expires: e.clock.now().Add(time.Minute).Unix()})
-	if _, ok := e.srv.openSignIn(context.Background(), strings.Repeat("C", 43), sealed); ok {
+	if _, ok := e.srv.openSignIn(context.Background(), strings.Repeat("C", 43), sealed, kindGitHub); ok {
 		t.Error("a sign-in without a verifier was accepted")
 	}
 }
@@ -354,7 +354,7 @@ func TestSignInCookieSurvivesARestartAndHidesItsContent(t *testing.T) {
 	kek, _ := vault.NewKey()
 	o := e.opts
 	o.Keys = keyring.New(e.st, vault.StaticKeyProvider(kek, nil))
-	if _, ok := New(o).openSignIn(context.Background(), state, cookie); ok {
+	if _, ok := New(o).openSignIn(context.Background(), state, cookie, kindGitHub); ok {
 		t.Error("the cookie opened under another master key")
 	}
 }

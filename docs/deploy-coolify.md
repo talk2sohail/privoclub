@@ -91,6 +91,17 @@ After the claim, everything else is in the browser (the admin app, ADR 0019; not
 
 Privo cannot require two-factor authentication at GitHub; turn it on for the accounts that approve calls (an organisation can require it).
 
+## Sign in with Google, Microsoft or another provider (optional)
+
+Privo can offer one OpenID Connect provider beside GitHub, or instead of it (ADR 0034).
+
+1. Register Privo at the provider as a web application with the redirect URI `https://app.privo.club/auth/oidc/callback`.
+   - **Google:** Google Cloud console → APIs & Services → Credentials → Create OAuth client ID → Web application. The issuer is `https://accounts.google.com`.
+   - **Microsoft:** Entra admin center → App registrations → New registration, "Accounts in this organizational directory only", then Certificates & secrets → New client secret. The issuer is `https://login.microsoftonline.com/<Directory (tenant) ID>/v2.0`; Privo refuses `common` and `organizations`.
+   - **Others (Okta, Keycloak, Auth0):** the issuer is what the provider's `/.well-known/openid-configuration` calls `issuer`, character for character.
+2. Add a file mount at `/run/secrets/privo_oidc_client_secret` holding the client secret, and the variables `PRIVO_OIDC_ISSUER`, `PRIVO_OIDC_CLIENT_ID`, `PRIVO_OIDC_CLIENT_SECRET_FILE=/run/secrets/privo_oidc_client_secret`, optionally `PRIVO_OIDC_NAME` (the button) and `PRIVO_OIDC_ALLOWED_DOMAINS`. With Google, set the domain so personal Google accounts are refused; with Microsoft, the tenant is the limit.
+3. Deploy; the log says `admin site is on` and names both providers. Each person links the new provider on **Your account** while signed in. To switch GitHub off afterwards, remove the `PRIVO_GITHUB_*` variables; a warning on Health counts any member who would be locked out.
+
 ## Servers where each person uses their own account
 
 Nothing new to configure: once sign-in with GitHub works, add a remote server with `"oauth": {}` (README, "Servers where each person uses their own account"). Two things depend on the deployment:

@@ -53,10 +53,16 @@ curl localhost:8080/livez
 | `PRIVO_EGRESS_ALLOW_CIDRS` | unset | Internal networks remote servers may use (self-hosted only) |
 | `PRIVO_TRUSTED_PROXIES` | unset | Reverse proxies in front of Privo, as CIDRs (for example `10.0.0.0/8,172.16.0.0/12` for the Docker networks of Coolify's Traefik). Per-address limits then count the client named in `X-Forwarded-For` instead of the proxy. Never list an address a client can reach Privo from directly |
 | `PRIVO_BOOTSTRAP_TOKEN_FILE` / `PRIVO_BOOTSTRAP_TOKEN` | unset | First boot only: a token from `privo token generate`, installed once as the owner's control token (expires after 24h). Prefer the file form: the plain variable stays readable in `/proc/<pid>/environ` (a warning says so). Remove after first use |
-| `PRIVO_GITHUB_CLIENT_ID` | unset | Client ID of the GitHub OAuth App that signs people in to the admin site (ADR 0016). Web sign-in is on only when this, the client secret and `PRIVO_PUBLIC_URL` are all set; otherwise `/admin` and `/auth` answer 503 |
+| `PRIVO_GITHUB_CLIENT_ID` | unset | Client ID of the GitHub OAuth App that signs people in to the admin site (ADR 0016). Web sign-in is on when `PRIVO_PUBLIC_URL` and at least one provider are set: this and the client secret, or `PRIVO_OIDC_*` (0.21.0); a provider set only in part keeps the site off, and `/admin` and `/auth` answer 503 naming what is missing |
 | `PRIVO_GITHUB_CLIENT_SECRET_FILE` / `PRIVO_GITHUB_CLIENT_SECRET` | unset | The OAuth App's client secret. Prefer the file form (a Coolify file mount); the plain variable is never accepted in the config file |
 | `PRIVO_GITHUB_BASE_URL` / `PRIVO_GITHUB_API_URL` | `https://github.com` / `https://api.github.com` | Where people sign in and where the profile is read; set both for GitHub Enterprise Server (https unless loopback; a private address needs `PRIVO_EGRESS_ALLOW_CIDRS`) |
 | `PRIVO_GITHUB_ORG_IDS` | unset | Numeric ids of the GitHub organisations whose members may sign in, comma-separated (0.19.0); `https://api.github.com/orgs/<name>` shows an organisation's `id`. Set, sign-in asks GitHub for `read:org` and refuses anyone in none of them, invite or not. An organisation that restricts OAuth App access must allow Privo's app, or its members are refused. Membership is checked at each sign-in only: when someone leaves the organisation, remove them on **People**, which ends their sessions, tokens and connections at once |
+| `PRIVO_OIDC_ISSUER` | unset | OpenID Connect sign-in beside GitHub (0.21.0, ADR 0034): the provider's issuer, exactly as its discovery document gives it. `https://accounts.google.com` for Google; `https://login.microsoftonline.com/<tenant id>/v2.0` for Microsoft (one tenant: `common`, `organizations` and `consumers` are refused); any other provider's issuer works too. With only OIDC set, GitHub sign-in is off |
+| `PRIVO_OIDC_CLIENT_ID` | unset | The client id registered at the provider; its redirect URI is `<PRIVO_PUBLIC_URL>/auth/oidc/callback` |
+| `PRIVO_OIDC_CLIENT_SECRET` | unset | The client's secret. Prefer `PRIVO_OIDC_CLIENT_SECRET_FILE` (a file mount); refused in the configuration file |
+| `PRIVO_OIDC_CLIENT_SECRET_FILE` | unset | A file holding the client secret; wins over the variable |
+| `PRIVO_OIDC_NAME` | Google, Microsoft or "single sign-on" | The sign-in button's label |
+| `PRIVO_OIDC_ALLOWED_DOMAINS` | unset | Only people of these domains sign in, comma-separated: with Google the Workspace domain (`hd`), so personal Google accounts are refused; with other providers a verified email's domain. Refused with Microsoft, whose email claim is not verified: the tenant in the issuer is the limit. Checked at each sign-in only |
 | `PRIVO_SESSION_IDLE_TIMEOUT` | `2h` | A browser session ends after this long without a request (1m to 24h) |
 | `PRIVO_SESSION_MAX_AGE` | `12h` | A browser session ends this long after sign-in whatever happens (5m to 720h) |
 | `PRIVO_OAUTH_SERVER` | `off` | `on` lets AI clients sign in to the gateway with OAuth instead of a pasted token (ADR 0022): Privo becomes the authorization server for `/mcp`. Needs web sign-in. Off, `/oauth` answers 503 and personal tokens are the only way in |
@@ -94,7 +100,7 @@ Endpoints: `/` (home page: **Sign in** to the admin site and the MCP address for
 `/oauth/client-metadata.json`; see below), `/livez`, `/readyz`, `/version` (the
 semantic version, see `docs/versioning.md`).
 
-## Admin site: sign in with GitHub
+## Admin site: sign in with GitHub, Google, Microsoft or your own provider
 
 Everything after the first sign-in happens in the browser at
 `<PRIVO_PUBLIC_URL>/admin/`: **Start** (each person's servers and client
@@ -117,6 +123,31 @@ account keeps its address (delete it and add it again); a new client id ends
 everyone's connection. API: `PATCH /api/v1/servers/{alias}` with `url`,
 `headers` (`""` removes one) and `oauth_client` (`client_id`,
 `client_secret`).
+
+**Signing in** (0.21.0, ADR 0034): people sign in with GitHub, with one
+OpenID Connect provider (Google Workspace, Microsoft Entra ID, Okta,
+Keycloak or any other: `PRIVO_OIDC_*` below), or with either. Invites and
+setup links offer every configured provider, and the account a person joins
+with is theirs from then on. Privo knows a person by the provider and the
+provider's own id for them, never by email: someone else's account with the
+same address is a stranger. To add a second way in, a person opens **Your
+account** (their name at the top) while signed in and links it; the last way
+in cannot be removed, and removing one ends your other sessions. With only `PRIVO_OIDC_*` set, GitHub sign-in is off;
+Health then counts the members who can no longer sign in, so link first.
+Sign-ins, links and refusals are in **Activity → Admin changes**.
+
+**Arguments checked** (0.20.0): every tool call's arguments are checked
+against the input schema of the definition you accepted, before rules and
+approvals. A call that does not match (a wrong type, a missing field, a field
+the schema does not allow) is refused with a reason the AI client can act on,
+never sent to the server and never turned into an approval request; Activity
+records it as `refused:invalid_arguments`, without the arguments or the
+reason. Draft 2020-12 and draft-07 schemas work. Privo never fetches a schema
+from elsewhere: a tool whose schema refers to another document, or that Privo
+cannot read, is marked with a warning in the review and its calls are refused
+(`refused:schema_unreadable`, with a warning on Health). So is a schema
+whose references loop, or that would cost too much to check; arguments too
+large to check within the limit are refused (`refused:arguments_too_costly`).
 
 **Restoring a member**: **People → Restore** (or
 `POST /api/v1/members/{person}/restore`) brings back a removed member with

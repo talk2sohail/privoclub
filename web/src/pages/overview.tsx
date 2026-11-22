@@ -201,7 +201,7 @@ export function Overview({ loc }: { loc: string }) {
   );
 }
 
-const CATEGORIES: Record<string, string> = { upstream: "Connections", grant: "Sign-ins and keys", gateway: "Gateway", audit: "Audit", lifecycle: "Start and stop" };
+const CATEGORIES: Record<string, string> = { upstream: "Connections", grant: "Sign-ins and keys", gateway: "Gateway", audit: "Audit", lifecycle: "Start and stop", signin: "Signing in to Privo" };
 
 export function Log({ loc }: { loc: string }) {
   const cat = query(loc, "category") in CATEGORIES ? query(loc, "category") : "";

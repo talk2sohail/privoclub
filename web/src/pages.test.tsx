@@ -1102,3 +1102,49 @@ describe("everyone's connections (F07 A)", () => {
     expect(srv.calls.some((c) => c.url.startsWith("/admin/api/v1/connections"))).toBe(false);
   });
 });
+
+describe("your account (ADR 0034)", () => {
+  const github = { provider: "github", name: "GitHub", subject: "42", login: "octo", created_at: "2026-11-01T10:00:00Z" };
+  const sso = { provider: "https://sso.example.com", name: "Acme SSO", subject: "s-1", login: "octo@example.com", created_at: "2026-11-02T10:00:00Z" };
+
+  it("links another sign-in with a real form carrying the CSRF token, and never removes the last", async () => {
+    at("/admin/account");
+    const srv = await start(session("member"), {
+      "GET /admin/api/me/identities": {
+        identities: [github],
+        providers: [
+          { kind: "github", name: "GitHub", action: "/auth/github/start", linked: true },
+          { kind: "oidc", name: "Acme SSO", action: "/auth/oidc/start", linked: false },
+        ],
+      },
+    });
+    await screen.findByText("octo");
+    expect(screen.getByRole("button", { name: "Remove" })).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("button", { name: "Link GitHub" })).toBeNull();
+    const form = screen.getByRole("button", { name: "Link Acme SSO" }).closest("form")!;
+    expect(form.getAttribute("action")).toBe("/auth/oidc/start");
+    expect(form.getAttribute("method")).toBe("post");
+    expect((form.querySelector('input[name="csrf"]') as HTMLInputElement).value).toBe("csrf-token-123");
+    expect((form.querySelector('input[name="link"]') as HTMLInputElement).value).toBe("1");
+    expect(srv.writes()).toHaveLength(0);
+  });
+
+  it("removes one of two sign-ins", async () => {
+    at("/admin/account");
+    const srv = await start(session("member"), {
+      "GET /admin/api/me/identities": { identities: [github, sso], providers: [] },
+      "POST /admin/api/me/identities/unlink": () => [204, {}],
+    });
+    await screen.findByText("octo@example.com");
+    fireEvent.click(screen.getAllByRole("button", { name: "Remove" })[0]!);
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]!.body).toEqual({ provider: "github", subject: "42" });
+  });
+
+  it("is reached from the name in the header, for every role", async () => {
+    at("/admin/account");
+    await start(session("approver"), { "GET /admin/api/me/identities": { identities: [github], providers: [] } });
+    await screen.findByText("Your account");
+    expect(screen.getByTitle("Your account and how you sign in").getAttribute("href")).toBe("/admin/account");
+  });
+});

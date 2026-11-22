@@ -146,7 +146,7 @@ func TestAppPagesServeTheShellToSignedIn(t *testing.T) {
 			t.Errorf("GET %s: %d\n%s", path, res.StatusCode, res.Body)
 			continue
 		}
-		if csp := res.Header.Get("Content-Security-Policy"); csp != appCSP {
+		if csp := res.Header.Get("Content-Security-Policy"); csp != e.srv.appPolicy() || !strings.Contains(csp, "form-action 'self' http://127.0.0.1:") {
 			t.Errorf("GET %s: CSP %q", path, csp)
 		}
 		if res.Header.Get("Cache-Control") != "no-store" || res.Header.Get("X-Frame-Options") != "DENY" {

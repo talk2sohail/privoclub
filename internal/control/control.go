@@ -24,6 +24,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"privo.club/privo/internal/approval"
+	"privo.club/privo/internal/argcheck"
 	"privo.club/privo/internal/audit"
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/egress"
@@ -739,7 +740,7 @@ func pinViews(pins []store.Pin, current map[store.PinKey]bool) []map[string]any 
 		v := map[string]any{"kind": pin.Kind, "name": pin.Name, "hash": pin.Hash, "status": pin.Status,
 			"definition": json.RawMessage(pin.Definition),
 			// F11: signs of hidden instructions, for the reviewer (a hint, never a decision).
-			"findings": scan.Scan([]byte(pin.Definition))}
+			"findings": findings(pin)}
 		if current != nil && pin.Status == store.PinAccepted {
 			v["serving"] = serving(pin)
 		}
@@ -747,6 +748,22 @@ func pinViews(pins []store.Pin, current map[store.PinKey]bool) []map[string]any 
 			v["previous"] = map[string]any{"hash": prev.Hash, "definition": json.RawMessage(prev.Definition)}
 		}
 		out = append(out, v)
+	}
+	return out
+}
+
+// findings are the reviewer's hints on a definition: signs of hidden
+// instructions (F11), and for a tool an input schema Privo cannot read, whose
+// calls the gateway refuses (F02).
+func findings(pin store.Pin) []scan.Finding {
+	out := scan.Scan([]byte(pin.Definition))
+	if pin.Kind != upstream.KindTool {
+		return out
+	}
+	if problem := argcheck.DefinitionProblem([]byte(pin.Definition)); problem != "" {
+		out = append(out, scan.Finding{Path: "inputSchema", Rule: "input-schema", Severity: "warn",
+			Message: "Privo cannot read this input schema, so it cannot check arguments and refuses every call to this tool",
+			Excerpt: scan.Reveal(problem)})
 	}
 	return out
 }

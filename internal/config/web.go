@@ -48,6 +48,9 @@ type Web struct {
 	// organisations, by numeric id (PRIVO_GITHUB_ORG_IDS, F05 A): an
 	// organisation's old name can be registered by someone else.
 	OrgIDs []int64
+	// OIDC is the OpenID Connect provider beside GitHub (ADR 0034); nil
+	// when none of its variables is set.
+	OIDC *OIDC
 	// IdleTimeout and MaxAge bound a browser session (PRIVO_SESSION_IDLE_TIMEOUT,
 	// PRIVO_SESSION_MAX_AGE).
 	IdleTimeout, MaxAge time.Duration
@@ -90,20 +93,33 @@ func parseOnOff(name, v string) (bool, error) {
 }
 
 // Missing lists the variables that must still be set before web sign-in can
-// run, given the public URL from Load. Names only, never values.
+// run, given the public URL from Load. Names only, never values. Sign-in
+// needs at least one provider, GitHub or OIDC (ADR 0034), and a provider
+// that is partly set is missing the rest: a half-set provider fails closed
+// rather than leaving the site to the other one unnoticed.
 func (w Web) Missing(publicURL *url.URL) []string {
 	var out []string
-	if w.ClientID == "" {
-		out = append(out, "PRIVO_GITHUB_CLIENT_ID")
+	github := w.ClientID != "" || w.ClientSecret != ""
+	if github || w.OIDC == nil {
+		if w.ClientID == "" {
+			out = append(out, "PRIVO_GITHUB_CLIENT_ID")
+		}
+		if w.ClientSecret == "" {
+			out = append(out, "PRIVO_GITHUB_CLIENT_SECRET")
+		}
 	}
-	if w.ClientSecret == "" {
-		out = append(out, "PRIVO_GITHUB_CLIENT_SECRET")
+	if w.OIDC != nil {
+		out = append(out, w.OIDC.missing()...)
 	}
 	if publicURL == nil {
 		out = append(out, "PRIVO_PUBLIC_URL")
 	}
 	return out
 }
+
+// GitHubOn reports whether GitHub sign-in is configured. With only OIDC set,
+// GitHub is off (ADR 0034 point 9).
+func (w Web) GitHubOn() bool { return w.ClientID != "" && w.ClientSecret != "" }
 
 // Enabled reports whether web sign-in has everything it needs.
 func (w Web) Enabled(publicURL *url.URL) bool { return len(w.Missing(publicURL)) == 0 }
@@ -119,11 +135,15 @@ func LoadWeb(getenv func(string) string) (Web, error) {
 		w.ClientID = ""
 	}
 
-	secret, err := loadClientSecret(getenv)
+	secret, err := loadSecretPair(getenv, "PRIVO_GITHUB_CLIENT_SECRET", "the GitHub OAuth App")
 	if err != nil {
 		errs = append(errs, err)
 	}
 	w.ClientSecret = secret
+
+	oidc, oidcErrs := loadOIDC(getenv)
+	errs = append(errs, oidcErrs...)
+	w.OIDC = oidc
 
 	for _, u := range []struct {
 		name string
@@ -204,12 +224,13 @@ func LoadWeb(getenv func(string) string) (Web, error) {
 	return w, nil
 }
 
-// loadClientSecret reads the GitHub client secret from its file (which wins) or
-// its variable. Errors name the variable and never repeat the value.
-func loadClientSecret(getenv func(string) string) (Secret, error) {
-	name, raw := "PRIVO_GITHUB_CLIENT_SECRET", getenv("PRIVO_GITHUB_CLIENT_SECRET")
-	if path := strings.TrimSpace(getenv("PRIVO_GITHUB_CLIENT_SECRET_FILE")); path != "" {
-		name = "PRIVO_GITHUB_CLIENT_SECRET_FILE"
+// loadSecretPair reads a client secret from variable+"_FILE" (which wins) or
+// variable. Errors name the variable and never repeat the value; from says
+// where to copy it from.
+func loadSecretPair(getenv func(string) string, variable, from string) (Secret, error) {
+	name, raw := variable, getenv(variable)
+	if path := strings.TrimSpace(getenv(variable + "_FILE")); path != "" {
+		name = variable + "_FILE"
 		b, err := readSmallFile(name, path)
 		if err != nil {
 			return "", err
@@ -218,13 +239,13 @@ func loadClientSecret(getenv func(string) string) (Secret, error) {
 	}
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		if name == "PRIVO_GITHUB_CLIENT_SECRET_FILE" {
+		if name == variable+"_FILE" {
 			return "", fmt.Errorf("%s: the file is empty", name)
 		}
 		return "", nil
 	}
 	if len(raw) > maxClientSecretLen || strings.ContainsFunc(raw, func(r rune) bool { return r <= ' ' || r > '~' }) {
-		return "", fmt.Errorf("%s: not a client secret (up to %d printable characters, no spaces); copy it from the GitHub OAuth App", name, maxClientSecretLen)
+		return "", fmt.Errorf("%s: not a client secret (up to %d printable characters, no spaces); copy it from %s", name, maxClientSecretLen, from)
 	}
 	return Secret(raw), nil
 }

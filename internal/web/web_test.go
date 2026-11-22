@@ -807,7 +807,7 @@ func TestSecurityHeaders(t *testing.T) {
 	if css.StatusCode != http.StatusOK || !strings.HasPrefix(css.Header.Get("Content-Type"), "text/css") || css.Header.Get("X-Content-Type-Options") != "nosniff" || css.Body == "" {
 		t.Errorf("stylesheet: %d %q", css.StatusCode, css.Header.Get("Content-Type"))
 	}
-	if app := b.get("/admin/approvals"); app.Header.Get("Content-Security-Policy") != appCSP || app.Header.Get("Referrer-Policy") != "same-origin" {
+	if app := b.get("/admin/approvals"); app.Header.Get("Content-Security-Policy") != strings.Replace(appCSP, "form-action 'self'", "form-action 'self' "+e.gh.srv.URL, 1) || app.Header.Get("Referrer-Policy") != "same-origin" {
 		t.Errorf("app page headers: %v", app.Header)
 	}
 	for name, p := range pages {

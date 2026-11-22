@@ -8,7 +8,8 @@ import (
 	"time"
 )
 
-// ProviderGitHub is the one sign-in provider (ADR 0016).
+// ProviderGitHub is GitHub sign-in's provider key (ADR 0016). An OpenID
+// Connect provider's key is its issuer URL, exactly (ADR 0034).
 const ProviderGitHub = "github"
 
 // purposeConnect is the one kind of row oauth_states holds since ADR 0016
@@ -124,6 +125,7 @@ type Claim struct {
 	LinkID      string
 	UserID      string  // id for the new user
 	Person      string  // the new user's person name
+	Provider    string  // ProviderGitHub or an OIDC issuer; empty is GitHub
 	Subject     string  // the provider's stable id (GitHub: numeric id)
 	Login       string  // display snapshot
 	DisplayName string  // display snapshot
@@ -169,6 +171,9 @@ func (s *Store) ClaimSetup(ctx context.Context, org OrgID, c Claim, ev AuditEven
 // session and writes ev, all in one transaction.
 func (s *Store) claim(ctx context.Context, org OrgID, c Claim, ev AuditEvent, consume func(*sql.Tx, *User) error) (User, error) {
 	ev.Phase = "admin"
+	if c.Provider == "" {
+		c.Provider = ProviderGitHub
+	}
 	u := User{OrgID: org, ID: c.UserID, Person: c.Person, DisplayName: c.DisplayName, CreatedAt: c.Now}
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		if err := consume(tx, &u); err != nil {
@@ -176,7 +181,7 @@ func (s *Store) claim(ctx context.Context, org OrgID, c Claim, ev AuditEvent, co
 		}
 		var one int
 		switch err := tx.QueryRowContext(ctx, `SELECT 1 FROM identities WHERE org_id = ? AND provider = ? AND subject = ?`,
-			org, ProviderGitHub, c.Subject).Scan(&one); {
+			org, c.Provider, c.Subject).Scan(&one); {
 		case err == nil:
 			return ErrIdentityExists
 		case !errors.Is(err, sql.ErrNoRows):
@@ -197,7 +202,7 @@ func (s *Store) claim(ctx context.Context, org OrgID, c Claim, ev AuditEvent, co
 		}
 		if _, err := tx.ExecContext(ctx, `
 			INSERT INTO identities (org_id, provider, subject, user_id, login, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-			org, ProviderGitHub, c.Subject, u.ID, c.Login, ts(c.Now)); err != nil {
+			org, c.Provider, c.Subject, u.ID, c.Login, ts(c.Now)); err != nil {
 			return mapErr(err)
 		}
 		sess := c.Session
