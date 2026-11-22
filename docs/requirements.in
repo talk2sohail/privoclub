@@ -1,0 +1,5 @@
+# What the documentation site is built with (docs/documentation-site.md, 2.3).
+# Edit this file, then regenerate docs/requirements.txt with hashes:
+#   make docs-requirements
+# and commit the two files on their own, so the dependency change reads alone.
+mkdocs==1.6.1
