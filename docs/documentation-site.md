@@ -1,6 +1,6 @@
 # Guideline: a documentation website for Privo, built with MkDocs
 
-Status: proposal, 2026-11-22. This document says how to build
+Status: tasks 1 and 2 built (2026-11-22; tracker F30). This document says how to build
 `docs.privo.club` in the way osquery builds `osquery.readthedocs.io`, adapted
 to this repository. Nothing here is built yet; the tasks are at the end.
 

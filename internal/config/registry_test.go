@@ -137,14 +137,35 @@ func TestEveryRegisteredSettingIsUsedByTheCode(t *testing.T) {
 	}
 }
 
-func TestRegistryIsInTheREADME(t *testing.T) {
-	b, err := os.ReadFile(filepath.Join(repoRoot(t), "README.md"))
+// configurationPage is the published configuration reference: the one place
+// operators read about settings (docs/documentation-site.md, 2.5).
+func configurationPage(t *testing.T) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(repoRoot(t), "docs", "site", "installation", "configuration.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return string(b)
+}
+
+func TestRegistryIsInTheConfigurationPage(t *testing.T) {
+	page := configurationPage(t)
 	for _, s := range Settings {
-		if !strings.Contains(string(b), "`"+s.Name+"`") {
-			t.Errorf("%s is not in the README settings table", s.Name)
+		if !strings.Contains(page, "`"+s.Name+"`") {
+			t.Errorf("%s is not in the settings table of docs/site/installation/configuration.md", s.Name)
+		}
+	}
+}
+
+func TestConfigurationPageNamesOnlyRegisteredSettings(t *testing.T) {
+	seen := map[string]bool{}
+	for _, name := range regexp.MustCompile(`PRIVO_[A-Z0-9_]*[A-Z0-9]`).FindAllString(configurationPage(t), -1) {
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		if _, ok := Lookup(name); !ok {
+			t.Errorf("docs/site/installation/configuration.md names %s, which is not in config.Settings (internal/config/settings.go)", name)
 		}
 	}
 }

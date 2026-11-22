@@ -1,0 +1,64 @@
+# The documentation site, docs.privo.club (docs/documentation-site.md).
+# Build: make docs. Preview: make docs-serve. Pages: docs/site/ only.
+site_name: Privo
+site_url: https://docs.privo.club/
+site_description: The team gateway to AI work and the MCP world
+copyright: Privo
+
+theme:
+  name: readthedocs          # built into MkDocs: no theme package, no plugin
+  navigation_depth: 3
+  collapse_navigation: false
+
+repo_url: https://github.com/talk2sohail/privoclub
+edit_uri: edit/main/docs/site/
+docs_dir: docs/site
+site_dir: build/site
+extra_css:
+  - theme/privo.css
+
+strict: true                 # every warning below fails the build
+validation:
+  nav:
+    omitted_files: warn      # a page left out of nav
+    not_found: warn          # nav names a page that does not exist
+  links:
+    not_found: warn          # a link to a page that does not exist
+    anchors: warn            # a link to a heading that does not exist
+    absolute_links: warn
+    unrecognized_links: warn
+
+markdown_extensions:
+  - admonition               # !!! note and !!! warning boxes
+  - toc:
+      permalink: true        # a link anchor on every heading
+  - tables
+  - fenced_code
+
+nav:
+  - Introduction:
+      - Welcome to Privo: index.md
+  - Installation:
+      - Build and run: installation/build-and-run.md
+      - Deploy on Coolify: installation/coolify.md
+      - Configuration reference: installation/configuration.md
+      - The configuration file: installation/configuration-file.md
+      - Backup, restore and upgrades: installation/operations.md
+  - Using Privo:
+      - The admin site and signing in: using/admin-site.md
+      - Inviting your team: using/people.md
+      - Adding servers: using/servers.md
+      - Each person's own account: using/connections.md
+      - Teams and the catalog: using/teams.md
+      - Rules, approvals and grants: using/rules.md
+      - Tokens and AI clients: using/tokens.md
+      - AI clients that sign in with OAuth: using/oauth-clients.md
+      - Activity and metrics: using/activity.md
+      - The audit trail: using/audit.md
+      - Roles: using/roles.md
+  - Development:
+      - Building Privo: development/building.md
+      - Tests: development/tests.md
+      - How a feature is made: development/workflow.md
+      - Architecture decisions: development/decisions.md
+      - Versioning: development/versioning.md

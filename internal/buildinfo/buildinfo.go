@@ -4,7 +4,7 @@
 // file next to this one and compiled into the binary, so every build reports
 // it, whether it came from `make build`, the Dockerfile or a deploy on
 // Coolify that has no git history and passes no build arguments. See
-// docs/versioning.md for when it changes.
+// docs/site/development/versioning.md for when it changes.
 package buildinfo
 
 import (

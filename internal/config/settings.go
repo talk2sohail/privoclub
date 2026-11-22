@@ -5,10 +5,11 @@ import "strings"
 // Setting describes one variable the process reads. The list below is the
 // single registry of them (ADR 0015): tests fail when the code reads a PRIVO_
 // name that is not here, when a name here is read by nothing, and when one is
-// missing from the README table or from docs/privo.example.yaml.
+// missing from the configuration reference (docs/site/installation/
+// configuration.md, which names no other) or from docs/privo.example.yaml.
 //
 // To add a setting: add it here, read it (in Load or where it belongs), and
-// document it in the README and the example file.
+// document it in the configuration reference and the example file.
 type Setting struct {
 	// Name is the environment variable, such as PRIVO_BACKUP_INTERVAL.
 	Name string

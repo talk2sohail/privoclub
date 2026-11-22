@@ -12,7 +12,8 @@ mid-size companies, to enterprise scale and quality.
 - Security defaults fail closed. Secrets are never logged, returned by the API,
   or passed to hooks.
 - Every table carries `org_id`; every store method takes a typed `OrgID`.
-- No feature merges without its section in `docs/todo.md` updated.
+- No feature merges without its section in `docs/todo.md` updated and its
+  page in `docs/site/` (the documentation site) written or updated.
 
 ## Stack
 
@@ -37,7 +38,8 @@ mid-size companies, to enterprise scale and quality.
    end-to-end MCP client test green.
 5. Review: a separate security review pass on every change that touches auth,
    secrets, tenancy or the request pipeline.
-6. Update docs and tick the feature's to-do items.
+6. Update the feature's page in `docs/site/` (say the version it arrived in;
+   `make docs` must pass) and tick the feature's to-do items.
 
 ## Layout
 
@@ -67,6 +69,7 @@ internal/health/ internal/safe/ internal/ids/ internal/buildinfo/   small helper
 web/                  admin app source (Preact); web/dist is committed and embedded
 site/                 landing page for privo.club (separate Coolify app, Node)
 test/acceptance/      black-box suite against the built binary (build tag `acceptance`)
+docs/site/            the documentation site's pages (MkDocs; mkdocs.yml at the root)
 docs/adr/             architecture decisions
 docs/reviews/         independent review reports
 docs/todo.md          per-feature to-do tracker
@@ -75,4 +78,4 @@ docs/todo.md          per-feature to-do tracker
 Planned, not built yet: `internal/pipeline/` (pluggable stages and hooks, ADR
 0001), `internal/protocol/` (version handling, ADR 0004), a Postgres store
 (ADR 0002), `deploy/coolify/` (Compose file; the guide is
-`docs/deploy-coolify.md`).
+`docs/site/installation/coolify.md`).
