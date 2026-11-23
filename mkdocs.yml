@@ -56,6 +56,8 @@ nav:
       - Activity and metrics: using/activity.md
       - The audit trail: using/audit.md
       - Roles: using/roles.md
+  - Security:
+      - Reporting a vulnerability: security/disclosure.md
   - Development:
       - Building Privo: development/building.md
       - Tests: development/tests.md

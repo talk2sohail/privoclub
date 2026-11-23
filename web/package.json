@@ -2,6 +2,7 @@
   "name": "privo-admin",
   "version": "0.0.0",
   "private": true,
+  "license": "MIT",
   "description": "Privo admin app (ADR 0019). The build output in dist/ is committed and embedded in the Go binary.",
   "type": "module",
   "engines": {

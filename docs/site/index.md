@@ -11,9 +11,12 @@ use, runs every call with the right credential (shared, or the caller's own
 account), applies your rules, holds a call for a person's approval when a rule
 says so, and records every call and every admin change.
 
-Status: early development. The architecture is settled in the
+Privo is open source under the
+[MIT License](https://github.com/talk2sohail/privoclub/blob/main/LICENSE).
+Status: early development, before 1.0. The architecture is settled in the
 [architecture decisions](development/decisions.md); progress per feature is in
-the project's tracker.
+the [tracker](https://github.com/talk2sohail/privoclub/blob/main/docs/todo.md).
+Found a security problem? [Report it privately](security/disclosure.md).
 
 ## Where to start
 
