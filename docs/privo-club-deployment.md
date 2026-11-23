@@ -27,6 +27,32 @@ On the server, the gateway's container is
 `docker volume ls | grep f46equvu3pb9kmq0shusvojo`; use them where the guide
 says `<container>` and `<data volume>`.
 
+## The documentation site (`privo-docs`)
+
+| | |
+|---|---|
+| Domain | `https://docs.privo.club` |
+| Base directory | `/` (the build needs `mkdocs.yml` at the root) |
+| Dockerfile location | `/docs/Dockerfile` |
+| Port | 8080 |
+| Volume | none: the site is static and holds nothing secret |
+| Health | the container's `HEALTHCHECK` |
+| Environment | none |
+| Watch Paths | below |
+
+```
+docs/site/**
+docs/requirements.txt
+docs/Dockerfile
+docs/Caddyfile
+docs/externalize_inline_scripts.py
+mkdocs.yml
+```
+
+It deploys from `main` through the same webhook and shared secret as the
+other two apps (Deploys, below). Rolling updates can stay on: nothing is
+shared between two containers.
+
 ## State of the live gateway
 
 - The master key is a file mount at `/run/secrets/privo_master_key` (moved

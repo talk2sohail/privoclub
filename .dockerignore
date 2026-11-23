@@ -1,8 +1,16 @@
 .git
 bin
 data
+build
 docs
 *.md
+# What the documentation site's image needs (docs/Dockerfile). The gateway's
+# image copies only its binary, so these never reach it.
+!docs/site
+!docs/site/**/*.md
+!docs/requirements.txt
+!docs/Caddyfile
+!docs/externalize_inline_scripts.py
 
 # Landing page (built separately from site/) and local backups
 site

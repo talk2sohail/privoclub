@@ -9,6 +9,7 @@ theme:
   name: readthedocs          # built into MkDocs: no theme package, no plugin
   navigation_depth: 3
   collapse_navigation: false
+  highlightjs: false         # the theme would load highlight.js from a CDN
 
 repo_url: https://github.com/talk2sohail/privoclub
 edit_uri: edit/main/docs/site/

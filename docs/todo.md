@@ -1823,10 +1823,18 @@ task 4.
   checked against the schema, and the Security section (threat model,
   secrets and keys, egress, reporting a vulnerability: needs the owner's
   contact address)
-- [ ] Hosting: choose Read the Docs or Coolify (guideline 2.6; the repository
-  is private, so Coolify is recommended), add `.readthedocs.yaml` or
-  `docs/Dockerfile` and the Coolify app, point `docs.privo.club` at it, and
-  link the docs from the landing page and the admin app's header
+- [x] Hosting on Coolify (guideline 2.6 B, chosen 2026-11-24): `docs/Dockerfile`
+  builds the site and serves it with Caddy (pinned by digest, user `nobody`,
+  port 8080) with CSP `script-src 'self'` and no `unsafe-inline`: the theme's
+  inline scripts move into content-named files
+  (`docs/externalize_inline_scripts.py`, which fails the build if one is
+  left); highlight.js from a CDN is off, so the site makes no third-party
+  request. Also `nosniff`, `Referrer-Policy: same-origin`, HSTS, COOP, a
+  year's cache only for the content-named files. CI builds the image.
+  Checked in a browser: no CSP violation, search and anchors work
+- [ ] The Coolify app `privo-docs` and `docs.privo.club` (owner, 2026-11-24;
+  settings in `docs/privo-club-deployment.md`)
+- [ ] Link the docs from the landing page and the admin app's header
 - [ ] Coolify: add `!mkdocs.yml` to the gateway's Watch Paths
   (`docs/privo-club-deployment.md`)
 - [x] Rules: `CLAUDE.md` names `docs/site/` in the workflow, the quality bar
