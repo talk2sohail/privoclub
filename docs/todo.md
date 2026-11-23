@@ -1176,6 +1176,20 @@ ADRs: 0010
 - [ ] Built-in WAL shipping backup (RPO 1 minute) to S3-compatible storage; off-host upload of snapshots
 - [ ] Install, upgrade, backup and key-backup guide
 
+### Releases and the reference deployment (ADR 0030, proposed 2026-11-24)
+One instance per organisation, from signed releases; Docker Compose with
+Caddy as the reference. Accept the ADR first.
+- [ ] Release workflow on a `v<version>` tag: `ghcr.io/talk2sohail/privo`
+  for linux/amd64 and arm64 with SBOM and provenance, binaries with
+  `SHA256SUMS`, cosign keyless signatures; a dry run on a pre-release tag
+- [ ] `deploy/compose/`: `compose.yaml` (Privo and Caddy), `Caddyfile`,
+  `.env.example`, master key as a secret file, daily snapshots on; checked
+  on a fresh host from DNS to the first sign-in
+- [ ] Installation pages: Quick start (Compose) first; Coolify, Kubernetes
+  manifests (one replica, Recreate), binary with systemd; Verify a release
+- [ ] Load test on the reference deployment; publish the figures
+- [ ] Generic OIDC sign-in (ADR 0011) before HA
+
 ## F16. Observability
 Status: In progress (health endpoints and drain only)
 
