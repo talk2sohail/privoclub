@@ -1768,7 +1768,7 @@ Approve with changes; 0 Critical, 1 High, 1 Medium, 5 Low, 3 Info. Fixed, each w
 - [x] T-10: the time held for a person's approval is its own phase (`wait_us`) and is left out of latency and the duration histogram (`TestMetricsText`, `TestCountAndSampleCallStats`)
 
 ## F30. Documentation site (docs.privo.club)
-Status: In progress (skeleton and the moved content, 2026-11-22; guideline in `docs/documentation-site.md`)
+Status: In progress (live at https://docs.privo.club since 2026-11-24; the missing pages and the links from the landing page and the admin app are open; guideline in `docs/documentation-site.md`)
 
 Goal: the user documentation is a website built with MkDocs from
 `docs/site/`, next to the code and changed in the same pull request, the way
@@ -1832,11 +1832,12 @@ task 4.
   request. Also `nosniff`, `Referrer-Policy: same-origin`, HSTS, COOP, a
   year's cache only for the content-named files. CI builds the image.
   Checked in a browser: no CSP violation, search and anchors work
-- [ ] The Coolify app `privo-docs` and `docs.privo.club` (owner, 2026-11-24;
-  settings in `docs/privo-club-deployment.md`)
+- [x] The Coolify app `privo-docs` and `docs.privo.club` (DNS by the owner,
+  the app through the Coolify API, 2026-11-24; settings in
+  `docs/privo-club-deployment.md`). Checked live: 200 on pages, 404 page,
+  CSP and the other headers through Cloudflare, search with no console error
 - [ ] Link the docs from the landing page and the admin app's header
-- [ ] Coolify: add `!mkdocs.yml` to the gateway's Watch Paths
-  (`docs/privo-club-deployment.md`)
+- [x] Coolify: `!mkdocs.yml` in the gateway's Watch Paths (2026-11-24)
 - [x] Rules: `CLAUDE.md` names `docs/site/` in the workflow, the quality bar
   and the layout
 - [ ] Later: a weekly external link check (for example `lychee` on
