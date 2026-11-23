@@ -2,7 +2,7 @@
 
 Read this first in a new session. It replaces every earlier checkpoint
 (`docs/checkpoint-2026-11-03.md`, `docs/checkpoint-2026-11-01.md`, the root
-`privo-checkpoint-2026-10-29.md` and the ones in the Claude Project); those are
+`docs/checkpoint-2026-10-29.md` and the ones in the Claude Project); those are
 history. Open work is in `docs/todo.md`; the audit that produced this file is
 `docs/reviews/2026-11-11-project-audit.md`.
 

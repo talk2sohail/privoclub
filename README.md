@@ -31,3 +31,10 @@ locally; it will be published at docs.privo.club):
   [tokens](docs/site/using/tokens.md), [the audit trail](docs/site/using/audit.md)
 - [How a feature is made](docs/site/development/workflow.md),
   [architecture decisions](docs/site/development/decisions.md)
+
+## Contributing, security and license
+
+- [CONTRIBUTING.md](CONTRIBUTING.md): how a change is made.
+- [SECURITY.md](SECURITY.md): report a vulnerability privately, never in an
+  issue.
+- Privo is open source under the [MIT License](LICENSE).

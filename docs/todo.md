@@ -1841,3 +1841,40 @@ task 4.
   and the layout
 - [ ] Later: a weekly external link check (for example `lychee` on
   `build/site`)
+
+## F31. Open source (MIT)
+Status: In progress (owner's decision, 2026-11-24)
+
+Goal: the repository is public under the MIT License, with a private way to
+report vulnerabilities, so any team can read, run and change Privo.
+
+Acceptance:
+1. `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md` at the root; the README,
+   the documentation site and both `package.json` files say MIT.
+2. Nothing secret in the history before it goes public: checked 2026-11-24
+   over all 148 commits (token, key and private-key patterns, base64 keys,
+   public IP addresses, committed `.env` or key files). Only test values
+   were found (`privo_pat_NOT-A-REAL-SECRET-marker-7731`, a base64 of
+   `secret-secret-secret-secret-1234`).
+3. Reporting a vulnerability works before the first outside reader arrives
+   (GitHub private vulnerability reporting on).
+
+Threat note: going public publishes the independent reviews and their open
+findings (all Low or Info on 2026-11-24, listed in this file), the commit
+author's e-mail address, the privo.club deployment record
+(`docs/privo-club-deployment.md`: Coolify app ids, no secrets) and the
+waitlist site's mail host. None of these is a secret; an attacker learns the
+same from the binary and DNS. The decision to publish the reviews is
+deliberate: they show how Privo is checked.
+
+### Tasks
+- [x] `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`; license in the README, on
+  the site (Welcome, Security → Reporting a vulnerability) and in
+  `web/package.json`, `site/package.json` and their lock files
+- [x] History checked for secrets (acceptance 2)
+- [x] The old root checkpoint moved to `docs/checkpoint-2026-10-29.md`
+- [ ] Owner, on GitHub: make the repository public; then Settings → Code
+  security: private vulnerability reporting, secret scanning with push
+  protection, Dependabot alerts; a ruleset on `main` (pull request and the
+  CI checks required, no force push)
+- [ ] Distribution and deployment for any team: ADR 0030
