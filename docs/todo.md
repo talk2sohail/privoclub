@@ -1156,7 +1156,7 @@ Tasks and the tests that name them:
 - [x] Home page (owner's request, 2026-11-20): `/` offered nothing but a link to privo.club, so people typed `/admin` by hand. It now has **Sign in** (to `/admin/`) when the admin site is set up, says so when it is not, and shows the MCP address from `PRIVO_PUBLIC_URL` for AI clients. Still static for a configuration: no script, nothing read from the request, the configured address escaped. Tests: `internal/server` `TestRootPage` (unchanged hardening checks), `TestHomeOffersSignInAndTheMCPAddress`, `TestHomeWithoutTheAdminSite`, `TestHomeEscapesItsConfiguration`
 
 ## F15. Coolify deployment
-Status: In progress (deployed on Coolify since 2026-10-29, guide in `docs/deploy-coolify.md`; snapshot backup, restore and the built-in schedule done; scheduled backups are off in production by the owner's choice)
+Status: In progress (deployed on Coolify since 2026-10-29, guide in `docs/site/installation/coolify.md`; snapshot backup, restore and the built-in schedule done; scheduled backups are off in production by the owner's choice)
 
 ADRs: 0010
 
@@ -1766,3 +1766,70 @@ Approve with changes; 0 Critical, 1 High, 1 Medium, 5 Low, 3 Info. Fixed, each w
 - [x] T-08: the deploy guide says what `0.0.0.0:9464` exposes to the Docker network. Open: an optional bearer token for `/metrics`
 - [x] T-09: exactly 1,000 buckets allowed; the chart counts the same window as the totals; `limit` over the bound reads the bound; a huge day count is refused before multiplying
 - [x] T-10: the time held for a person's approval is its own phase (`wait_us`) and is left out of latency and the duration histogram (`TestMetricsText`, `TestCountAndSampleCallStats`)
+
+## F30. Documentation site (docs.privo.club)
+Status: In progress (skeleton and the moved content, 2026-11-22; guideline in `docs/documentation-site.md`)
+
+Goal: the user documentation is a website built with MkDocs from
+`docs/site/`, next to the code and changed in the same pull request, the way
+osquery builds osquery.readthedocs.io. Internal records (`docs/todo.md`,
+`docs/reviews/`, checkpoints, manual tests, `docs/upstream/`) stay out of it.
+
+Acceptance:
+1. `mkdocs build --strict` passes in CI (job `docs`, `make docs`); a broken
+   link or anchor, a page missing from `nav`, or `nav` naming a missing page
+   fails it.
+2. MkDocs and every dependency are pinned with hashes
+   (`docs/requirements.txt`, generated from `docs/requirements.in`) and
+   installed with `--require-hashes --only-binary=:all:`, so no package runs
+   code at install time.
+3. Every README section has a page; the README keeps the introduction, a
+   quick start that works on a fresh data directory, and links.
+4. The configuration reference (`docs/site/installation/configuration.md`)
+   is the one list of settings: a test fails when a registered setting is
+   missing from it, or when it names a `PRIVO_` setting the registry does not
+   know.
+5. Every moved file leaves a pointer at its old path.
+
+Threat note: the site is static and holds nothing secret; examples use
+`example.com`, `privo_pat_...` and documentation addresses. The build runs
+third-party Python, so it is pinned and hashed, wheels only, and runs in CI
+with read-only repository permissions. The live deployment's specifics (app
+ids, DNS, webhook state) stay internal in `docs/privo-club-deployment.md`,
+not on the site. Hosting adds headers (CSP, `nosniff`, referrer policy) in
+task 4.
+
+### Tasks (the order of `docs/documentation-site.md`, section 3)
+- [x] Skeleton: `mkdocs.yml` (readthedocs theme, explicit `nav`, strict
+  validation of links, anchors and nav), `docs/requirements.in` and hashed
+  `docs/requirements.txt` (MkDocs 1.6.1), `make docs`, `make docs-serve`,
+  `make docs-requirements`, `/build/` in `.gitignore`, CI job `docs`.
+  Checked: the strict build fails on a broken link, a missing anchor and a
+  page left out of `nav`.
+- [x] Move the content: the README sections into `docs/site/installation/`
+  and `docs/site/using/`; `docs/deploy-coolify.md` into Deploy on Coolify
+  (made general, `app.example.com`) and Backup, restore and upgrades (with
+  the upgrade notes per version); `docs/versioning.md` and the ADR index into
+  `docs/site/development/`. Pointers at `docs/deploy-coolify.md` and
+  `docs/versioning.md`; privo.club's own deployment kept internal in
+  `docs/privo-club-deployment.md`.
+- [x] Settings test on the page. Tests: `internal/config`
+  `TestRegistryIsInTheConfigurationPage` (replaces
+  `TestRegistryIsInTheREADME`), `TestConfigurationPageNamesOnlyRegisteredSettings`;
+  `TestExampleFileListsEverySetting` unchanged
+- [x] Pages written from existing sources: Tests, How a feature is made
+  (`CLAUDE.md`), Building Privo
+- [ ] Write what is missing: How Privo works, Words Privo uses, Arguments
+  checked against the schema, and the Security section (threat model,
+  secrets and keys, egress, reporting a vulnerability: needs the owner's
+  contact address)
+- [ ] Hosting: choose Read the Docs or Coolify (guideline 2.6; the repository
+  is private, so Coolify is recommended), add `.readthedocs.yaml` or
+  `docs/Dockerfile` and the Coolify app, point `docs.privo.club` at it, and
+  link the docs from the landing page and the admin app's header
+- [ ] Coolify: add `!mkdocs.yml` to the gateway's Watch Paths
+  (`docs/privo-club-deployment.md`)
+- [x] Rules: `CLAUDE.md` names `docs/site/` in the workflow, the quality bar
+  and the layout
+- [ ] Later: a weekly external link check (for example `lychee` on
+  `build/site`)

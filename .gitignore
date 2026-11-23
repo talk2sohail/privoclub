@@ -13,3 +13,6 @@ coverage.out
 /site/.env
 /site/data/
 .DS_Store
+
+# Documentation site build output and its Python environment (make docs)
+/build/

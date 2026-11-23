@@ -1,0 +1,17 @@
+/* Small overrides of the readthedocs theme (mkdocs.yml, extra_css). */
+.wy-side-nav-search,
+.wy-nav-top {
+  background-color: #1f2a44;
+}
+.wy-side-nav-search > a,
+.wy-nav-top a {
+  color: #ffffff;
+}
+.rst-content table.docutils td,
+.rst-content table td {
+  white-space: normal;
+}
+.wy-table-responsive table td,
+.wy-table-responsive table th {
+  white-space: normal;
+}
