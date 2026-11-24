@@ -32,6 +32,7 @@ const (
 	Pending                 // a person has not decided yet
 	Denied                  // a person denied this exact call
 	Withdrawn               // the requester took the request back; a retry asks again
+	Cancelled               // the waiting caller cancelled; a pending approval was withdrawn
 )
 
 // Outcome describes a gate decision.
@@ -40,6 +41,7 @@ type Outcome struct {
 	ID        string
 	ExpiresAt time.Time
 	DecidedBy string
+	Withdrawn bool // true when cancelling withdrew the pending approval
 }
 
 // Limits that keep one caller from flooding approvers or the database.
@@ -61,6 +63,7 @@ type Store interface {
 	RestoreApproval(ctx context.Context, org store.OrgID, id string) error
 	PurgeArguments(ctx context.Context, org store.OrgID, id string) error
 	WithdrawApproval(ctx context.Context, org store.OrgID, id, userID, by string, now time.Time) (bool, error)
+	CancelPendingApproval(ctx context.Context, org store.OrgID, id, by string, now time.Time) (bool, error)
 	ConsumeApproval(ctx context.Context, org store.OrgID, id string, now time.Time) (bool, error)
 	DecideApproval(ctx context.Context, org store.OrgID, id, status, by string, now time.Time) (bool, error)
 	Setting(ctx context.Context, org store.OrgID, key, def string) (string, error)
@@ -181,7 +184,13 @@ func (s *Service) create(ctx context.Context, r Request, b store.ApprovalBinding
 		return a, err
 	}
 	// Re-read: if another caller created the row first, use theirs.
-	return s.Store.OpenApproval(ctx, r.Org, b, now)
+	got, err := s.Store.OpenApproval(ctx, r.Org, b, now)
+	if err != nil && ctx.Err() != nil {
+		cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_, _ = s.Store.CancelPendingApproval(cancelCtx, r.Org, a.ID, "caller cancelled", s.clock())
+		cancel()
+	}
+	return got, err
 }
 
 // evaluate returns the outcome for the approval's current state, consuming it
@@ -200,7 +209,9 @@ func (s *Service) step(ctx context.Context, org store.OrgID, a store.Approval) (
 			return Outcome{}, true, err
 		}
 		if ok {
-			_ = s.Store.PurgeArguments(ctx, org, a.ID)
+			purgeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = s.Store.PurgeArguments(purgeCtx, org, a.ID)
+			cancel()
 			return Outcome{Result: Approved, ID: a.ID, ExpiresAt: a.ExpiresAt, DecidedBy: a.DecidedBy}, true, nil
 		}
 		return Outcome{Result: Pending, ID: a.ID, ExpiresAt: a.ExpiresAt}, true, nil
@@ -231,22 +242,62 @@ func (s *Service) wait(ctx context.Context, org store.OrgID, a store.Approval) (
 	// The hold uses real elapsed time; the clock only decides expiry.
 	deadline := time.Now().Add(hold)
 	for {
-		if out, final, err := s.step(ctx, org, a); err != nil || final {
-			return out, err
+		out, final, err := s.step(ctx, org, a)
+		if err != nil {
+			if ctx.Err() != nil {
+				return s.cancelHeld(ctx, org, a)
+			}
+			return Outcome{}, err
+		}
+		if final {
+			return out, nil
 		}
 		if !time.Now().Before(deadline) {
 			return Outcome{Result: Pending, ID: a.ID, ExpiresAt: a.ExpiresAt}, nil
 		}
+		t := time.NewTimer(poll)
 		select {
 		case <-ctx.Done():
-			// The caller gave up; the approval stays pending for a retry.
-			return Outcome{Result: Pending, ID: a.ID, ExpiresAt: a.ExpiresAt}, nil
-		case <-time.After(poll):
+			t.Stop()
+			return s.cancelHeld(ctx, org, a)
+		case <-t.C:
 		}
-		var err error
 		if a, err = s.Store.GetApproval(ctx, org, a.ID); err != nil {
+			if ctx.Err() != nil {
+				return s.cancelHeld(ctx, org, a)
+			}
 			return Outcome{}, err
 		}
+	}
+}
+
+// cancelHeld withdraws a still-pending approval when the caller waiting on it
+// cancels. If another actor decided or expired the approval concurrently, that
+// decision is preserved and an approved row is never consumed for a gone caller.
+func (s *Service) cancelHeld(ctx context.Context, org store.OrgID, a store.Approval) (Outcome, error) {
+	cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	ok, err := s.Store.CancelPendingApproval(cancelCtx, org, a.ID, "caller cancelled", s.clock())
+	if err != nil {
+		return Outcome{}, err
+	}
+	if ok {
+		return Outcome{Result: Cancelled, ID: a.ID, Withdrawn: true}, nil
+	}
+	cur, gerr := s.Store.GetApproval(cancelCtx, org, a.ID)
+	if gerr != nil {
+		return Outcome{}, gerr
+	}
+	switch cur.EffectiveStatus(s.clock()) {
+	case store.ApprovalDenied:
+		return Outcome{Result: Denied, ID: cur.ID, DecidedBy: cur.DecidedBy}, nil
+	case store.ApprovalWithdrawn:
+		if cur.DecidedBy == "caller cancelled" {
+			return Outcome{Result: Cancelled, ID: cur.ID}, nil
+		}
+		return Outcome{Result: Withdrawn, ID: cur.ID}, nil
+	default:
+		return Outcome{Result: Cancelled, ID: cur.ID}, nil
 	}
 }
 

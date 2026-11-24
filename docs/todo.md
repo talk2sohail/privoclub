@@ -64,7 +64,8 @@ ADRs: 0001, 0004
 - [ ] Pipeline as pluggable hooks (stages exist inline today: resolve, pin check, args digest, decide=allow, intent, call, completion); List, Transform, Decision, After hooks and observers
 - [ ] Validate arguments against the pinned input schema
 - [ ] Server-to-client requests: elicitation forwarding, sampling refused, roots from config
-- [ ] Notifications: list changes, cancellation, redacted progress and logs
+- [ ] Notifications: list changes, redacted progress and logs
+- [x] Cancellation forwarding and withdrawing held approvals on cancel (ADR 0004, ADR 0005, #47): stateless HTTP POST cancellation propagates for 2026-07-28 and 2025-11-25 clients into upstream HTTP and stdio (`notifications/cancelled`) without tearing down upstream sessions; held pending approvals are atomically withdrawn (`CancelPendingApproval`, args purged) unless already decided; cancelled calls record `outcome="cancelled"` / `"cancelled_while_pending"` and `error_class="cancelled"` via `WithoutCancel`. Tests: `internal/store` `TestCancelPendingApproval`, `internal/approval` `TestCancelDuringHoldWithdrawsPendingApproval`, `TestCancelDoesNotOverwriteConcurrentApproval`, `TestCancelReleasesHoldSlot`, `internal/gateway` `TestClientCancelPropagatesToUpstreamHTTP`, `TestCancelledCallStillWritesAuditCompletion`, `internal/upstream` `TestClientCancelSendsCancelledNotificationToStdio`, `TestCancelOneCallDoesNotDropOtherCalls`, acceptance `TestClientCancellationEndToEnd`
 - [ ] Rate limits, in-flight limits, bulkheads, circuit breakers
 - [x] Tests: aggregation, routing, server drop and recovery, enable/disable (acceptance suite); name normalisation and collisions (unit)
 - [x] Security review of milestone 1: 4 high, 4 medium, 4 low findings, all fixed (docs/reviews/2026-10-28-milestone-1-security-review.md)
@@ -852,6 +853,7 @@ Tasks and the tests that name them:
 - [x] Acceptance: `TestApprovalGrantAndWithdraw` (a grant lets the next calls through without asking and names the person on Rules; without it the call asks again; a withdrawn request cannot be approved and a retry asks anew; history lists both without arguments. A held call ending on withdrawal is `internal/approval` `TestHeldCallEndsWhenWithdrawn`)
 - [x] Docs: README, `docs/manual-test.md` section 18, version 0.16.0
 - [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f10-approvals-security-review.md`): two Medium findings, both fixed. No grant for one's own request (`TestNoGrantForOneself`); a grant is checked against the current rules, requester and accepted definition before anything is decided, and pinned to that definition (`TestGrantRefusedWhenRulesChanged`, `TestGrantNeedsTheAcceptedDefinition`)
+- [x] Caller cancellation during an approval hold (#47): cancelling while `Approval.Gate` is waiting atomically withdraws the pending approval (`status = 'withdrawn'`, `decided_by = 'caller cancelled'`, arguments purged), frees the hold slot, and audits `approval.withdraw:<id>` + `cancelled_while_pending`; a concurrent approve/deny wins cleanly without being overwritten or consumed (`TestCancelDuringHoldWithdrawsPendingApproval`, `TestCancelDoesNotOverwriteConcurrentApproval`, `TestCancelReleasesHoldSlot`)
 
 ### Next slices (spec 2026-11-21)
 

@@ -129,6 +129,46 @@ func TestMyApprovalsAndWithdraw(t *testing.T) {
 	}
 }
 
+func TestCancelPendingApproval(t *testing.T) {
+	ctx := context.Background()
+	s, org := signinOrg(t)
+	other, _ := s.EnsureOrg(ctx, "other", "Other")
+	approvalAt(t, s, org, "p1", "tok-ci", t0)
+	approvalAt(t, s, org, "p2", "tok-ci", t0)
+	approvalAt(t, s, org, "p3", "tok-ci", t0)
+	if ok, err := s.DecideApproval(ctx, org, "p2", ApprovalApproved, "boss", t0); err != nil || !ok {
+		t.Fatal(err)
+	}
+	// Cross-org cancel must fail.
+	if ok, err := s.CancelPendingApproval(ctx, other.ID, "p1", "caller cancelled", t0); err != nil || ok {
+		t.Fatalf("cross-org cancel: ok=%v err=%v", ok, err)
+	}
+	// Expired approval must not cancel.
+	if ok, err := s.CancelPendingApproval(ctx, org, "p3", "caller cancelled", t0.Add(11*time.Minute)); err != nil || ok {
+		t.Fatalf("expired cancel: ok=%v err=%v", ok, err)
+	}
+	// Already approved must not be overwritten.
+	if ok, err := s.CancelPendingApproval(ctx, org, "p2", "caller cancelled", t0); err != nil || ok {
+		t.Fatalf("approved cancel: ok=%v err=%v", ok, err)
+	}
+	gotApproved, _ := s.GetApproval(ctx, org, "p2")
+	if gotApproved.Status != ApprovalApproved {
+		t.Fatalf("approved status overwritten to %q", gotApproved.Status)
+	}
+	// Pending approval cancels atomically and purges arguments.
+	if ok, err := s.CancelPendingApproval(ctx, org, "p1", "caller cancelled", t0); err != nil || !ok {
+		t.Fatalf("cancel pending: ok=%v err=%v", ok, err)
+	}
+	got, _ := s.GetApproval(ctx, org, "p1")
+	if got.Status != ApprovalWithdrawn || len(got.Args) != 0 || got.DecidedBy != "caller cancelled" || got.DecidedAt == nil {
+		t.Fatalf("cancelled row: %+v", got)
+	}
+	// Second cancel returns false.
+	if ok, err := s.CancelPendingApproval(ctx, org, "p1", "caller cancelled", t0); err != nil || ok {
+		t.Fatalf("second cancel: ok=%v err=%v", ok, err)
+	}
+}
+
 func TestUserRuleNeedsAMember(t *testing.T) {
 	ctx := context.Background()
 	s, org := signinOrg(t)

@@ -31,6 +31,7 @@ by default) for a decision
   sessions of the same person.
 - **History** lists decided requests.
 - A person sees their own waiting requests on **Start** and can withdraw one.
+- If the AI client cancels a call while it is waiting for approval, Privo automatically withdraws that pending request and clears its stored arguments (unless an approver has already decided it).
 
 ## Grants
 

@@ -371,3 +371,237 @@ func TestOwnKnowsTheMemberAndIgnoresCase(t *testing.T) {
 		t.Error("an empty requester user id matched")
 	}
 }
+
+func TestCancelDuringHoldWithdrawsPendingApproval(t *testing.T) {
+	s, st, org := setup(t)
+	s.Hold = 5 * time.Second
+	s.Poll = 20 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+
+	type res struct {
+		out Outcome
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		out, err := s.Gate(ctx, req(org, "cancel-hold"))
+		done <- res{out, err}
+	}()
+
+	var id string
+	deadline := time.Now().Add(2 * time.Second)
+	for id == "" && time.Now().Before(deadline) {
+		list, _ := st.ListApprovals(context.Background(), org, store.ApprovalPending, 10)
+		if len(list) == 1 {
+			id = list[0].ID
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("pending approval was never created")
+	}
+	cancel()
+
+	got := <-done
+	if got.err != nil || got.out.Result != Cancelled || got.out.ID != id || !got.out.Withdrawn {
+		t.Fatalf("gate after cancel: %+v err=%v", got.out, got.err)
+	}
+	a, err := st.GetApproval(context.Background(), org, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Status != store.ApprovalWithdrawn || a.DecidedBy != "caller cancelled" || len(a.Args) != 0 {
+		t.Fatalf("approval row after cancel: %+v", a)
+	}
+	if err := s.Decide(context.Background(), org, id, approver, true); !errors.Is(err, ErrNotPending) {
+		t.Fatalf("decide after cancel: %v, want ErrNotPending", err)
+	}
+	// A subsequent call asks anew cleanly.
+	s.Hold = 30 * time.Millisecond
+	next, err := s.Gate(context.Background(), req(org, "cancel-hold"))
+	if err != nil || next.Result != Pending || next.ID == id {
+		t.Fatalf("retry after cancel: %+v err=%v", next, err)
+	}
+}
+
+func TestCancelDoesNotOverwriteConcurrentApproval(t *testing.T) {
+	s, st, org := setup(t)
+	s.Hold = 5 * time.Second
+	s.Poll = 2 * time.Second // ensure cancel fires before wait polls again
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type res struct {
+		out Outcome
+		err error
+	}
+	done := make(chan res, 1)
+	go func() {
+		out, err := s.Gate(ctx, req(org, "race-approve"))
+		done <- res{out, err}
+	}()
+
+	var id string
+	deadline := time.Now().Add(2 * time.Second)
+	for id == "" && time.Now().Before(deadline) {
+		list, _ := st.ListApprovals(context.Background(), org, store.ApprovalPending, 10)
+		if len(list) == 1 {
+			id = list[0].ID
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if id == "" {
+		t.Fatal("pending approval was never created")
+	}
+
+	// Approver decides first, then caller cancels while wait is sleeping on Poll.
+	if err := s.Decide(context.Background(), org, id, approver, true); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+
+	got := <-done
+	if got.err != nil || got.out.Result != Cancelled || got.out.Withdrawn {
+		t.Fatalf("gate after concurrent approve+cancel: %+v err=%v", got.out, got.err)
+	}
+	// Crucial invariant: the approval stays 'approved' (neither withdrawn nor consumed).
+	a, err := st.GetApproval(context.Background(), org, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Status != store.ApprovalApproved || len(a.Args) == 0 {
+		t.Fatalf("approval row corrupted: status=%q argsLen=%d", a.Status, len(a.Args))
+	}
+	// A retry with a live context consumes the untouched approval and runs.
+	ran, err := s.Gate(context.Background(), req(org, "race-approve"))
+	if err != nil || ran.Result != Approved || ran.ID != id {
+		t.Fatalf("retry after concurrent approve+cancel: %+v err=%v", ran, err)
+	}
+
+	// Also verify concurrent denial is preserved (not overwritten to withdrawn).
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	go func() {
+		out, err := s.Gate(ctx2, req(org, "race-deny"))
+		done <- res{out, err}
+	}()
+	var denyID string
+	deadline = time.Now().Add(2 * time.Second)
+	for denyID == "" && time.Now().Before(deadline) {
+		list, _ := st.ListApprovals(context.Background(), org, store.ApprovalPending, 10)
+		if len(list) == 1 {
+			denyID = list[0].ID
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if denyID == "" {
+		t.Fatal("second pending approval never created")
+	}
+	if err := s.Decide(context.Background(), org, denyID, approver, false); err != nil {
+		t.Fatal(err)
+	}
+	cancel2()
+	got2 := <-done
+	if got2.err != nil || got2.out.Result != Denied || got2.out.Withdrawn {
+		t.Fatalf("gate after concurrent deny+cancel: %+v err=%v", got2.out, got2.err)
+	}
+	denied, _ := st.GetApproval(context.Background(), org, denyID)
+	if denied.Status != store.ApprovalDenied {
+		t.Fatalf("denied row overwritten to %q", denied.Status)
+	}
+}
+
+func TestCancelReleasesHoldSlot(t *testing.T) {
+	s, st, org := setup(t)
+	s.Hold = 5 * time.Second
+	s.Poll = 10 * time.Millisecond
+
+	cancels := make([]context.CancelFunc, MaxHoldsPerRequester)
+	var wg sync.WaitGroup
+	for i := 0; i < MaxHoldsPerRequester; i++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels[i] = cancel
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, _ = s.Gate(ctx, req(org, "slot-"+string(rune('a'+idx))))
+		}(i)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		s.mu.Lock()
+		n := s.holds["tokA"]
+		s.mu.Unlock()
+		if n == MaxHoldsPerRequester {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Non-held call while slots are full returns immediately without holding
+	// and cancelling its context afterwards does not withdraw existing pending approvals.
+	start := time.Now()
+	extraCtx, extraCancel := context.WithCancel(context.Background())
+	out, err := s.Gate(extraCtx, req(org, "slot-a"))
+	extraCancel()
+	if err != nil || out.Result != Pending || time.Since(start) > time.Second {
+		t.Fatalf("non-held retry: %+v err=%v took=%v", out, err, time.Since(start))
+	}
+	if got, _ := st.GetApproval(context.Background(), org, out.ID); got.Status != store.ApprovalPending {
+		t.Fatalf("non-held retry changed approval status to %q", got.Status)
+	}
+
+	// Cancelling one held call frees a hold slot so a new call can hold until decided.
+	cancels[0]()
+	deadline2 := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline2) {
+		s.mu.Lock()
+		n := s.holds["tokA"]
+		s.mu.Unlock()
+		if n < MaxHoldsPerRequester {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	type res struct {
+		out Outcome
+		err error
+	}
+	reusedDone := make(chan res, 1)
+	go func() {
+		afterOut, afterErr := s.Gate(context.Background(), req(org, "slot-reused"))
+		reusedDone <- res{afterOut, afterErr}
+	}()
+	var reusedID string
+	deadline3 := time.Now().Add(2 * time.Second)
+	for reusedID == "" && time.Now().Before(deadline3) {
+		list, _ := st.ListApprovals(context.Background(), org, store.ApprovalPending, 50)
+		for _, a := range list {
+			if a.ArgsDigest == "slot-reused" {
+				reusedID = a.ID
+				break
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if reusedID == "" {
+		t.Fatal("slot-reused approval was never created")
+	}
+	if err := s.Decide(context.Background(), org, reusedID, approver, true); err != nil {
+		t.Fatal(err)
+	}
+	reused := <-reusedDone
+	if reused.err != nil || reused.out.Result != Approved || reused.out.ID != reusedID {
+		t.Fatalf("call after freed slot did not hold for decision: %+v err=%v", reused.out, reused.err)
+	}
+
+	for _, c := range cancels[1:] {
+		c()
+	}
+	wg.Wait()
+	s.mu.Lock()
+	remaining := s.holds["tokA"]
+	s.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("leaked %d hold slots after all calls finished", remaining)
+	}
+}
