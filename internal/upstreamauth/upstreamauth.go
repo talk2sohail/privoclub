@@ -52,6 +52,15 @@ var (
 	ErrInvalidClient = errors.New("upstreamauth: the authorization server refused the client")
 )
 
+// InsufficientScopeError is returned when an upstream server answers 403 with a
+// Bearer insufficient_scope challenge carrying validated scopes.
+type InsufficientScopeError struct {
+	Scopes []string
+}
+
+// Error returns a fixed message and never echoes raw header content.
+func (e *InsufficientScopeError) Error() string { return "upstream: insufficient scope" }
+
 // Client makes the requests. HTTP should be the egress client.
 type Client struct {
 	HTTP    *http.Client

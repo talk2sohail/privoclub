@@ -26,12 +26,22 @@ type Metrics struct {
 	// Upstreams reports each server's connection state at scrape time; nil
 	// leaves the metric out.
 	Upstreams func() []UpstreamState
+	// Breakers reports each server's circuit breaker state at scrape time; nil
+	// leaves the metric out.
+	Breakers func() []BreakerState
 }
 
 // UpstreamState is one server's connection state for privo_upstream_up.
 type UpstreamState struct {
 	Server string
 	Up     bool
+}
+
+// BreakerState is one server's circuit breaker state for
+// privo_upstream_breaker_state (0=closed, 1=open, 2=half-open), with no org_id.
+type BreakerState struct {
+	Server string
+	State  int
 }
 
 // Buckets of the duration histogram, in seconds.
@@ -155,6 +165,13 @@ func (m *Metrics) Write(w io.Writer) {
 			fmt.Fprintf(&b, "privo_upstream_up{server=%s} %d\n", quote(s.Server), v)
 		}
 	}
+	if m.Breakers != nil {
+		states := aggregateBreakers(m.Breakers())
+		b.WriteString("# HELP privo_upstream_breaker_state Circuit breaker state per upstream server (0=closed, 1=open, 2=half-open).\n# TYPE privo_upstream_breaker_state gauge\n")
+		for _, s := range states {
+			fmt.Fprintf(&b, "privo_upstream_breaker_state{server=%s} %d\n", quote(s.Server), s.State)
+		}
+	}
 	b.WriteString("# HELP privo_audit_events_lost_total Audit events that could not be stored after retries.\n# TYPE privo_audit_events_lost_total counter\n")
 	fmt.Fprintf(&b, "privo_audit_events_lost_total %d\n", m.auditLost.Load())
 	b.WriteString("# HELP privo_telemetry_dropped_total Call statistics and diagnostic events not recorded (queue full or write failed).\n# TYPE privo_telemetry_dropped_total counter\n")
@@ -167,4 +184,32 @@ func (m *Metrics) Write(w io.Writer) {
 func quote(v string) string {
 	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`)
 	return `"` + r.Replace(v) + `"`
+}
+
+func aggregateBreakers(in []BreakerState) []BreakerState {
+	if len(in) == 0 {
+		return nil
+	}
+	byServer := make(map[string]int, len(in))
+	sev := func(s int) int {
+		switch s {
+		case 1: // open
+			return 2
+		case 2: // half-open
+			return 1
+		default: // closed
+			return 0
+		}
+	}
+	for _, s := range in {
+		if cur, ok := byServer[s.Server]; !ok || sev(s.State) > sev(cur) {
+			byServer[s.Server] = s.State
+		}
+	}
+	out := make([]BreakerState, 0, len(byServer))
+	for srv, st := range byServer {
+		out = append(out, BreakerState{Server: srv, State: st})
+	}
+	slices.SortFunc(out, func(a, b BreakerState) int { return strings.Compare(a.Server, b.Server) })
+	return out
 }

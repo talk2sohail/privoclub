@@ -148,3 +148,42 @@ Every server that exists keeps being reachable by everyone, so nothing changes
 for AI clients until an admin gives a server to a team. The migration has a
 down step, and restoring the backup is the way back. Members now land on
 **Start** instead of **Tokens**.
+
+## Rate limits, bulkheads and circuit breakers
+
+Privo protects the gateway and downstream MCP servers with three inline controls
+([ADR 0001](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0001-request-pipeline.md),
+[ADR 0010](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0010-operations.md)):
+
+- **GCRA rate limits** on `/mcp` after bearer authentication, per token
+  (`PRIVO_RATE_LIMIT_TOKEN_RPM`, default `120`), per member
+  (`PRIVO_RATE_LIMIT_USER_RPM`, default `300`), and per organisation
+  (`PRIVO_RATE_LIMIT_ORG_RPM`, default `1200`). Exceeding a limit sheds the
+  request immediately with HTTP `429 Too Many Requests`, an integer
+  `Retry-After` header (`>= 1` second), and a generic plain-text body. Rate
+  limiter state is bounded to `100,000` keys per limiter (evicting idle keys
+  first).
+- **In-flight concurrency caps and per-upstream bulkheads.** Global
+  (`PRIVO_MAX_INFLIGHT`, default `256`) and per-organisation
+  (`PRIVO_ORG_MAX_INFLIGHT`, default `128`) caps shed excess `/mcp` requests
+  immediately with HTTP `503 Service Unavailable` and `Retry-After: 1`. Each
+  upstream server also has a per-organisation bulkhead
+  (`PRIVO_UPSTREAM_MAX_INFLIGHT`, default `32`) enforced *after* policy
+  decisions and approval holds, so waiting for a person to approve a call never
+  occupies an upstream slot and a slow server cannot starve healthy ones.
+- **Per-upstream circuit breakers.** Each `(organisation, server)` pair tracks
+  consecutive upstream transport failures, HTTP `5xx` answers, unavailable
+  sessions, and call timeouts (`PRIVO_CIRCUIT_BREAKER_THRESHOLD`, default `5`).
+  Upstream tool errors (`isError`), JSON-RPC application errors, policy or
+  approval refusals, missing/refused user credentials, malformed replies, and
+  client cancellations never trip the breaker. Once open, calls are refused
+  fast for `PRIVO_CIRCUIT_BREAKER_COOLDOWN` (default `30s`, minimum `1s` when
+  enabled), then a single `half-open` probe tests recovery.
+
+Setting any rate limit, concurrency cap, or `PRIVO_CIRCUIT_BREAKER_THRESHOLD` to
+`0` disables that control. Refusals are recorded in call statistics
+(`outcome="refused"` with `error_class` `rate_limited`, `in_flight_limit`, or
+`circuit_open`), circuit breaker transitions appear in the diagnostic log under
+**Connections**, and Prometheus `/metrics` exposes
+`privo_upstream_breaker_state{server}` (`0` closed, `1` open, `2` half-open). See
+the [Configuration reference](configuration.md) for every variable.

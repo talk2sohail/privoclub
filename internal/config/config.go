@@ -92,6 +92,17 @@ type Config struct {
 	// MetricsAddr is where Prometheus metrics are served on their own
 	// listener (PRIVO_METRICS_ADDR); empty, the default, serves none.
 	MetricsAddr string
+
+	// Rate limits, in-flight concurrency caps, and circuit breaker (F02, ADR
+	// 0001 stage 2, ADR 0010). Zero disables the corresponding limiter/breaker.
+	RateLimitTokenRPM       int
+	RateLimitUserRPM        int
+	RateLimitOrgRPM         int
+	MaxInFlight             int
+	OrgMaxInFlight          int
+	UpstreamMaxInFlight     int
+	CircuitBreakerThreshold int
+	CircuitBreakerCooldown  time.Duration
 }
 
 // Defaults applied when a variable is unset or empty.
@@ -118,6 +129,17 @@ const (
 	// Call statistics and the diagnostic log (ADR 0024).
 	DefaultTelemetryRetentionDays = 30
 	MaxTelemetryRetentionDays     = 400
+
+	// Rate limits, in-flight caps, and circuit breaker (F02, ADR 0001, ADR 0010).
+	DefaultRateLimitTokenRPM       = 120
+	DefaultRateLimitUserRPM        = 300
+	DefaultRateLimitOrgRPM         = 1200
+	DefaultMaxInFlight             = 256
+	DefaultOrgMaxInFlight          = 128
+	DefaultUpstreamMaxInFlight     = 32
+	DefaultCircuitBreakerThreshold = 5
+	DefaultCircuitBreakerCooldown  = 30 * time.Second
+	MinCircuitBreakerCooldown      = time.Second
 )
 
 // Load reads configuration using getenv (usually os.Getenv). All problems are
@@ -252,6 +274,47 @@ func Load(getenv func(string) string) (Config, error) {
 			errs = append(errs, fmt.Errorf("PRIVO_PUBLIC_URL: %w", err))
 		} else {
 			cfg.PublicURL = u
+		}
+	}
+
+	thresholdValid := true
+	for _, item := range []struct {
+		name string
+		dst  *int
+		def  int
+	}{
+		{"PRIVO_RATE_LIMIT_TOKEN_RPM", &cfg.RateLimitTokenRPM, DefaultRateLimitTokenRPM},
+		{"PRIVO_RATE_LIMIT_USER_RPM", &cfg.RateLimitUserRPM, DefaultRateLimitUserRPM},
+		{"PRIVO_RATE_LIMIT_ORG_RPM", &cfg.RateLimitOrgRPM, DefaultRateLimitOrgRPM},
+		{"PRIVO_MAX_INFLIGHT", &cfg.MaxInFlight, DefaultMaxInFlight},
+		{"PRIVO_ORG_MAX_INFLIGHT", &cfg.OrgMaxInFlight, DefaultOrgMaxInFlight},
+		{"PRIVO_UPSTREAM_MAX_INFLIGHT", &cfg.UpstreamMaxInFlight, DefaultUpstreamMaxInFlight},
+		{"PRIVO_CIRCUIT_BREAKER_THRESHOLD", &cfg.CircuitBreakerThreshold, DefaultCircuitBreakerThreshold},
+	} {
+		*item.dst = item.def
+		if v := strings.TrimSpace(getenv(item.name)); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				errs = append(errs, fmt.Errorf("%s %q: must be an integer >= 0 (0 disables)", item.name, v))
+				if item.name == "PRIVO_CIRCUIT_BREAKER_THRESHOLD" {
+					thresholdValid = false
+				}
+				continue
+			}
+			*item.dst = n
+		}
+	}
+
+	cfg.CircuitBreakerCooldown = DefaultCircuitBreakerCooldown
+	if v := strings.TrimSpace(getenv("PRIVO_CIRCUIT_BREAKER_COOLDOWN")); v != "" {
+		d, err := time.ParseDuration(v)
+		switch {
+		case err != nil || d < 0:
+			errs = append(errs, fmt.Errorf("PRIVO_CIRCUIT_BREAKER_COOLDOWN %q: must be a non-negative duration", v))
+		case thresholdValid && cfg.CircuitBreakerThreshold > 0 && d < MinCircuitBreakerCooldown:
+			errs = append(errs, fmt.Errorf("PRIVO_CIRCUIT_BREAKER_COOLDOWN %s: must be at least %s when PRIVO_CIRCUIT_BREAKER_THRESHOLD > 0", d, MinCircuitBreakerCooldown))
+		default:
+			cfg.CircuitBreakerCooldown = d
 		}
 	}
 
