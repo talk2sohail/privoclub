@@ -1,6 +1,6 @@
 # Building Privo
 
-Privo is one static Go binary, `cmd/privo`. Building it needs Go 1.26 or
+Privo is one static Go binary, `cmd/privo`. Building it needs Go 1.27 or
 later; `go.mod` pins the toolchain (1.27.4 or later: GO-2026-6859).
 
 | Target | What it does |

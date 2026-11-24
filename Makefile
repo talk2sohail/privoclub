@@ -1,4 +1,4 @@
-# Privo build targets. Requires Go 1.26+ (go.mod pins the toolchain).
+# Privo build targets. Requires Go 1.27+ (go.mod pins the toolchain).
 # The version is the semantic version in internal/buildinfo/VERSION (docs/site/development/versioning.md).
 VERSION := $(shell tr -d '[:space:]' < internal/buildinfo/VERSION)
 LDFLAGS := -s -w

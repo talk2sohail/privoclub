@@ -1,55 +1,72 @@
 # Build and run
 
-## Build
+## Try locally with Docker (no Go needed)
 
-Requires Go 1.26 or later; `go.mod` pins the toolchain (1.27.4 or later:
-GO-2026-6859).
+1. Build the image and generate a master key readable by the container's
+   `nonroot` user (`65532`):
+
+   ```sh
+   make image
+   umask 077 && openssl rand -base64 32 > master.key && chmod 644 master.key
+   ```
+
+2. Start Privo on `http://localhost:8080` (for browser sign-in, also pass
+   `PRIVO_GITHUB_CLIENT_ID` and `PRIVO_GITHUB_CLIENT_SECRET` from a GitHub
+   OAuth App with callback `http://localhost:8080/auth/github/callback`):
+
+   ```sh
+   docker run -d --name privo -p 127.0.0.1:8080:8080 \
+     -v privo_data:/data \
+     -v "$PWD/master.key:/run/secrets/master_key:ro" \
+     -e PRIVO_PUBLIC_URL=http://localhost:8080 \
+     -e PRIVO_MASTER_KEY_FILE=/run/secrets/master_key \
+     privo:$(tr -d '[:space:]' < internal/buildinfo/VERSION)
+   ```
+
+3. Claim the owner account in the browser (or issue a CLI token below):
+
+   ```sh
+   docker exec privo /privo admin setup-link
+   ```
+
+## Build and run the binary
+
+Requires Go 1.27 or later; `go.mod` pins `go1.27.4` (GO-2026-6859). The admin
+app is embedded in the binary, so no Node is needed ([Building Privo](../development/building.md)).
 
 ```sh
-make            # vet, lint, test, build
-make build      # bin/privo
-make image      # container image
-```
-
-The admin app is built into the binary, so building Privo needs no Node.
-[Building Privo](../development/building.md) has every target.
-
-## Run
-
-```sh
-PRIVO_LISTEN=:8080 PRIVO_DATA_DIR=./data bin/privo serve
+make build                                        # bin/privo
+openssl rand -base64 32 > master.key
+PRIVO_MASTER_KEY_FILE=master.key PRIVO_DATA_DIR=./data bin/privo serve
 curl localhost:8080/livez
 ```
 
-`serve` needs a master key: 32 random bytes, base64 (`openssl rand -base64
-32`), in a file named by `PRIVO_MASTER_KEY_FILE`. Every setting is in the
-[configuration reference](configuration.md); they can also live in
-[a configuration file](configuration-file.md).
+Every setting is in the [configuration reference](configuration.md) and can
+also live in [a configuration file](configuration-file.md).
 
 !!! warning
-    Back up the master key. Without it, every stored credential in the data
+    Back up `master.key`. Without it, every stored credential in the data
     directory is unreadable, and a backup cannot be restored.
 
-## Your first token
+## Your first sign-in or token
 
-Where you have a shell on the server:
+With [sign-in with GitHub](../using/admin-site.md) configured, print a
+one-time owner link and do everything else in the browser:
+
+```sh
+privo admin setup-link
+```
+
+For CLI-only or API scripts where you have a shell on the server:
 
 ```sh
 privo token create --name you --role owner --kind control       # admin API
 privo token create --name ci --role member --kind gateway        # a script: servers everyone can use
 ```
 
-Where you have no shell (the distroless image on Coolify), generate a token on
-your own machine and give it to the first boot instead; see
-[Deploy on Coolify](coolify.md#first-run-your-first-admin-token):
-
-```sh
-go run ./cmd/privo token generate     # prints the token; keep it, it is not shown again
-```
-
-Then set up [sign-in with GitHub](../using/admin-site.md): everything after
-the first sign-in happens in the browser. [Tokens](../using/tokens.md)
-explains the two kinds.
+For headless containers with neither browser sign-in nor SSH, see
+[Deploy on Coolify](coolify.md#first-run-your-first-admin-token).
+[Tokens](../using/tokens.md) explains the two kinds.
 
 ## The command line
 
