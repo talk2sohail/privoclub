@@ -1768,7 +1768,7 @@ Approve with changes; 0 Critical, 1 High, 1 Medium, 5 Low, 3 Info. Fixed, each w
 - [x] T-10: the time held for a person's approval is its own phase (`wait_us`) and is left out of latency and the duration histogram (`TestMetricsText`, `TestCountAndSampleCallStats`)
 
 ## F30. Documentation site (docs.privo.club)
-Status: In progress (live at https://docs.privo.club since 2026-11-24; the missing pages and the links from the landing page and the admin app are open; guideline in `docs/documentation-site.md`)
+Status: In progress (live at https://docs.privo.club since 2026-11-24; the missing pages and the link from the admin app are open; guideline in `docs/documentation-site.md`)
 
 Goal: the user documentation is a website built with MkDocs from
 `docs/site/`, next to the code and changed in the same pull request, the way
@@ -1836,7 +1836,9 @@ task 4.
   the app through the Coolify API, 2026-11-24; settings in
   `docs/privo-club-deployment.md`). Checked live: 200 on pages, 404 page,
   CSP and the other headers through Cloudflare, search with no console error
-- [ ] Link the docs from the landing page and the admin app's header
+- [x] Link the docs from the landing page (its refresh, 2026-11-25: nav, footer,
+  quick start, security and FAQ link to docs.privo.club; "Get started" opens it)
+- [ ] Link the docs from the admin app's header
 - [x] Coolify: `!mkdocs.yml` in the gateway's Watch Paths (2026-11-24)
 - [x] Rules: `CLAUDE.md` names `docs/site/` in the workflow, the quality bar
   and the layout

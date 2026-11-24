@@ -1,4 +1,4 @@
-// Privo Club — landing page + waitlist server.
+// privo.club: the landing page and the Privo Cloud waitlist.
 // Zero dependencies: Node's built-in http and sqlite modules only.
 
 import http from "node:http";
@@ -7,20 +7,23 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile, stat, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { mailEnabled, sendWelcome, verifyMail } from "./mailer.js";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(ROOT, "public");
 const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, "data");
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
-// Only show "join N others" once the list is big enough not to look empty.
+// Only show "N people are on the waitlist" once the list is big enough not to look empty.
 const PUBLIC_COUNT_MIN = Number(process.env.PUBLIC_COUNT_MIN || 50);
 
 // ---------- database ----------
 
 await mkdir(DATA_DIR, { recursive: true });
 const db = new DatabaseSync(path.join(DATA_DIR, "waitlist.db"));
+// edit_token, role, clients, tools, pain, pay, note and updated_at (and welcome_sent_at, added later)
+// belonged to the post-signup survey and the welcome email, both removed. The columns stay so
+// existing databases keep what was collected; nothing writes them now, and the CSV export still
+// includes them.
 db.exec(`
   PRAGMA journal_mode = WAL;
   CREATE TABLE IF NOT EXISTS signups (
@@ -44,13 +47,8 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_signups_referred_by ON signups(referred_by);
 `);
-// Columns added after launch: add them to existing databases.
-const columns = new Set(db.prepare("PRAGMA table_info(signups)").all().map((c) => c.name));
-if (!columns.has("welcome_sent_at")) db.exec("ALTER TABLE signups ADD COLUMN welcome_sent_at TEXT");
-
 const q = {
   byEmail: db.prepare("SELECT * FROM signups WHERE email = ?"),
-  byToken: db.prepare("SELECT * FROM signups WHERE edit_token = ?"),
   refExists: db.prepare("SELECT 1 FROM signups WHERE ref_code = ?"),
   insert: db.prepare(`INSERT INTO signups
     (email, ref_code, edit_token, referred_by, utm_source, utm_medium, utm_campaign, referrer_host)
@@ -58,34 +56,13 @@ const q = {
   position: db.prepare("SELECT COUNT(*) AS n FROM signups WHERE id <= ?"),
   referrals: db.prepare("SELECT COUNT(*) AS n FROM signups WHERE referred_by = ?"),
   count: db.prepare("SELECT COUNT(*) AS n FROM signups"),
-  updateProfile: db.prepare(`UPDATE signups
-    SET role = ?, clients = ?, tools = ?, pain = ?, pay = ?, note = ?,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-    WHERE id = ?`),
-  markWelcomed: db.prepare("UPDATE signups SET welcome_sent_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?"),
   all: db.prepare("SELECT * FROM signups ORDER BY id"),
-};
-
-// ---------- survey vocabulary (keep in sync with public/app.js) ----------
-
-const ALLOWED = {
-  role: ["developer", "founder", "professional", "curious"],
-  clients: ["claude", "chatgpt", "cursor", "vscode", "windsurf", "other"],
-  tools: ["github", "gmail", "gdrive", "slack", "notion", "linear", "postgres", "jira", "figma", "stripe", "calendar", "other"],
-  pain: ["trust", "keys", "hosting", "discovery", "visibility", "new"],
-  pay: ["yes", "maybe", "no"],
 };
 
 // ---------- helpers ----------
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const clip = (v, n = 120) => (typeof v === "string" ? v.trim().slice(0, n) || null : null);
-const oneOf = (v, list) => (list.includes(v) ? v : null);
-const manyOf = (v, list) => {
-  if (!Array.isArray(v)) return null;
-  const picked = [...new Set(v.filter((x) => list.includes(x)))];
-  return picked.length ? JSON.stringify(picked) : null;
-};
 
 function newRefCode() {
   const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
@@ -180,37 +157,12 @@ async function joinWaitlist(req, res) {
     referrerHost = body.referrer ? new URL(body.referrer).hostname.slice(0, 120) : null;
   } catch {}
 
-  const editToken = randomBytes(24).toString("base64url");
+  // edit_token is NOT NULL in existing databases; it was the survey's key and is unused now.
   q.insert.run(
-    email, newRefCode(), editToken, referredBy,
+    email, newRefCode(), "", referredBy,
     clip(body.utm_source), clip(body.utm_medium), clip(body.utm_campaign), referrerHost,
   );
-  const row = q.byEmail.get(email);
-  const info = standing(row);
-  send(res, 201, { ok: true, alreadyJoined: false, editToken, welcomeEmail: mailEnabled, ...info });
-
-  // Only new signups get the welcome email, so the form can't be used to spam an address.
-  sendWelcome({ email, position: info.position, refCode: row.ref_code }).then((sent) => {
-    if (sent) q.markWelcomed.run(row.id);
-  });
-}
-
-async function saveProfile(req, res) {
-  if (rateLimited(req, "profile", 30)) return send(res, 429, { error: "Too many attempts. Try again in a few minutes." });
-  const body = await readJson(req);
-  const row = typeof body.editToken === "string" ? q.byToken.get(body.editToken) : null;
-  if (!row) return send(res, 404, { error: "Signup not found." });
-
-  q.updateProfile.run(
-    oneOf(body.role, ALLOWED.role),
-    manyOf(body.clients, ALLOWED.clients),
-    manyOf(body.tools, ALLOWED.tools),
-    oneOf(body.pain, ALLOWED.pain),
-    oneOf(body.pay, ALLOWED.pay),
-    clip(body.note, 1000),
-    row.id,
-  );
-  send(res, 200, { ok: true });
+  send(res, 201, { ok: true, alreadyJoined: false, ...standing(q.byEmail.get(email)) });
 }
 
 function publicCount(_req, res) {
@@ -222,12 +174,9 @@ function adminStats(req, res) {
   if (!isAdmin(req)) return send(res, 401, { error: "Unauthorized" });
   const rows = q.all.all();
   const now = Date.now();
-  const tally = (key, multi = false) => {
+  const tally = (key) => {
     const out = {};
-    for (const r of rows) {
-      const vals = multi ? (r[key] ? JSON.parse(r[key]) : []) : r[key] ? [r[key]] : [];
-      for (const v of vals) out[v] = (out[v] || 0) + 1;
-    }
+    for (const r of rows) if (r[key]) out[r[key]] = (out[r[key]] || 0) + 1;
     return Object.fromEntries(Object.entries(out).sort((a, b) => b[1] - a[1]));
   };
   const daily = {};
@@ -240,50 +189,22 @@ function adminStats(req, res) {
     total: rows.length,
     last24h: rows.filter((r) => now - Date.parse(r.created_at) < 864e5).length,
     last7d: rows.filter((r) => now - Date.parse(r.created_at) < 7 * 864e5).length,
-    surveyed: rows.filter((r) => r.updated_at).length,
-    welcomed: rows.filter((r) => r.welcome_sent_at).length,
-    mailEnabled,
     referred: rows.filter((r) => r.referred_by).length,
     daily,
-    role: tally("role"),
-    clients: tally("clients", true),
-    tools: tally("tools", true),
-    pain: tally("pain"),
-    pay: tally("pay"),
     sources: tally("utm_source"),
     referrerHosts: tally("referrer_host"),
     topReferrers: Object.entries(referrers)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([code, n]) => ({ email: emailByRef[code], referrals: n })),
-    notes: rows
-      .filter((r) => r.note)
-      .slice(-50)
-      .reverse()
-      .map((r) => ({ email: r.email, note: r.note, at: r.created_at })),
   });
-}
-
-// Sends the welcome email to everyone who doesn't have one yet (e.g. signed up while SMTP was off).
-const pendingWelcome = db.prepare("SELECT * FROM signups WHERE welcome_sent_at IS NULL ORDER BY id");
-const inFlight = new Set();
-function adminSendPending(req, res) {
-  if (!isAdmin(req)) return send(res, 401, { error: "Unauthorized" });
-  if (!mailEnabled) return send(res, 409, { error: "Email is off: set SMTP_PASS first." });
-  const rows = pendingWelcome.all().filter((r) => !inFlight.has(r.id));
-  for (const row of rows) {
-    inFlight.add(row.id);
-    sendWelcome({ email: row.email, position: standing(row).position, refCode: row.ref_code })
-      .then((sent) => { if (sent) q.markWelcomed.run(row.id); })
-      .finally(() => inFlight.delete(row.id));
-  }
-  send(res, 202, { queued: rows.length });
 }
 
 function adminExport(req, res) {
   if (!isAdmin(req)) return send(res, 401, { error: "Unauthorized" });
-  const cols = ["id", "email", "created_at", "ref_code", "referred_by", "role", "clients", "tools",
-    "pain", "pay", "note", "utm_source", "utm_medium", "utm_campaign", "referrer_host", "welcome_sent_at"];
+  // Every column the table has (so survey answers collected before the survey was removed are not
+  // lost), except edit_token.
+  const cols = db.prepare("PRAGMA table_info(signups)").all().map((c) => c.name).filter((c) => c !== "edit_token");
   const esc = (v) => {
     if (v == null) return "";
     // Neutralise spreadsheet formulas in user-supplied text.
@@ -363,11 +284,9 @@ const SECURITY_HEADERS = {
 
 const routes = {
   "POST /api/waitlist": joinWaitlist,
-  "POST /api/waitlist/profile": saveProfile,
   "GET /api/waitlist/count": publicCount,
   "GET /api/admin/stats": adminStats,
   "GET /api/admin/export.csv": adminExport,
-  "POST /api/admin/send-pending": adminSendPending,
   "GET /healthz": (_req, res) => send(res, 200, "ok"),
 };
 
@@ -389,9 +308,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Privo Club listening on http://localhost:${PORT}`);
+  console.log(`privo.club listening on http://localhost:${PORT}`);
   if (!ADMIN_TOKEN) console.warn("ADMIN_TOKEN is not set — the admin dashboard is disabled.");
-  verifyMail();
 });
 
 for (const sig of ["SIGINT", "SIGTERM"]) {
