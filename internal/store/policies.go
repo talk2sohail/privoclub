@@ -44,7 +44,12 @@ var ErrUnknownUser = errors.New("store: no such member")
 // team to exist (ErrUnknownTeam), checked in the same transaction, so a team
 // created later never inherits a rule written for a name (F26 review R-02).
 func (s *Store) CreatePolicies(ctx context.Context, org OrgID, ps ...Policy) error {
-	return s.tx(ctx, func(tx *sql.Tx) error { return insertPolicies(ctx, tx, org, ps) })
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := insertPolicies(ctx, tx, org, ps); err != nil {
+			return err
+		}
+		return bumpPolicyVersion(ctx, tx, org)
+	})
 }
 
 // ImportPolicies applies an import of rules in one transaction (ADR 0027):
@@ -67,6 +72,9 @@ func (s *Store) ImportPolicies(ctx context.Context, org OrgID, replace bool, ps 
 				ON CONFLICT (org_id, key) DO UPDATE SET value = excluded.value`, org, defaultKey, defaultAction); err != nil {
 				return err
 			}
+		}
+		if err := bumpPolicyVersion(ctx, tx, org); err != nil {
+			return err
 		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
 	})
@@ -134,11 +142,35 @@ func (s *Store) ListPolicies(ctx context.Context, org OrgID) ([]Policy, error) {
 
 // DeletePolicy removes a rule.
 func (s *Store) DeletePolicy(ctx context.Context, org OrgID, id string) error {
-	res, err := s.w.ExecContext(ctx, `DELETE FROM policies WHERE org_id = ? AND id = ?`, org, id)
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `DELETE FROM policies WHERE org_id = ? AND id = ?`, org, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		return bumpPolicyVersion(ctx, tx, org)
+	})
+}
+
+// PolicyVersion returns the org's monotonic policy version, bumped inside
+// every transaction that alters policies or policy defaults (F09 A).
+func (s *Store) PolicyVersion(ctx context.Context, org OrgID) (int64, error) {
+	var v int64
+	err := s.r.QueryRowContext(ctx, `SELECT policy_version FROM orgs WHERE id = ?`, org).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return v, err
+}
+
+func bumpPolicyVersion(ctx context.Context, tx *sql.Tx, org OrgID) error {
+	res, err := tx.ExecContext(ctx, `UPDATE orgs SET policy_version = policy_version + 1 WHERE id = ?`, org)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	if n, _ := res.RowsAffected(); n != 1 {
 		return ErrNotFound
 	}
 	return nil

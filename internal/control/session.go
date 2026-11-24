@@ -267,6 +267,9 @@ func (a *API) patchMember(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if err != nil {
 		return err
 	}
+	if !slices.ContainsFunc(roles, store.GatewayRole) {
+		a.Grants.EvictUser(p.OrgID, u.ID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"person": u.Person, "roles": roles, "role": primaryRole(roles)})
 	return nil
 }
@@ -326,6 +329,7 @@ func (a *API) removeMember(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err := a.Store.DisableUser(r.Context(), p.OrgID, u.ID, time.Now(), ev); err != nil {
 		return err
 	}
+	a.Grants.EvictUser(p.OrgID, u.ID)
 	a.revokeLater(r.Context(), revoke)
 	toks, err := a.Store.ListTokens(r.Context(), p.OrgID)
 	if err != nil {

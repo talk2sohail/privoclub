@@ -201,6 +201,9 @@ func (a *API) editServer(ctx context.Context, p auth.Principal, s store.Server, 
 		}
 		return nil, err
 	}
+	if edit.EndConnections {
+		a.Grants.EvictServer(p.OrgID, s.ID)
+	}
 	a.revokeLater(ctx, revoke)
 	// The connection restarts with the new settings (Sync sees updated_at);
 	// pooled per-person sessions close with it.

@@ -85,8 +85,9 @@ type Gateway struct {
 	// Telemetry records how each call went (ADR 0024); nil records nothing.
 	Telemetry *telemetry.Recorder
 
-	hiddenMu sync.Mutex
-	hidden   map[string]time.Time // last record of a hidden call, per caller, server and reason
+	hiddenMu    sync.Mutex
+	hidden      map[string]time.Time // last record of a hidden call, per caller, server and reason
+	policyCache policyCache
 }
 
 // Handler returns the authenticated MCP HTTP handler.
@@ -330,11 +331,7 @@ type decision struct {
 }
 
 func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (decision, error) {
-	rules, err := g.Store.ListPolicies(ctx, c.p.OrgID)
-	if err != nil {
-		return decision{}, err
-	}
-	def, err := g.Store.Setting(ctx, c.p.OrgID, SettingPolicyDefault, store.ActionAllow)
+	rules, def, err := g.policies(ctx, c.p.OrgID)
 	if err != nil {
 		return decision{}, err
 	}

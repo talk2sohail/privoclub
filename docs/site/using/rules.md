@@ -4,6 +4,9 @@ A rule says what happens to a call: **allow**, **ask** (hold it for a
 person's approval) or **deny**. Rules are on the admin site under **Rules**.
 A rule's subject is everyone (`*`), a role (`role:<role>`), a team
 (`team:<slug>`), one member (`user:<id>`) or one token (`token:<id>`).
+Changes to rules or the organisation default apply immediately to the next
+call (cached per organisation against a version bumped in the same transaction,
+failing closed if reading rules fails).
 
 ## Rules on arguments
 

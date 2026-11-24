@@ -88,3 +88,9 @@ Admins see everyone's connections across servers on **Connections →
 Everyone's connections** (`GET /api/v1/connections?person=&server=`, 0.19.0),
 with those unused for 90 days marked; **End** revokes at the provider and
 deletes.
+
+Opened tokens are cached in memory per person and server up to their expiry
+(at most 5 minutes) and evicted immediately when a person reconnects or
+disconnects, a token refreshes, a server is edited, disabled or removed, or a
+member is removed or loses gateway access. `last_used_at` timestamps are
+coalesced and written to the database every 30 seconds and on shutdown.

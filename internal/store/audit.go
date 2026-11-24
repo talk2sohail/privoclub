@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -131,10 +132,19 @@ func (s *Store) Setting(ctx context.Context, org OrgID, key, def string) (string
 	return v, err
 }
 
-// SetSetting writes a per-org setting.
+// SetSetting writes a per-org setting. Policy settings bump policy_version in
+// the same transaction so the gateway cache sees the new value immediately.
 func (s *Store) SetSetting(ctx context.Context, org OrgID, key, value string) error {
-	_, err := s.w.ExecContext(ctx, `
-		INSERT INTO settings (org_id, key, value) VALUES (?, ?, ?)
-		ON CONFLICT (org_id, key) DO UPDATE SET value = excluded.value`, org, key, value)
+	const upsert = `INSERT INTO settings (org_id, key, value) VALUES (?, ?, ?)
+		ON CONFLICT (org_id, key) DO UPDATE SET value = excluded.value`
+	if strings.HasPrefix(key, "policy.") {
+		return s.tx(ctx, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, upsert, org, key, value); err != nil {
+				return err
+			}
+			return bumpPolicyVersion(ctx, tx, org)
+		})
+	}
+	_, err := s.w.ExecContext(ctx, upsert, org, key, value)
 	return err
 }
