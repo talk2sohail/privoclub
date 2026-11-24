@@ -37,8 +37,13 @@ markdown_extensions:
   - fenced_code
 
 nav:
-  - Introduction:
+  - Getting Started:
       - Welcome to Privo: index.md
+      - How Privo works: getting-started/how-it-works.md
+      - Key concepts: getting-started/concepts.md
+      - Deploy Privo: getting-started/deploy.md
+      - First setup and sign-in: getting-started/first-setup.md
+      - Your first server and AI client: getting-started/first-call.md
   - Installation:
       - Build and run: installation/build-and-run.md
       - Deploy on Coolify: installation/coolify.md

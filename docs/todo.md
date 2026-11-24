@@ -1819,10 +1819,14 @@ task 4.
   `TestExampleFileListsEverySetting` unchanged
 - [x] Pages written from existing sources: Tests, How a feature is made
   (`CLAUDE.md`), Building Privo
-- [ ] Write what is missing: How Privo works, Words Privo uses, Arguments
-  checked against the schema, and the Security section (threat model,
-  secrets and keys, egress, reporting a vulnerability: needs the owner's
-  contact address)
+- [x] Getting Started section (#60, phase 1 of the docs roadmap #59): How
+  Privo works, Key concepts (the "Words Privo uses" page), Deploy Privo (a
+  hub for Coolify now, with room for the deployment model of ADR 0030),
+  First setup and sign-in, Your first server and AI client; the welcome page
+  leads through it, then to the basic and advanced pages
+- [ ] Write what is missing: Arguments checked against the schema (#35), and
+  the Security section's threat model, secrets and keys, and egress (#63;
+  Reporting a vulnerability shipped with F31)
 - [x] Hosting on Coolify (guideline 2.6 B, chosen 2026-11-24): `docs/Dockerfile`
   builds the site and serves it with Caddy (pinned by digest, user `nobody`,
   port 8080) with CSP `script-src 'self'` and no `unsafe-inline`: the theme's
