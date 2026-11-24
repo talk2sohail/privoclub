@@ -1,11 +1,11 @@
 # privo.club — landing page + Privo Cloud waitlist
 
-The landing page for **Privo**, the open-source gateway between a team's AI clients and its MCP servers. It shows what Privo does (a live switchboard in the hero, and an interactive walk through the seven stops of one tool call), how to get started, and the Privo Cloud waitlist: referral links, a short post-signup survey and a private dashboard to read the results.
+The landing page for **Privo**, the open-source gateway between a team's AI clients and its MCP servers. It shows what Privo does (a live switchboard in the hero, and an interactive walk through the seven stops of one tool call), how to get started, and the Privo Cloud waitlist: a place in line, a referral link, and a private dashboard of signups.
 
-- One dependency (`nodemailer`, for the welcome email); everything else is Node's built-in `http` and `sqlite` modules
+- No dependencies: Node's built-in `http` and `sqlite` modules only
 - No third-party requests: fonts are self-hosted, no analytics, strict CSP
 - IP addresses are used for rate limiting in memory and never stored
-- New members get a welcome email from support@privo.club with their list number, referral link and a 5-point MCP safety checklist
+- The site sends no email. Joining the waitlist stores the address; invites go out by hand when Privo Cloud opens
 
 Everything on the page describes what Privo does today; check a claim against the code or the docs (docs.privo.club) before adding it. The page is plain HTML, CSS and JavaScript in `public/` (no build step), and works without JavaScript and with reduced motion.
 
@@ -29,26 +29,15 @@ npm start                     # http://localhost:3000 (or the PORT in .env)
 4. **Ports exposed:** `3000`.
 5. **Environment variables:**
    - `ADMIN_TOKEN`: long random string (`openssl rand -hex 32`)
-   - `PUBLIC_COUNT_MIN` (optional, default `50`): the page only shows "N people have asked for a seat" once the list reaches this size
-   - `SMTP_PASS`: the support@privo.club mailbox password; turns on welcome emails (see below)
-   - Optional: `SMTP_HOST` (default `mail.spacemail.com`), `SMTP_PORT` (default `465`; use `587` if your host blocks 465), `SMTP_USER` (default `support@privo.club`), `SMTP_MAX_PER_MINUTE` (default `20`), `MAIL_FROM`, `MAIL_REPLY_TO` (default: `SMTP_USER`), `PUBLIC_URL` (default `https://privo.club`)
+   - `PUBLIC_COUNT_MIN` (optional, default `50`): the page only shows "N people are on the Privo Cloud waitlist" once the list reaches this size
 6. **Persistent storage:** add a volume mounted at **`/data`**. This is where `waitlist.db` lives. Without it, every redeploy wipes your signups.
 7. Point the domain's DNS `A` record at your Coolify server, then deploy.
 
 Health check: `GET /healthz` (already configured in the Dockerfile).
 
-## Welcome emails
-
-Sent from the **support@privo.club** Spacemail mailbox over SMTP to each **new** signup (never to a repeat signup, so the form can't be used to spam an address). Sent copies appear in the mailbox's Sent folder and replies land in its inbox.
-
-- Set `SMTP_PASS` in Coolify to the mailbox password. The container logs `[mail] SMTP ready` on startup if the login works, or the exact error if it doesn't.
-- Sending is throttled to `SMTP_MAX_PER_MINUTE` (default 20) so a launch-day spike stays under Spacemail's per-mailbox limits. Emails queue in memory while throttled.
-- For good inbox placement the domain needs SPF, DKIM and DMARC records for Spacemail (see DNS below).
-- Signups that arrived while email was off (or failed) can be caught up with **Send missing welcome emails** on the dashboard.
-
-Without `SMTP_PASS` the site works normally and simply skips the email. Delivery failures are logged and never block a signup.
-
 ## DNS (Cloudflare)
+
+The MX and TXT records are for the support@privo.club mailbox (Spacemail), not for the site.
 
 | Type | Name | Content | Proxy |
 |---|---|---|---|
@@ -67,23 +56,18 @@ Use the same SSL/TLS mode as your other Coolify sites (Full or Full (strict)); "
 | Signal | Where it comes from | What it tells you |
 |---|---|---|
 | Signups per day | Waitlist form | Is the positioning pulling people in? |
-| Biggest headache | Survey | Which problem resonates: trust, keys, hosting, discovery or visibility |
-| Would pay ~$15/mo | Survey | Willingness to pay, the strongest validation signal |
-| What they'd connect first | Survey | Which servers to vet first |
-| AI apps they use | Survey | Which clients to support first |
 | Came via referral | `?ref=` links | Whether people care enough to share it |
 | UTM source / referring sites | `?utm_source=` and the HTTP referrer | Which channel works (tag every link you post) |
 
 Tag links per channel so you can compare them, e.g. `https://privo.club/?utm_source=reddit`, `?utm_source=x`, `?utm_source=hn`.
 
-Export everything as CSV from the dashboard (spreadsheet formulas in answers are neutralised).
+Export everything as CSV from the dashboard (spreadsheet formulas are neutralised). The export keeps every column of the table, so the answers of the post-signup survey (removed in 2026-11) are still there for the signups that gave them.
 
 ## API
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
-| POST | `/api/waitlist` | — | Join: `{ email, ref?, utm_* }` → position, share code, one-time edit token |
-| POST | `/api/waitlist/profile` | edit token | Save survey answers |
+| POST | `/api/waitlist` | — | Join: `{ email, ref?, utm_* }` → position, share code, referrals |
 | GET | `/api/waitlist/count` | — | Public count, `null` until `PUBLIC_COUNT_MIN` |
 | GET | `/api/admin/stats` | Bearer `ADMIN_TOKEN` | Dashboard data |
 | GET | `/api/admin/export.csv` | Bearer `ADMIN_TOKEN` | Full export |

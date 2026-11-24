@@ -35,8 +35,3 @@ body.admin-page { background: var(--tint); }
 .day-label { position: absolute; bottom: 0; font: 400 .7rem/1 var(--mono); color: var(--faint); }
 .day-label.end { right: 0; }
 
-.notes { list-style: none; margin: 0; padding: 0; }
-.notes li { padding: 14px 0; border-bottom: 1px solid var(--line); }
-.notes li:last-child { border-bottom: 0; }
-.notes p { color: var(--navy); white-space: pre-wrap; }
-.notes small { display: block; margin-top: 6px; color: var(--faint); font: 400 .76rem/1.4 var(--mono); }

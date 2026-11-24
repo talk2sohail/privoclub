@@ -1,5 +1,5 @@
 // Privo landing page: the live switchboard in the hero, the "follow one call" walkthrough,
-// client snippets, and the Privo Cloud waitlist with its share link and survey.
+// client snippets, and the Privo Cloud waitlist with its share link.
 // No dependencies and no inline code: the page's CSP allows scripts and styles from this site only.
 (() => {
   document.documentElement.classList.add("js");
@@ -442,11 +442,8 @@
   }
 
   const tpl = document.getElementById("joined-tpl");
-  const survey = document.getElementById("survey");
 
   function showJoined(data, { already = false } = {}) {
-    survey?.querySelectorAll("[data-pos]").forEach((el) => (el.textContent = data.position));
-
     document.querySelectorAll(".join-slot").forEach((slot) => {
       const node = tpl.content.cloneNode(true);
       node.querySelector("[data-pos]").textContent = data.position;
@@ -461,16 +458,10 @@
         copy.textContent = "Copied";
         setTimeout(() => (copy.textContent = "Copy"), 1800);
       });
-      if (data.welcomeEmail) node.querySelector("[data-inbox]").hidden = false;
       if (data.referrals > 0) {
         const refs = node.querySelector("[data-refs]");
         refs.textContent = `${data.referrals} ${data.referrals === 1 ? "friend has" : "friends have"} joined through your link.`;
         refs.hidden = false;
-      }
-      const openSurvey = node.querySelector("[data-open-survey]");
-      if (data.editToken && !data.surveyed && survey) {
-        openSurvey.hidden = false;
-        openSurvey.addEventListener("click", () => survey.showModal());
       }
       slot.replaceChildren(node);
     });
@@ -505,16 +496,9 @@
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || "Something went wrong. Please try again.");
 
-        const record = {
-          position: data.position,
-          refCode: data.refCode,
-          referrals: data.referrals,
-          editToken: data.editToken || store.get(STORE_KEY)?.editToken || null,
-        };
-        // Only mention the inbox right after a fresh signup, not on later visits.
-        showJoined({ ...record, welcomeEmail: data.welcomeEmail }, { already: data.alreadyJoined });
+        const record = { position: data.position, refCode: data.refCode, referrals: data.referrals };
+        showJoined(record, { already: data.alreadyJoined });
         store.set(STORE_KEY, record);
-        if (!data.alreadyJoined && data.editToken && survey) setTimeout(() => survey.showModal(), 650);
       } catch (err) {
         msg.textContent = err.message;
         button.disabled = false;
@@ -522,49 +506,6 @@
       }
     });
   });
-
-  // ---- survey ----
-  if (survey) {
-    const surveyForm = survey.querySelector("[data-survey]");
-    const surveyDone = survey.querySelector(".survey-done");
-    survey.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => survey.close()));
-    survey.addEventListener("click", (e) => { if (e.target === survey) survey.close(); });
-
-    surveyForm.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      const msg = surveyForm.querySelector("[data-survey-msg]");
-      const button = surveyForm.querySelector("button[type=submit]");
-      const record = store.get(STORE_KEY);
-      const fd = new FormData(surveyForm);
-      const payload = {
-        editToken: record?.editToken,
-        role: fd.get("role"),
-        clients: fd.getAll("clients"),
-        tools: fd.getAll("tools"),
-        pain: fd.get("pain"),
-        pay: fd.get("pay"),
-        note: fd.get("note"),
-      };
-
-      button.disabled = true;
-      try {
-        const res = await fetch("/api/waitlist/profile", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Couldn’t save your answers.");
-        store.set(STORE_KEY, { ...record, surveyed: true });
-        document.querySelectorAll("[data-open-survey]").forEach((b) => (b.hidden = true));
-        surveyForm.hidden = true;
-        surveyDone.hidden = false;
-      } catch (err) {
-        msg.textContent = err.message;
-      } finally {
-        button.disabled = false;
-      }
-    });
-  }
 
   // ---- reveal on scroll ----
   const reveals = document.querySelectorAll(".reveal");

@@ -112,8 +112,6 @@ header, main, footer { position: relative; z-index: 1; }
 .btn-sm { height: 36px; padding: 0 14px; font-size: .88rem; }
 .arrow { transition: transform .2s; }
 .btn:hover .arrow { transform: translateX(3px); }
-.link-btn { background: none; border: 0; padding: 6px 0; color: var(--leaf-ink); font: 600 .93rem var(--sans); cursor: pointer; }
-.link-btn:hover { color: var(--navy); }
 
 /* ---------- nav ---------- */
 .nav {
@@ -687,16 +685,13 @@ html:not(.js) .codebox[hidden] { display: block !important; }
 .joined-head { display: flex; gap: 14px; align-items: center; }
 .joined-check { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: var(--leaf-bg); }
 .joined-check svg { width: 22px; height: 22px; fill: none; stroke: var(--leaf-ink); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; }
-.joined-check.big { width: 56px; height: 56px; margin: 0 auto 16px; }
-.joined-check.big svg { width: 30px; height: 30px; }
 .joined-title { font-size: 1.15rem; font-weight: 600; color: var(--navy); letter-spacing: -0.015em; }
 .joined-pos { font-size: .9rem; color: var(--muted); }
 .joined-pos strong { color: var(--leaf-ink); }
 .joined-copy { margin-top: 14px; font-size: .93rem; }
 .share { display: flex; gap: 8px; margin-top: 10px; }
 .share input { flex: 1; min-width: 0; height: 36px; padding: 0 12px; border-radius: 10px; background: var(--tint); border: 1px solid var(--line); color: var(--navy); font: 400 .85rem var(--mono); }
-.joined-refs, .joined-inbox { margin-top: 10px; font-size: .88rem; color: var(--leaf-ink); }
-.joined .link-btn { margin-top: 10px; }
+.joined-refs { margin-top: 10px; font-size: .88rem; color: var(--leaf-ink); }
 
 /* ---------- faq ---------- */
 .faq-section { padding-top: clamp(40px, 6vw, 72px); }
@@ -749,42 +744,6 @@ html:not(.js) .codebox[hidden] { display: block !important; }
   border-top: 1px solid var(--line); color: var(--muted); font-size: .86rem;
 }
 .footer-base a { color: var(--muted); }
-
-/* ---------- survey dialog ---------- */
-.survey {
-  width: min(620px, calc(100vw - 24px)); max-height: calc(100dvh - 24px);
-  padding: 0; border: 0; border-radius: 20px; background: #fff; color: var(--text); box-shadow: var(--shadow-lg);
-}
-.survey::backdrop { background: rgba(7, 18, 38, .45); backdrop-filter: blur(4px); }
-.survey[open] { animation: rise .3s ease both; }
-.survey form, .survey-done { padding: clamp(20px, 4vw, 32px); }
-.survey-head { display: flex; justify-content: space-between; gap: 16px; }
-.survey .eyebrow { margin-bottom: 8px; }
-.survey h2 { font-size: clamp(1.5rem, 4vw, 1.9rem); }
-.survey .sub { margin-top: 6px; font-size: .95rem; }
-.close { flex: none; width: 34px; height: 34px; border-radius: 50%; border: 1px solid var(--line); background: #fff; color: var(--muted); font-size: 1.2rem; line-height: 1; cursor: pointer; }
-.close:hover { color: var(--navy); border-color: var(--line-2); }
-fieldset { margin: 22px 0 0; padding: 0; border: 0; min-width: 0; }
-legend { padding: 0; margin-bottom: 10px; color: var(--navy); font-weight: 600; font-size: .96rem; }
-legend small { color: var(--faint); font-weight: 400; margin-left: 6px; font-size: .82rem; }
-.chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.chips-stack { flex-direction: column; align-items: stretch; }
-.chips label { position: relative; cursor: pointer; }
-.chips input { position: absolute; opacity: 0; pointer-events: none; }
-.chips span {
-  display: inline-flex; align-items: center; min-height: 36px; padding: 6px 14px; border-radius: 999px;
-  border: 1px solid var(--line-2); background: #fff; color: var(--navy); font-size: .88rem; font-weight: 500;
-  transition: border-color .15s, background .15s, color .15s;
-}
-.chips-stack span { display: flex; border-radius: 10px; }
-.chips label:hover span { border-color: var(--faint); }
-.chips input:checked + span { border-color: var(--leaf); background: var(--leaf-bg); color: var(--leaf-ink); }
-.chips input:focus-visible + span { outline: 2px solid var(--leaf); outline-offset: 2px; }
-textarea { width: 100%; padding: 12px 14px; border-radius: 10px; resize: vertical; background: #fff; border: 1px solid var(--line-2); color: var(--navy); font: 400 .93rem/1.5 var(--sans); }
-textarea:focus { outline: 0; border-color: var(--leaf); box-shadow: 0 0 0 4px var(--leaf-bg); }
-.survey-actions { display: flex; justify-content: flex-end; align-items: center; gap: 20px; margin-top: 26px; }
-.survey-done { text-align: center; }
-.survey-done .btn { margin-top: 22px; }
 
 /* ---------- 404 ---------- */
 .lost { min-height: 100dvh; display: grid; place-items: center; padding: 48px 0; }
