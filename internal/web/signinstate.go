@@ -28,8 +28,8 @@ const (
 )
 
 // maxSealedCookie bounds what is decoded from the cookie. A sealed sign-in is
-// about 250 characters.
-const maxSealedCookie = 1024
+// about 250 characters (up to ~3 KB when carrying a scope step-up return path).
+const maxSealedCookie = 4096
 
 // maxFinished bounds the callbacks a process remembers (see finished).
 const maxFinished = 8192

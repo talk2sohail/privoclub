@@ -159,6 +159,22 @@ func (e *env) signedIn(u ghUser, person, role string) (*browser, store.User) {
 	return b, user
 }
 
+// seedSession signs a member in directly via the store (no GitHub TCP call).
+func (e *env) seedSession(u ghUser, person, role string) (*browser, store.User) {
+	e.t.Helper()
+	user := e.member(u, person, role)
+	secret, sess, err := e.srv.newSession(user.ID)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if err := e.st.CreateSession(context.Background(), e.org, sess, e.event("signin.seed")); err != nil {
+		e.t.Fatal(err)
+	}
+	b := e.browser()
+	b.cookies[e.srv.sessionCookie] = &http.Cookie{Name: e.srv.sessionCookie, Value: secret}
+	return b, user
+}
+
 // connect runs the browser leg and returns the callback's response.
 func (e *env) connect(b *browser, subject string) page {
 	e.t.Helper()
@@ -209,8 +225,21 @@ func TestSignInReturnsToTheConnectPage(t *testing.T) {
 	if cb.StatusCode != http.StatusSeeOther || cb.Header.Get("Location") != "/connect/linear" {
 		t.Fatalf("after sign-in: %d %q", cb.StatusCode, cb.Header.Get("Location"))
 	}
-	// Anything but a connect path is ignored: no open redirect.
-	for _, bad := range []string{"https://evil.example/", "//evil.example", "/connect/linear/../../x", "/admin/approvals", "/connect/LINEAR"} {
+	// A connect path with a validated ?scope= survives sign-in cleanly.
+	bScope := e.browser()
+	signinScope := bScope.get("/admin/signin?next=%2Fconnect%2Flinear%3Fscope%3Drepo%2Bgist")
+	if !strings.Contains(signinScope.Body, `name="return_to" value="/connect/linear?scope=repo%20gist"`) {
+		t.Fatalf("sign-in page does not carry scope return_to: %s", signinScope.Body)
+	}
+	startScope := bScope.post("/auth/github/start", url.Values{"return_to": {"/connect/linear?scope=repo+gist"}})
+	codeScope, stateScope := e.gh.authorize(startScope.Header.Get("Location"), ada)
+	cbScope := bScope.get("/auth/github/callback?code=" + url.QueryEscape(codeScope) + "&state=" + url.QueryEscape(stateScope))
+	if cbScope.StatusCode != http.StatusSeeOther || cbScope.Header.Get("Location") != "/connect/linear?scope=repo%20gist" {
+		t.Fatalf("after sign-in with scope: %d %q", cbScope.StatusCode, cbScope.Header.Get("Location"))
+	}
+	// Anything but a connect path (or a tampered query) is ignored: no open redirect.
+	for _, bad := range []string{"https://evil.example/", "//evil.example", "/connect/linear/../../x", "/admin/approvals", "/connect/LINEAR",
+		"/connect/linear?scope=repo&next=https://evil.example", "/connect/linear?evil=1", "/connect/linear?scope=bad%0a"} {
 		e2 := newConnEnv(t)
 		e2.member(ada, "ada", store.RoleMember)
 		b2 := e2.browser()
@@ -678,5 +707,151 @@ func TestConnectFollowsTeams(t *testing.T) {
 	}
 	if cb := e.connect(b, "ada"); cb.StatusCode != http.StatusSeeOther {
 		t.Fatalf("ada in designers: %d %s", cb.StatusCode, cb.Body)
+	}
+}
+
+func TestConnectAsksForTheUnionOfScopes(t *testing.T) {
+	ctx := context.Background()
+	e := newConnEnv(t)
+	o := *e.osrv.Config.OAuth
+	o.Scopes = []string{"read", "write", "delete:all"}
+	if err := e.st.UpdateServerOAuth(ctx, e.org, e.osrv.ID, o, nil); err != nil {
+		t.Fatal(err)
+	}
+	e.osrv.Config.OAuth = &o
+
+	// Anonymous step-up link carries validated ?scope= across sign-in without breaking open-redirect safety.
+	anon := e.browser()
+	redir := anon.get("/connect/linear?scope=repo+gist")
+	if redir.StatusCode != http.StatusSeeOther || redir.Header.Get("Location") != "/admin/signin?next=%2Fconnect%2Flinear%3Fscope%3Drepo%2520gist" {
+		t.Fatalf("anonymous step-up redirect: %d %q", redir.StatusCode, redir.Header.Get("Location"))
+	}
+	signin := anon.get(redir.Header.Get("Location"))
+	if !strings.Contains(signin.Body, `name="return_to" value="/connect/linear?scope=repo%20gist"`) {
+		t.Fatalf("sign-in page lacks return_to with scope: %s", signin.Body)
+	}
+	for _, good := range []string{"/connect/linear", "/connect/linear?scope=repo+gist", "/connect/linear?scope=repo%20gist"} {
+		if _, ok := e.srv.safeReturnTo(good); !ok {
+			t.Errorf("safeReturnTo(%q) = false, want true", good)
+		}
+	}
+	for _, bad := range []string{
+		"https://evil.example/",
+		"//evil.example",
+		"/connect/linear/../../x",
+		"/connect/linear?scope=repo&next=https://evil.example",
+		"/connect/linear?evil=1",
+		"/connect/linear?scope=",
+		"/connect/linear?scope=repo%0aSet-Cookie:x",
+		"/connect/linear?scope=repo#https://evil.example",
+	} {
+		if got, ok := e.srv.safeReturnTo(bad); ok {
+			t.Errorf("safeReturnTo(%q) = (%q, true), want false", bad, got)
+		}
+	}
+
+	b, u := e.seedSession(ada, "ada", store.RoleMember)
+	// Signed-in user visiting /admin/signin?next=/connect/linear?scope=repo+gist goes straight to /connect/linear?scope=repo%20gist.
+	if bounced := b.get("/admin/signin?next=%2Fconnect%2Flinear%3Fscope%3Drepo%2Bgist"); bounced.StatusCode != http.StatusSeeOther || bounced.Header.Get("Location") != "/connect/linear?scope=repo%20gist" {
+		t.Fatalf("signed-in next redirect = %d %q", bounced.StatusCode, bounced.Header.Get("Location"))
+	}
+
+	// Without an existing grant, ?scope=write asks for write only (never delete:all).
+	p := b.get("/connect/linear?scope=write")
+	if p.StatusCode != http.StatusOK || !strings.Contains(p.Body, "<code>write</code>") || !strings.Contains(p.Body, `name="scope" value="write"`) || strings.Contains(p.Body, "delete:all") {
+		t.Fatalf("first connect with scope: %d\n%s", p.StatusCode, p.Body)
+	}
+	start := b.post("/connect/linear/start", url.Values{"csrf": {csrfOf(t, p.Body)}, "scope": {"write"}})
+	loc, err := url.Parse(start.Header.Get("Location"))
+	if err != nil || start.StatusCode != http.StatusSeeOther || loc.Query().Get("scope") != "write" {
+		t.Fatalf("start without prior grant: %d %q", start.StatusCode, start.Header.Get("Location"))
+	}
+
+	// With an existing grant holding "read", ?scope=write asks for "read write" (and still not "delete:all").
+	if _, err := e.svc.Save(ctx, e.org, e.osrv, u, upstreamauth.Token{AccessToken: "at-old", RefreshToken: "rt-old", Scope: "read"}, false, e.event("upstream.connect:linear")); err != nil {
+		t.Fatal(err)
+	}
+	p = b.get("/connect/linear?scope=write")
+	if p.StatusCode != http.StatusOK || !strings.Contains(p.Body, "<code>read write</code>") || strings.Contains(p.Body, "delete:all") {
+		t.Fatalf("step-up connect page: %d\n%s", p.StatusCode, p.Body)
+	}
+	start = b.post("/connect/linear/start", url.Values{"csrf": {csrfOf(t, p.Body)}, "scope": {"write"}})
+	loc, err = url.Parse(start.Header.Get("Location"))
+	if err != nil || start.StatusCode != http.StatusSeeOther || loc.Query().Get("scope") != "read write" {
+		t.Fatalf("start with prior grant: %d %q (scope=%q)", start.StatusCode, start.Header.Get("Location"), loc.Query().Get("scope"))
+	}
+
+	// A server with an empty configured scope list allows any validated requested scope, unioned with existing grant.
+	unlisted := store.Server{OrgID: e.org, ID: ids.New(), Alias: "unlisted", Transport: "http", Enabled: true, CreatedAt: e.clock.now(),
+		Config: store.ServerConfig{URL: "https://unlisted.example/mcp", Auth: store.AuthOAuth, OAuth: &store.ServerOAuth{
+			Issuer: e.as.srv.URL, AuthorizationEndpoint: e.as.srv.URL + "/authorize", TokenEndpoint: e.as.srv.URL + "/token",
+			Resource: "https://unlisted.example/mcp", ClientID: "client-1", Registration: store.RegistrationAdmin}}}
+	if err := e.st.CreateServer(ctx, unlisted, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.Save(ctx, e.org, unlisted, u, upstreamauth.Token{AccessToken: "at-u", RefreshToken: "rt-u", Scope: "read"}, false, e.event("upstream.connect:unlisted")); err != nil {
+		t.Fatal(err)
+	}
+	pu := b.get("/connect/unlisted?scope=write+gist")
+	if pu.StatusCode != http.StatusOK || !strings.Contains(pu.Body, "<code>read write gist</code>") {
+		t.Fatalf("unlisted step-up page: %d\n%s", pu.StatusCode, pu.Body)
+	}
+	su := b.post("/connect/unlisted/start", url.Values{"csrf": {csrfOf(t, pu.Body)}, "scope": {"write gist"}})
+	lu, _ := url.Parse(su.Header.Get("Location"))
+	if su.StatusCode != http.StatusSeeOther || lu.Query().Get("scope") != "read write gist" {
+		t.Fatalf("unlisted start scope = %q", lu.Query().Get("scope"))
+	}
+}
+
+func TestScopeOutsideTheServersListIsRefused(t *testing.T) {
+	e := newConnEnv(t) // linear has OAuth.Scopes = ["read", "write"]
+	b, _ := e.seedSession(ada, "ada", store.RoleMember)
+	csrf := csrfOf(t, b.get("/connect/linear").Body)
+
+	for _, scope := range []string{
+		"delete:all",
+		"read delete:all",
+		"READ",
+		"bad\tscope",
+		"bad\"scope",
+		strings.Repeat("a", 1025),
+	} {
+		p := b.get("/connect/linear?scope=" + url.QueryEscape(scope))
+		if p.StatusCode != http.StatusBadRequest {
+			t.Errorf("GET scope=%q status = %d, want 400", scope, p.StatusCode)
+		}
+		if strings.Contains(p.Body, "Continue to") || strings.Contains(p.Body, scope) {
+			t.Errorf("GET scope=%q leaked or rendered connect form:\n%s", scope, p.Body)
+		}
+		start := b.post("/connect/linear/start", url.Values{"csrf": {csrf}, "scope": {scope}})
+		if start.StatusCode != http.StatusBadRequest {
+			t.Errorf("POST scope=%q status = %d, want 400", scope, start.StatusCode)
+		}
+		if start.Header.Get("Location") != "" {
+			t.Errorf("POST scope=%q redirected to %q", scope, start.Header.Get("Location"))
+		}
+	}
+}
+
+func TestConnectPageDisplaysAndEscapesRequestedScopes(t *testing.T) {
+	ctx := context.Background()
+	e := newConnEnv(t)
+	o := *e.osrv.Config.OAuth
+	// '<', '>', '&', '\'' are valid RFC 6749 §3.3 scope-token bytes and must be HTML-escaped on the page.
+	o.Scopes = []string{"read", "<script>alert(1)</script>"}
+	if err := e.st.UpdateServerOAuth(ctx, e.org, e.osrv.ID, o, nil); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := e.seedSession(ada, "ada", store.RoleMember)
+	p := b.get("/connect/linear?scope=" + url.QueryEscape("<script>alert(1)</script>"))
+	if p.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d\n%s", p.StatusCode, p.Body)
+	}
+	if strings.Contains(p.Body, "<script>") {
+		t.Fatalf("unescaped script tag in connect page:\n%s", p.Body)
+	}
+	const escaped = "&lt;script&gt;alert(1)&lt;/script&gt;"
+	if !strings.Contains(p.Body, "<code>"+escaped+"</code>") || !strings.Contains(p.Body, `name="scope" value="`+escaped+`"`) {
+		t.Fatalf("escaped scope not displayed/carried:\n%s", p.Body)
 	}
 }

@@ -9,6 +9,7 @@ import (
 
 	"privo.club/privo/internal/oauthserver"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/upstreamauth"
 )
 
 // The authorization endpoint of Privo's own authorization server (F06, ADR
@@ -34,7 +35,8 @@ const (
 	// maxAuthorizeQuery bounds an authorization request. A real one is a few
 	// hundred bytes; the bound keeps the sealed cookie inside what browsers
 	// store.
-	maxAuthorizeQuery = 2000
+	maxAuthorizeQuery   = 2000
+	maxScopeReturnQuery = 2048
 )
 
 // authorizeRequest is an authorization request on its way through sign-in
@@ -45,12 +47,47 @@ type authorizeRequest struct {
 }
 
 // returnOK reports whether a path is one a person may be sent back to after
-// signing in. There are two fixed shapes and no other.
+// signing in. There are two fixed shapes and no other: /oauth/authorize, or
+// /connect/<alias> with at most a validated scope query parameter.
 func (s *Server) returnOK(next string) bool {
+	_, ok := s.safeReturnTo(next)
+	return ok
+}
+
+func (s *Server) safeReturnTo(next string) (string, bool) {
 	if next == authorizePath {
-		return s.o.AuthServer != nil
+		return authorizePath, s.o.AuthServer != nil
 	}
-	return returnToRe.MatchString(next) && s.connections()
+	if !s.connections() {
+		return "", false
+	}
+	path, rawQuery, hasQuery := strings.Cut(next, "?")
+	if !returnToRe.MatchString(path) {
+		return "", false
+	}
+	if !hasQuery {
+		return path, true
+	}
+	if rawQuery == "" || len(rawQuery) > maxScopeReturnQuery || strings.ContainsAny(rawQuery, "#\\\r\n\t;") {
+		return "", false
+	}
+	q, err := url.ParseQuery(rawQuery)
+	if err != nil || len(q) != 1 {
+		return "", false
+	}
+	vals, ok := q["scope"]
+	if !ok || len(vals) != 1 {
+		return "", false
+	}
+	scopes, ok := upstreamauth.ValidateScopes(vals[0])
+	if !ok {
+		return "", false
+	}
+	return path + "?scope=" + encodeScopeQuery(scopes), true
+}
+
+func encodeScopeQuery(scopes []string) string {
+	return strings.ReplaceAll(url.QueryEscape(strings.Join(scopes, " ")), "+", "%20")
 }
 
 func (s *Server) oauthOff(w http.ResponseWriter, _ *http.Request) {

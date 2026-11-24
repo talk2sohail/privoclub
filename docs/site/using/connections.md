@@ -51,6 +51,21 @@ issuer is refused (a mix-up defence); if your authorization server sends
 `iss`, enter its issuer. Endpoints by hand are refused for a server that
 publishes its own sign-in metadata.
 
+### Asking for more scopes (step-up)
+
+When an upstream OAuth server answers `403` with `WWW-Authenticate: Bearer
+error="insufficient_scope", scope="..."`, Privo keeps the person's existing
+grant so other calls continue working, records `upstream.scope_needed:<alias>:<scope>`
+in the audit trail (`outcome=error`, `error_class=insufficient_scope` in call
+telemetry), and returns an error to the AI client naming the missing scope(s)
+and the link `<PRIVO_PUBLIC_URL>/connect/<alias>?scope=...`.
+
+Opening that link (signing in first if needed) asks the provider for the union
+of the person's already-granted scopes and the requested scopes. When the
+server has `oauth.scopes` configured, any requested scope outside that list is
+refused. Malformed, oversized, or non-RFC 6749 scope challenges are ignored and
+never repeated to the client or written to the audit log.
+
 ## Each person's own API key
 
 0.9.0. For a server that takes an API key where each person has their own

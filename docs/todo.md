@@ -509,7 +509,7 @@ browser.
 - [x] Acceptance with the real binary and a fixture that is both an MCP server needing a bearer token (its tool answers with the token's subject) and its authorization server (PKCE, `resource`, redirect URI, rotating refresh tokens): `TestUpstreamOAuthTwoPeople` (admin adds the server and connects, invites a member, the member's first call gets the link, the member connects, each person's call reaches the upstream as themselves, a stranger is told to ask for an invite, refresh after the upstream drops the access tokens, the connections list, disconnect by the person and by an admin, audit, no code or token in the logs), `TestUpstreamOAuthPreRegisteredClient`, `TestUpstreamOAuthDynamicRegistration` (with the refused configurations and roles)
 - [x] Real browser run (headless Chromium, 2026-11-01): owner setup, connect (the post-then-redirect to the authorization server passes the CSP), invite claimed on a phone-sized screen, connect, disconnect, a used invite is 404, a member gets 403 on approvals; no CSP or console errors besides that 403. Led to hiding the approvals link from people who cannot decide.
 - [x] Docs: README (invites, servers where each person uses their own account), ADR 0017 (registration per server, token requests without `x/oauth2`, what building found), version 0.4.0
-- [ ] Scope step-up: `TestInsufficientScopeNamesTheScope` was planned; a 403 `insufficient_scope` ends in the gateway's generic failure message today (later in F07)
+- [x] Scope step-up: implemented in F07 B below (`TestInsufficientScopeNamesTheScope`, `TestParseInsufficientScopeChallenge`, `TestMalformedScopeChallengeIsNotReflected`, `TestInsufficientScopeKeepsExistingGrant`)
 - [x] Independent review (2026-11-03, `docs/reviews/2026-11-03-f07-upstream-oauth-independent-review.md`): approve with changes; 0 Critical, 1 High, 2 Medium, 5 Low, 1 Info. The fixes were parked by the owner; they are the open items under "Review findings, open" below
 
 ### First slice: threat note
@@ -546,7 +546,7 @@ until URL elicitation lands.
 
 - [ ] URL-mode elicitation (2025-11-25) and input-required (2026-07-28) for the connect link
 - [ ] Shared org-wide credentials, only by explicit admin choice and with a policy limiting the tools
-- [ ] Scope step-up on `insufficient_scope`
+- [x] Scope step-up on `insufficient_scope` (F07 B)
 - [x] Admin page of everyone's connections (F07 A, 0.19.0)
 - [ ] Refresh coordination across replicas beyond compare-and-swap (Postgres)
 
@@ -586,9 +586,10 @@ Acceptance:
 3. Audited as `upstream.scope_needed:<alias>:<scope>`.
 
 Tasks and tests:
-- [ ] upstream: parse the challenge (`TestInsufficientScopeNamesTheScope`, already planned)
-- [ ] connect page with `scope` (`TestConnectAsksForTheUnionOfScopes`, `TestScopeOutsideTheServersListIsRefused`)
-- [ ] Acceptance `TestScopeStepUpEndToEnd`
+- [x] `upstreamauth` & `upstream`: parse `insufficient_scope` challenges cleanly across headers/comma-separated lists, validate RFC 6749 scope tokens (capped at 32 scopes / 1024 bytes), keep the existing grant (`TestParseInsufficientScopeChallenge`, `TestMalformedScopeChallengeIsNotReflected`, `TestInsufficientScopeKeepsExistingGrant`)
+- [x] `gateway`: name the scope and `?scope=` connect link, audit `upstream.scope_needed:<alias>:<scope>`, record `insufficient_scope` telemetry (`TestInsufficientScopeNamesTheScope`)
+- [x] `web`: preserve `?scope=` across sign-in, display and HTML-escape scopes, ask for the union of granted + requested scopes bounded by the server's scope list (`TestConnectAsksForTheUnionOfScopes`, `TestScopeOutsideTheServersListIsRefused`, `TestConnectPageDisplaysAndEscapesRequestedScopes`)
+- [x] Acceptance `TestScopeStepUpEndToEnd`
 
 **C. Shared org-wide credentials** (by explicit admin choice). ADR needed
 first (0031). It decides who may create one (owners), which tools it may

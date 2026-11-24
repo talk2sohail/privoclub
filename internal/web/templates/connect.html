@@ -6,7 +6,8 @@
 {{end}}  <p class="meta">You can disconnect at any time from your connections.</p>
   <form method="post" action="/connect/{{.Server}}/start">
     <input type="hidden" name="csrf" value="{{.CSRF}}">
-    <button type="submit" class="primary">Continue to {{.AuthHost}}</button>
+{{if .RequestedScope}}    <input type="hidden" name="scope" value="{{.RequestedScope}}">
+{{end}}    <button type="submit" class="primary">Continue to {{.AuthHost}}</button>
   </form>
 </section>
 {{end}}
