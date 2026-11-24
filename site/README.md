@@ -1,11 +1,13 @@
-# Privo Club — landing page + waitlist
+# privo.club — landing page + Privo Cloud waitlist
 
-The private club for MCP. This repo is the pre-launch landing page for **privo.club**: a waitlist with referral links, a short post-signup survey to validate the idea, and a private dashboard to read the results.
+The landing page for **Privo**, the open-source gateway between a team's AI clients and its MCP servers. It shows what Privo does (a live switchboard in the hero, and an interactive walk through the seven stops of one tool call), how to get started, and the Privo Cloud waitlist: referral links, a short post-signup survey and a private dashboard to read the results.
 
 - One dependency (`nodemailer`, for the welcome email); everything else is Node's built-in `http` and `sqlite` modules
 - No third-party requests: fonts are self-hosted, no analytics, strict CSP
 - IP addresses are used for rate limiting in memory and never stored
 - New members get a welcome email from support@privo.club with their list number, referral link and a 5-point MCP safety checklist
+
+Everything on the page describes what Privo does today; check a claim against the code or the docs (docs.privo.club) before adding it. The page is plain HTML, CSS and JavaScript in `public/` (no build step), and works without JavaScript and with reduced motion.
 
 ## Run locally
 
@@ -91,3 +93,13 @@ Signups are rate-limited to 30 per IP per 10 minutes and include a honeypot fiel
 ## Backups
 
 The whole waitlist is one SQLite file at `/data/waitlist.db`. Copy it off the server occasionally, or use Coolify's scheduled backups for the volume.
+
+## Social preview image
+
+`public/og.png` (1200 × 630) is rendered from `og/og.html`. After changing it, from this folder:
+
+```sh
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new --hide-scrollbars \
+  --force-device-scale-factor=1 --window-size=1200,630 --allow-file-access-from-files \
+  --screenshot=public/og.png "file://$PWD/og/og.html"
+```

@@ -1834,7 +1834,9 @@ task 4.
   Checked in a browser: no CSP violation, search and anchors work
 - [ ] The Coolify app `privo-docs` and `docs.privo.club` (owner, 2026-11-24;
   settings in `docs/privo-club-deployment.md`)
-- [ ] Link the docs from the landing page and the admin app's header
+- [x] Link the docs from the landing page (its refresh, 2026-11-25: nav, footer,
+  quick start, security and FAQ link to docs.privo.club)
+- [ ] Link the docs from the admin app's header
 - [ ] Coolify: add `!mkdocs.yml` to the gateway's Watch Paths
   (`docs/privo-club-deployment.md`)
 - [x] Rules: `CLAUDE.md` names `docs/site/` in the workflow, the quality bar
