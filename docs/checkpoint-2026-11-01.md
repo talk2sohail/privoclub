@@ -4,7 +4,7 @@
 
 Read this first in a new session. Details: `docs/todo.md` (F05, F07),
 `docs/adr/0016-admin-sign-in-with-github.md`, `docs/adr/0017-upstream-oauth-broker.md`.
-Older context: `privo-checkpoint-2026-10-29.md` (repo root).
+Older context: `docs/checkpoint-2026-10-29.md`.
 
 ## Where things stand
 

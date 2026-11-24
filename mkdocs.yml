@@ -9,6 +9,7 @@ theme:
   name: readthedocs          # built into MkDocs: no theme package, no plugin
   navigation_depth: 3
   collapse_navigation: false
+  highlightjs: false         # the theme would load highlight.js from a CDN
 
 repo_url: https://github.com/talk2sohail/privoclub
 edit_uri: edit/main/docs/site/
@@ -56,6 +57,8 @@ nav:
       - Activity and metrics: using/activity.md
       - The audit trail: using/audit.md
       - Roles: using/roles.md
+  - Security:
+      - Reporting a vulnerability: security/disclosure.md
   - Development:
       - Building Privo: development/building.md
       - Tests: development/tests.md

@@ -1837,13 +1837,58 @@ task 4.
   checked against the schema, and the Security section (threat model,
   secrets and keys, egress, reporting a vulnerability: needs the owner's
   contact address)
-- [ ] Hosting: choose Read the Docs or Coolify (guideline 2.6; the repository
-  is private, so Coolify is recommended), add `.readthedocs.yaml` or
-  `docs/Dockerfile` and the Coolify app, point `docs.privo.club` at it, and
-  link the docs from the landing page and the admin app's header
+- [x] Hosting on Coolify (guideline 2.6 B, chosen 2026-11-24): `docs/Dockerfile`
+  builds the site and serves it with Caddy (pinned by digest, user `nobody`,
+  port 8080) with CSP `script-src 'self'` and no `unsafe-inline`: the theme's
+  inline scripts move into content-named files
+  (`docs/externalize_inline_scripts.py`, which fails the build if one is
+  left); highlight.js from a CDN is off, so the site makes no third-party
+  request. Also `nosniff`, `Referrer-Policy: same-origin`, HSTS, COOP, a
+  year's cache only for the content-named files. CI builds the image.
+  Checked in a browser: no CSP violation, search and anchors work
+- [ ] The Coolify app `privo-docs` and `docs.privo.club` (owner, 2026-11-24;
+  settings in `docs/privo-club-deployment.md`)
+- [ ] Link the docs from the landing page and the admin app's header
 - [ ] Coolify: add `!mkdocs.yml` to the gateway's Watch Paths
   (`docs/privo-club-deployment.md`)
 - [x] Rules: `CLAUDE.md` names `docs/site/` in the workflow, the quality bar
   and the layout
 - [ ] Later: a weekly external link check (for example `lychee` on
   `build/site`)
+
+## F31. Open source (MIT)
+Status: In progress (owner's decision, 2026-11-24)
+
+Goal: the repository is public under the MIT License, with a private way to
+report vulnerabilities, so any team can read, run and change Privo.
+
+Acceptance:
+1. `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md` at the root; the README,
+   the documentation site and both `package.json` files say MIT.
+2. Nothing secret in the history before it goes public: checked 2026-11-24
+   over all 148 commits (token, key and private-key patterns, base64 keys,
+   public IP addresses, committed `.env` or key files). Only test values
+   were found (`privo_pat_NOT-A-REAL-SECRET-marker-7731`, a base64 of
+   `secret-secret-secret-secret-1234`).
+3. Reporting a vulnerability works before the first outside reader arrives
+   (GitHub private vulnerability reporting on).
+
+Threat note: going public publishes the independent reviews and their open
+findings (all Low or Info on 2026-11-24, listed in this file), the commit
+author's e-mail address, the privo.club deployment record
+(`docs/privo-club-deployment.md`: Coolify app ids, no secrets) and the
+waitlist site's mail host. None of these is a secret; an attacker learns the
+same from the binary and DNS. The decision to publish the reviews is
+deliberate: they show how Privo is checked.
+
+### Tasks
+- [x] `LICENSE`, `SECURITY.md`, `CONTRIBUTING.md`; license in the README, on
+  the site (Welcome, Security → Reporting a vulnerability) and in
+  `web/package.json`, `site/package.json` and their lock files
+- [x] History checked for secrets (acceptance 2)
+- [x] The old root checkpoint moved to `docs/checkpoint-2026-10-29.md`
+- [ ] Owner, on GitHub: make the repository public; then Settings → Code
+  security: private vulnerability reporting, secret scanning with push
+  protection, Dependabot alerts; a ruleset on `main` (pull request and the
+  CI checks required, no force push)
+- [ ] Distribution and deployment for any team: ADR 0030

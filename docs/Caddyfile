@@ -1,0 +1,35 @@
+# The documentation site's static server (docs/Dockerfile). TLS is ended by
+# the proxy in front (Coolify's Traefik); this listens on plain HTTP, 8080.
+{
+	admin off
+	auto_https off
+	persist_config off
+}
+
+:8080 {
+	root * /srv
+	encode zstd gzip
+	file_server
+
+	header {
+		# Scripts, styles and fonts come from the site itself; no inline script
+		# (docs/externalize_inline_scripts.py) and no third-party request.
+		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; worker-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), interest-cohort=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Strict-Transport-Security "max-age=31536000"
+		Cache-Control "public, max-age=300"
+		-Server
+	}
+
+	# Named by their content, so they never change: cache for a year.
+	@hashed path /_inline/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+	handle_errors {
+		rewrite * /404.html
+		file_server
+	}
+}
