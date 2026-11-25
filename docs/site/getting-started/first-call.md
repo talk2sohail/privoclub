@@ -20,7 +20,7 @@ The catalog fills in the server's settings; Privo still checks the server, and
 you still review every tool. Servers that use each person's own account work
 the same way, and some, like GitHub, also need an OAuth app of yours: the form
 shows the callback URL to give it. For a server that is not in the catalog,
-use **Add another server**: see [Adding servers](../using/servers.md).
+use **Add another server**: see [Servers and the catalog](../basics/servers.md).
 
 ## 2. Review and accept its tools
 
@@ -44,7 +44,7 @@ DeepWiki needs no account, so you can skip this step. For servers where each
 person uses their own account (GitHub, Linear, Notion and the like), open
 **Start**: under **1. Your tools**, choose **Connect** (or **Enter your key**)
 next to the server, and sign in once. Privo then calls that server as you,
-and only for your calls. See [Each person's own account](../using/connections.md).
+and only for your calls. See [Connecting your accounts](../basics/connections.md).
 
 ## 4. Make a token for your AI client
 
@@ -67,7 +67,7 @@ claude mcp add --transport http privo https://privo.example.com/mcp --header "Au
 
 Then run `/mcp` in Claude Code: Privo is listed, with DeepWiki's tools. Cursor,
 VS Code, Codex and Windsurf each get their own file and format on the same
-page. More in [Tokens and AI clients](../using/tokens.md).
+page. More in [Connecting AI clients](../basics/tokens.md).
 
 ## 6. Make the first call
 
@@ -97,8 +97,8 @@ counts it with its timings.
 
 ## Next
 
-- [Invite your team](../using/people.md): each person signs in with GitHub
+- [Invite your team](../basics/people.md): each person signs in with GitHub
   and makes their own token on **Start**.
-- [Organise teams](../using/teams.md) so each one reaches only its servers.
-- [Add rules](../using/rules.md): ask a person before risky calls, or deny
+- [Organise teams](../basics/teams.md) so each one reaches only its servers.
+- [Add rules](../basics/rules-and-approvals.md): ask a person before risky calls, or deny
   them outright.

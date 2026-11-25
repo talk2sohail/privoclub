@@ -1845,6 +1845,13 @@ task 4.
   (`docs/privo-club-deployment.md`)
 - [x] Rules: `CLAUDE.md` names `docs/site/` in the workflow, the quality bar
   and the layout
+- [x] Basic Features section (#61, phase 2 of the docs roadmap #59): eight
+  pages in `docs/site/basics/` for day-to-day use in the browser (the admin
+  site, servers and the catalog, connecting your accounts, people, teams, AI
+  clients and tokens, rules and approvals, activity), each with the version
+  it arrived in and a "Going further" list into the advanced pages; the
+  welcome page and Getting Started link to them. The `using/` pages stay
+  until phase 3 (#62) moves their advanced parts and retires them
 - [ ] Later: a weekly external link check (for example `lychee` on
   `build/site`)
 
