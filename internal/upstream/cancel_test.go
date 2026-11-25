@@ -32,7 +32,7 @@ type echoInput struct {
 
 // TestHelperStdioMCPServer is re-exec'd as a stdio MCP subprocess by the cancel
 // tests below using runner.Local and mcp.CommandTransport.
-func TestHelperStdioMCPServer(t *testing.T) {
+func TestHelperStdioMCPServer(_ *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") != "1" {
 		return
 	}
