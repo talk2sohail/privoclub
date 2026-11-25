@@ -162,7 +162,7 @@ A rule takes `server`, `tool`, `subject`, `action`, and optionally
 | `PATCH /api/v1/members/<person>` | owner, admin | Change roles: `{"roles": ["member", "approver"]}` |
 | `POST /api/v1/members/<person>/remove` | owner, admin | Remove: sessions, tokens and connections end |
 | `POST /api/v1/members/<person>/restore` | owner, admin | Restore with their account and roles |
-| `POST /api/v1/invites` | owner, admin | An invite link: `{"person": "ada", "roles": ["member"]}`; the reply's `url` is the link |
+| `POST /api/v1/invites` | owner, admin | An invite link: `{"person": "ada", "roles": ["member"]}`; the link is `invite.url` in the reply |
 
 ### Tokens and OAuth clients
 
