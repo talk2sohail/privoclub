@@ -128,10 +128,10 @@ func setupPolicyTestStore(t testing.TB) (*store.Store, store.OrgID, store.OrgID)
 	return st, a.ID, b.ID
 }
 
-func testCall(org store.OrgID, tool string) call {
+func testCall(org store.OrgID) call {
 	return call{
 		p:      auth.Principal{OrgID: org, TokenID: "tok-1", Roles: []string{store.RoleMember}},
-		item:   upstream.Item{Alias: "github", ServerID: "srv-1", Name: tool},
+		item:   upstream.Item{Alias: "github", ServerID: "srv-1", Name: "search"},
 		action: "tools/call",
 		args:   []byte(`{}`),
 	}
@@ -144,7 +144,7 @@ func TestRuleChangeAppliesToTheNextCall(t *testing.T) {
 	g := newTestGateway(t, spy)
 
 	// Cold call loads once and caches.
-	c := testCall(orgA, "search")
+	c := testCall(orgA)
 	dec, err := g.decide(ctx, c, "d1", "c1")
 	if err != nil || dec.label != store.ActionAllow {
 		t.Fatalf("cold decide = %+v, %v; want allow", dec, err)
@@ -259,7 +259,7 @@ func TestCacheReadFailureRefuses(t *testing.T) {
 	st, orgA, _ := setupPolicyTestStore(t)
 	spy := &spyPolicyStore{Store: st}
 	g := newTestGateway(t, spy)
-	c := testCall(orgA, "search")
+	c := testCall(orgA)
 
 	// Warm the cache at version 1 (ActionAllow).
 	if dec, err := g.decide(ctx, c, "d1", "c1"); err != nil || dec.label != store.ActionAllow {
@@ -328,11 +328,11 @@ func TestPolicyCacheIsIsolatedPerOrg(t *testing.T) {
 	}
 
 	// Warm Org A -> denied.
-	if _, err := g.decide(ctx, testCall(orgA, "search"), "da", "ca"); err == nil {
+	if _, err := g.decide(ctx, testCall(orgA), "da", "ca"); err == nil {
 		t.Fatal("org A should deny")
 	}
 	// Org B must still allow and load its own rules.
-	if dec, err := g.decide(ctx, testCall(orgB, "search"), "db", "cb"); err != nil || dec.label != store.ActionAllow {
+	if dec, err := g.decide(ctx, testCall(orgB), "db", "cb"); err != nil || dec.label != store.ActionAllow {
 		t.Fatalf("org B leaked org A's policy: %+v, %v", dec, err)
 	}
 
@@ -341,7 +341,7 @@ func TestPolicyCacheIsIsolatedPerOrg(t *testing.T) {
 	if err := st.SetSetting(ctx, orgA, SettingPolicyDefault, store.ActionDeny); err != nil {
 		t.Fatal(err)
 	}
-	if dec, err := g.decide(ctx, testCall(orgB, "search"), "db2", "cb2"); err != nil || dec.label != store.ActionAllow {
+	if dec, err := g.decide(ctx, testCall(orgB), "db2", "cb2"); err != nil || dec.label != store.ActionAllow {
 		t.Fatalf("org B after org A update: %+v, %v", dec, err)
 	}
 	if spy.listCalls.Load() != listsBefore {
@@ -386,7 +386,7 @@ func BenchmarkGatewayDecide(b *testing.B) {
 	if err := st.CreatePolicies(ctx, orgA, rules...); err != nil {
 		b.Fatal(err)
 	}
-	c := testCall(orgA, "search")
+	c := testCall(orgA)
 
 	b.Run("Uncached", func(b *testing.B) {
 		g := newTestGateway(b, uncachedPolicyStore{st: st})
