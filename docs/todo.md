@@ -145,7 +145,7 @@ Tasks and the tests that name them:
 - [x] Acceptance `TestArgumentsCheckedAgainstTheSchema` (a wrong type and an
   extra field refused with a readable reason, no approval made under an
   ask rule, the audit naming the refusal, a matching call still asks)
-- [x] Docs: `docs/site/using/arguments.md`, `docs/manual-test.md` section 25, version 0.20.0
+- [x] Docs: `docs/site/using/arguments.md` (now `docs/site/advanced/arguments.md`, #62), `docs/manual-test.md` section 25, version 0.20.0
 - [x] Security review 2026-11-22 (request pipeline), two rounds, all fixed
   before merge. Round 1: a `$ref` loop (`{"$ref":"#"}`) overflowed the stack
   and ended the process for every tenant (Critical); references sharing their
@@ -1973,20 +1973,20 @@ task 4.
   it arrived in and a "Going further" list into the advanced pages; the
   welcome page and Getting Started link to them. The `using/` pages stay
   until phase 3 (#62) moves their advanced parts and retires them
-- [x] Advanced Features section (#62, phase 3): nine pages in
-  `docs/site/advanced/` (toolsets, conditional rules, grants and YAML, AI
-  clients with OAuth, upstream sign-in and connections, roles and access,
+- [x] Advanced Features section (#62, phase 3): ten pages in
+  `docs/site/advanced/` (toolsets, conditional rules, grants and YAML,
+  arguments checked against the schema, moved from `using/` after #35
+  merged, AI clients with OAuth, upstream sign-in and connections, roles and access,
   the tamper-evident audit, metrics and telemetry, the admin API and script
   tokens, local stdio servers), with every fact of the old `using/` pages now
   in a basic or advanced page; Installation renamed Operations and Reference;
   the welcome page, Getting Started and Basic Features link only to the new
   pages; the `using/` pages leave the navigation (`not_in_nav`), unchanged
-- [ ] Retire `docs/site/using/` (#62, second step), once #35, #42, #66 and #67
+- [ ] Retire `docs/site/using/` (#62, second step), once #42, #66 and #67
   have merged: carry their `using/` edits over (#66, the breaker-state metric,
   to `advanced/observability.md`; #67, the grant token cache and the rules
-  cache, to `advanced/upstream-auth.md` and `advanced/policy-engine.md`; #35,
-  its page, to `advanced/arguments.md`), point the `installation/` pages'
-  links at the new pages, trim `installation/coolify.md`, delete `using/`,
+  cache, to `advanced/upstream-auth.md` and `advanced/policy-engine.md`),
+  point the `installation/` pages' links at the new pages, trim `installation/coolify.md`, delete `using/`,
   and redirect `/using/*` (#65)
 - [ ] Later: a weekly external link check (for example `lychee` on
   `build/site`)

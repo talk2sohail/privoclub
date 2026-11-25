@@ -46,7 +46,8 @@ in the list as "a removed member".
 On **Rules → Add a rule**, under **Only when the call's arguments…**, choose
 **Add a condition** and give an argument, a test and a value. For example:
 deny `delete_repo` when `repo` is `prod`, or ask before `create_payment` when
-`amount` is one of a list.
+`amount` is one of a list. Before any rule, the arguments are checked against
+the tool's schema ([Arguments checked against the schema](arguments.md)).
 
 | On the page | In the file | Holds when the argument |
 | --- | --- | --- |

@@ -61,6 +61,7 @@ nav:
   - Advanced Features:
       - Per-team toolsets: advanced/toolsets.md
       - Conditional rules, grants and YAML: advanced/policy-engine.md
+      - Arguments checked against the schema: advanced/arguments.md
       - AI clients that sign in with OAuth: advanced/oauth-clients.md
       - Custom upstream sign-in and connections: advanced/upstream-auth.md
       - Roles and access: advanced/roles-and-access.md

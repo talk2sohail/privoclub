@@ -44,6 +44,7 @@ What a team uses day to day, all in the browser:
 For admins who need more control:
 [per-team toolsets](advanced/toolsets.md),
 [conditional rules, grants and YAML](advanced/policy-engine.md),
+[arguments checked against the schema](advanced/arguments.md),
 [AI clients that sign in with OAuth](advanced/oauth-clients.md),
 [custom upstream sign-in](advanced/upstream-auth.md),
 [roles and access](advanced/roles-and-access.md),
