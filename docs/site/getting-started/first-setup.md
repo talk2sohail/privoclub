@@ -101,6 +101,7 @@ page you may use:
 | **Connections** | Each person's own accounts on servers |
 
 People who are not admins see fewer pages: only the ones their roles allow.
+[The admin site](../basics/admin-site.md) describes each page.
 
 !!! note "Limit sign-in to your GitHub organisation"
     Only people you invite can sign in. To also require membership of your

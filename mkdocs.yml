@@ -44,6 +44,15 @@ nav:
       - Deploy Privo: getting-started/deploy.md
       - First setup and sign-in: getting-started/first-setup.md
       - Your first server and AI client: getting-started/first-call.md
+  - Basic Features:
+      - The admin site: basics/admin-site.md
+      - Servers and the catalog: basics/servers.md
+      - Connecting your accounts: basics/connections.md
+      - Inviting and managing people: basics/people.md
+      - Organising with teams: basics/teams.md
+      - Connecting AI clients: basics/tokens.md
+      - Rules and approvals: basics/rules-and-approvals.md
+      - Viewing activity: basics/activity.md
   - Installation:
       - Build and run: installation/build-and-run.md
       - Deploy on Coolify: installation/coolify.md

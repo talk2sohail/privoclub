@@ -29,19 +29,25 @@ tool call that works.
 
 ## Basic features
 
-What a team uses day to day: [the admin site](using/admin-site.md),
-[inviting your team](using/people.md), [adding servers](using/servers.md),
-[each person's own account](using/connections.md),
-[teams and the catalog](using/teams.md),
-[rules, approvals and grants](using/rules.md),
-[tokens and AI clients](using/tokens.md) and
-[activity](using/activity.md).
+What a team uses day to day, all in the browser:
+[the admin site](basics/admin-site.md),
+[servers and the catalog](basics/servers.md),
+[connecting your accounts](basics/connections.md),
+[inviting and managing people](basics/people.md),
+[organising with teams](basics/teams.md),
+[connecting AI clients](basics/tokens.md),
+[rules and approvals](basics/rules-and-approvals.md) and
+[viewing activity](basics/activity.md).
 
 ## Advanced features
 
 For admins who need more control:
+[which tools each team sees](using/teams.md#which-tools-each-team-sees),
+[rules on arguments and rules as a file](using/rules.md#rules-on-arguments),
+[OAuth settings entered by hand](using/connections.md#a-server-that-does-not-say-where-its-people-sign-in),
 [AI clients that sign in with OAuth](using/oauth-clients.md),
-[the audit trail](using/audit.md) and [roles](using/roles.md).
+[roles](using/roles.md), [the audit trail](using/audit.md) and
+[metrics](using/activity.md#prometheus-metrics).
 
 ## Operations and reference
 
