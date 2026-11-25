@@ -31,6 +31,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"privo.club/privo/internal/approval"
+	"privo.club/privo/internal/argcheck"
 	"privo.club/privo/internal/audit"
 	"privo.club/privo/internal/auth"
 	"privo.club/privo/internal/buildinfo"
@@ -87,6 +88,8 @@ type Gateway struct {
 
 	hiddenMu sync.Mutex
 	hidden   map[string]time.Time // last record of a hidden call, per caller, server and reason
+
+	args argcheck.Checker // compiled input schemas of the tools called
 }
 
 // Handler returns the authenticated MCP HTTP handler.
@@ -394,6 +397,36 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 		out.ID, g.BaseURL, out.ID, out.ExpiresAt.UTC().Format("15:04 UTC")), class: "pending_approval"}
 }
 
+// checkArgs checks a tool call's canonical arguments against the input schema
+// of the definition the gateway serves, which is the accepted one (F02). It
+// returns nil for anything but a tool call. The reason of a mismatch can
+// repeat argument values: it goes back to the caller and nowhere else.
+func (g *Gateway) checkArgs(c call) *refusal {
+	if c.action != "tools/call" || c.item.Tool == nil {
+		return nil
+	}
+	err := g.args.Check(c.item.Hash, c.item.Tool.InputSchema, c.args)
+	if err == nil {
+		return nil
+	}
+	var m *argcheck.MismatchError
+	switch {
+	case errors.As(err, &m):
+		return &refusal{class: "invalid_arguments", msg: "The arguments do not match this tool's input schema, so Privo did not send the call: " +
+			m.Reason + ". Correct the arguments and call again."}
+	case errors.Is(err, argcheck.ErrTooCostly):
+		return &refusal{class: "arguments_too_costly", msg: "These arguments are too large for Privo to check against this tool's input schema, " +
+			"so it did not send the call. Send smaller arguments."}
+	}
+	// One warning a minute per tool: any caller can repeat the call.
+	if g.firstInWindow(string(c.p.OrgID) + "\x00schema\x00" + c.item.ServerID + "\x00" + c.item.Name) {
+		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryUpstream, Server: c.item.Alias,
+			Message: fmt.Sprintf("the input schema of tool %q cannot be read, so calls to it are refused", c.item.Name)})
+	}
+	return &refusal{class: "schema_unreadable", msg: fmt.Sprintf("Privo cannot read this tool's input schema, so it cannot check the arguments and refused the call. "+
+		"Ask an administrator to look at the server %q in Privo.", c.item.Alias)}
+}
+
 // recordRefusal writes an intent and its completion for a call that did not run.
 func (g *Gateway) recordRefusal(ctx context.Context, c call, callID, decision, outcome string) {
 	now := time.Now()
@@ -426,6 +459,13 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	sum := sha256.Sum256(c.args)
 	digest := hex.EncodeToString(sum[:])
 
+	// Arguments the accepted definition does not allow go no further: no
+	// decision, no approval request, nothing upstream.
+	if r := g.checkArgs(c); r != nil {
+		g.recordRefusal(ctx, c, callID, "refused:"+r.class, store.OutcomeRefused)
+		record(store.OutcomeRefused, r.class)
+		return r
+	}
 	dec, err := g.decide(ctx, c, digest, callID)
 	st.WaitUS = dec.waited.Microseconds()
 	st.DecideUS = time.Since(arrived).Microseconds() - st.WaitUS

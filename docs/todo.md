@@ -62,7 +62,7 @@ ADRs: 0001, 0004
 - [ ] Persist the alias table (names are computed deterministically today)
 - [ ] Resource URI rewriting with templates intact; subscriptions fan-out
 - [ ] Pipeline as pluggable hooks (stages exist inline today: resolve, pin check, args digest, decide=allow, intent, call, completion); List, Transform, Decision, After hooks and observers
-- [ ] Validate arguments against the pinned input schema
+- [x] Validate arguments against the pinned input schema (spec below, 2026-11-22; 0.20.0)
 - [ ] Server-to-client requests: elicitation forwarding, sampling refused, roots from config
 - [ ] Notifications: list changes, cancellation, redacted progress and logs
 - [ ] Rate limits, in-flight limits, bulkheads, circuit breakers
@@ -78,6 +78,126 @@ ADRs: 0001, 0004
 - [x] Hostile upstream replies cannot crash the gateway (two High findings of the independent review, 2026-10-29). An upstream is untrusted input and one process serves every tenant, so a reply that breaks the protocol may cost only that server. Acceptance: (1) a `null` entry in an upstream's tools, prompts or resources list makes that server `down` with an error that says so, at first connect and on a list-changed refresh, while the gateway keeps serving its other servers; (2) a `resources/read` reply with a `null` entry in `contents`, or with no result, is refused with an error that calls the reply malformed, nothing of it is relayed, and the next request on the same connection works. Tests first: `internal/upstream` `TestLoadRefusesNullListEntries`; `internal/gateway` `TestRewriteRead`; acceptance `TestHostileUpstreamNullListEntry` and `TestHostileUpstreamNullReadContent` (echoserver `-mode hostile -null tools|prompts|resources|read`). Fix: `upstream.load` and `readResource` (via `rewriteRead`) check for nil before use. The Go SDK already drops a null tool entry itself (`filterValidTools`), so a null in tools/list leaves the server up with its real tools; the tools loop is guarded anyway. Deployed. The two items that review left open were done later: the result size cap (R-04, in F24 below) and the audit outcome for calls the wrapper refuses (R-07, in F24 below).
 - [x] A malformed message from an upstream cannot crash the gateway (R-01, High, independent review 2026-10-29; the first fix covered three null cases, not the class). The go-sdk v1.8.0 client dereferences `params` in `notifications/elicitation/complete` and has no `recover()` anywhere, so one upstream notification without `params` killed the process for every tenant, again after each restart. Acceptance: (1) every incoming MCP message on an upstream connection, and every one on the client-facing server, runs under a recover wrapper that logs the panic (method, panic text, stack, no message content) and turns it into an error; (2) a notification of each method the SDK client handles, with `params` absent or null, leaves the gateway up and its other servers working. Tests first: `internal/safe` `TestRecover*`; acceptance `TestHostileUpstreamNotification` (echoserver `-mode raw-notify -method M -params absent|null`) and `TestMalformedClientNotificationsDoNotCrash`. Done: `internal/safe` `Recover`, installed outermost on the upstream client (`connect`) and on the client-facing server. Follow-ups: report the nil dereference to go-sdk (draft with a runnable reproduction: `docs/upstream/go-sdk-elicitation-complete-nil-params.md`, owner files it); the go-sdk has no `recover()` at all, so any other handler bug of that kind is now an error for one message instead of an outage.
 - [x] Transport errors of an upstream never reach the AI client (R-02, Medium, independent review 2026-10-29): the text held the upstream's URL with the API key in its query, and went out as `call failed: ...` (tools/call) and as the error of prompts/get and resources/read. `Gateway.clientFacing` (in `run`) now replaces it with a fixed message naming the server, logs the detail through `upstream.RedactText` (user info, query and fragment removed from every URL in the text), and passes through only the upstream's own JSON-RPC error and the gateway's own. The SDK's local codes (-32001, -32003, -32004, -32005) wrap transport text and count as local. Tests: `TestClientFacing`, `TestRedactText`, acceptance `TestUpstreamTransportErrorsDoNotReachTheClient`.
+
+### Arguments checked against the accepted input schema (spec 2026-11-22)
+
+Goal: a tool receives only arguments its accepted definition allows. Until
+now the gateway froze the arguments (ADR 0001 stage 7) but sent any object
+upstream, so the review decided which tools exist and not what they are
+given.
+
+Acceptance:
+1. Every `tools/call` checks the canonical arguments against the
+   `inputSchema` of the definition the gateway serves (the accepted one)
+   before the policy decision. Arguments that do not match are refused as a
+   tool error the model can read and fix: it names the failing keyword and
+   location. No approval request is made for them and nothing reaches the
+   upstream.
+2. The refusal is audited (decision `refused:invalid_arguments`, outcome
+   `refused`) like every other call; the reason text, which can repeat
+   argument values, is never written to the audit or the log.
+3. Draft 2020-12 and draft-07 schemas work, with local `$ref`s (`$defs`,
+   `definitions`). A tool without a schema takes any object.
+4. A schema Privo cannot read (a remote `$ref`, an older draft's syntax, a
+   broken document) is never fetched or guessed at: calls to that tool are
+   refused (fail closed, decision `refused:schema_unreadable`) and the server
+   gets a warning on Health. The review shows it as a warning finding before
+   anyone accepts the definition.
+5. A compiled schema is kept by the definition's hash, at most 4096 of them,
+   so a call does not compile the schema again.
+
+Threat note:
+- Type confusion: rules on arguments (F09) treat a value of another type as
+  unsure; now such a value cannot reach a server whose schema forbids it, and
+  `additionalProperties: false` keeps unexpected fields out.
+- SSRF: no loader is given to the schema library, so a `$ref` to a URL is an
+  unreadable schema, never a fetch.
+- Cost: the schema library validates by plain recursion with no limit, so
+  Privo uses its own copy of it (`internal/jsonschema`, v0.4.3 with the
+  changes listed in its `PRIVO.md`) that validates within a budget: every
+  validation, every `enum` entry and its size, every regular expression
+  match (pattern length times text length), every key and item walked and
+  every value hashed for `uniqueItems` is paid for, and nesting stops at
+  1000 frames. A call over 1,000,000 units is refused
+  (`refused:arguments_too_costly`); a stopped validation is never read as
+  valid. A schema that cannot check empty arguments within 200,000 units
+  (a `$ref` loop) is unreadable at review time. A schema's text is at most
+  64 KiB and 64 levels deep before it is decoded (the library's decoding
+  costs size times nesting). Error messages show values briefly, so they
+  never repeat the arguments or a large `enum`.
+- Pins accepted before 0.20.0 were never used as schemas; they are read at
+  their first call and fail closed the same way.
+- Availability: real servers validate their own input (the Go SDK, zod,
+  pydantic), so a call the schema refuses would have failed upstream too.
+  Numbers are checked as 64-bit floats; exact comparison stays with the rules.
+
+Tasks and the tests that name them:
+- [x] `internal/argcheck`: `TestMatchingArgumentsPass`, `TestMismatchesAreRefused`
+  (wrong type, missing required, extra property under
+  `additionalProperties: false`), `TestDraft07AndLocalRefs`,
+  `TestRemoteRefIsUnreadableAndNeverFetched`, `TestNoSchemaTakesAnyObject`,
+  `TestCompiledSchemasAreCachedAndBounded`, `TestReasonIsBounded`,
+  `TestDefinitionProblem`
+- [x] Gateway: checked in `run` before `decide` (`TestCheckArgsRefusesMismatch`,
+  `TestCheckArgsFailsClosedOnUnreadableSchema`)
+- [x] Review: a warning finding `input-schema` on a tool pin whose schema
+  cannot be read (`TestPinViewsFlagAnUnreadableSchema`)
+- [x] Acceptance `TestArgumentsCheckedAgainstTheSchema` (a wrong type and an
+  extra field refused with a readable reason, no approval made under an
+  ask rule, the audit naming the refusal, a matching call still asks)
+- [x] Docs: `docs/site/using/arguments.md`, `docs/manual-test.md` section 25, version 0.20.0
+- [x] Security review 2026-11-22 (request pipeline), two rounds, all fixed
+  before merge. Round 1: a `$ref` loop (`{"$ref":"#"}`) overflowed the stack
+  and ended the process for every tenant (Critical); references sharing their
+  targets cost 2^n (High). A static reading of the schema graph was tried
+  and failed round 2: Go's JSON decoding matches keys in any case
+  (`"ALLOF"`, `"$REF"`, `"containſ"`), so the overflow came back (Critical);
+  single steps were unpriced (a large `enum`, a 50 KB pattern on a 1 MiB
+  string took 57 s) (High); the library's decoding cost size times nesting,
+  14 GB for a 64 KB schema, and ran for every pending pin on each review
+  (High). Fixed with the budgeted copy of the library, the nesting bound and
+  a cache of the review's reading (`internal/jsonschema` `TestAStopIsNeverValid`,
+  `TestBudgetAndFrames`; `internal/argcheck` `TestRefLoopsAreUnreadableOrTooCostly`,
+  `TestSharedReferencesThatMultiplyStop`, `TestCostlyStepsStop`,
+  `TestDeeplyNestedSchemasAreRefusedQuickly`, `TestRecursiveSchemasStayCheap`,
+  `TestTooCostlyArgumentsAreRefused`, `TestMessagesStayShort`; gateway
+  `TestCheckArgsRefusesArgumentsTooCostlyToCheck`). Lows fixed: a `$schema`
+  the library cannot validate is unreadable at review time
+  (`TestUnsupportedVersionsAreUnreadable`); the Health warning is sent once a
+  minute per tool. Round 3 confirmed the budget (no stop is lost or read as
+  valid) and found two Highs, fixed: messages copied unpriced text (every
+  extra key, a long `required` name, a 60 KB `$id`; 4 GB per call), now each
+  names a count and one clipped entry and the names' bytes are priced; and
+  the library kept every subschema's whole path (354 MB from a 63 KB schema)
+  while the review cached compiled schemas, so pending pins could exhaust
+  memory: paths are kept to 120 bytes, the review caches only its answer,
+  and the gateway's cache is bounded by subschemas (200,000)
+  (`TestLongNamesStayCheap`, `TestCacheIsBoundedBySubschemas`). Accepted
+  Low: a schema that only blows up under a property costs each call its
+  whole budget before refusing it (1,000,000 units, about a quarter of a
+  second). Info, left: integers beyond 2^53 are checked as 64-bit floats
+  (rules compare exactly)
+
+- [x] PR review follow-up (2026-11-25). (1) The draft-07 and 2020-12
+  `$schema` URIs are read over `http` or `https` and with or without the
+  trailing `#` (the empty fragment), each with its own draft's rules; before,
+  only the library's exact spellings were, so a server writing
+  `https://json-schema.org/draft-07/schema` had every call refused. Other
+  drafts stay unreadable (`TestSchemaVersionSpellings`). (2) A tool accepted
+  before 0.20.0 whose schema cannot be read is flagged when its server
+  connects, not on its first refused call: each load of the server's
+  definitions reads the schemas of its accepted tools and puts a Health
+  warning per unreadable one, once per definition, at most 10 per load and a
+  count for the rest (`internal/upstream` `TestUnreadableSchemaWarnedAtLoad`).
+  Threat note: only accepted definitions are read at load, and each once per
+  connection entry; a server that changes its definitions on every refresh
+  only makes pending ones, which are not read, so it cannot make Privo
+  compile 2000 schemas every refresh gap
+  (`TestPendingUnreadableSchemaIsNotReadAtLoad`). The warning carries the
+  tool's name only (quoted, clipped by the recorder); the cause stays on the
+  review page.
+
+Later: an administrator's override for a server whose schemas are wrong.
 
 ## F03. Storage and tenancy
 Status: In progress
@@ -1785,7 +1905,7 @@ Approve with changes; 0 Critical, 1 High, 1 Medium, 5 Low, 3 Info. Fixed, each w
 - [x] T-10: the time held for a person's approval is its own phase (`wait_us`) and is left out of latency and the duration histogram (`TestMetricsText`, `TestCountAndSampleCallStats`)
 
 ## F30. Documentation site (docs.privo.club)
-Status: In progress (skeleton and the moved content, 2026-11-22; guideline in `docs/documentation-site.md`)
+Status: In progress (live at https://docs.privo.club since 2026-11-24; the missing pages and the link from the admin app are open; guideline in `docs/documentation-site.md`)
 
 Goal: the user documentation is a website built with MkDocs from
 `docs/site/`, next to the code and changed in the same pull request, the way
@@ -1836,10 +1956,9 @@ task 4.
   `TestExampleFileListsEverySetting` unchanged
 - [x] Pages written from existing sources: Tests, How a feature is made
   (`CLAUDE.md`), Building Privo
-- [ ] Write what is missing: How Privo works, Words Privo uses, Arguments
-  checked against the schema, and the Security section (threat model,
-  secrets and keys, egress, reporting a vulnerability: needs the owner's
-  contact address)
+- [ ] Write what is missing: How Privo works, Words Privo uses, and the
+  Security section (threat model, secrets and keys, egress, reporting a
+  vulnerability: needs the owner's contact address)
 - [x] Hosting on Coolify (guideline 2.6 B, chosen 2026-11-24): `docs/Dockerfile`
   builds the site and serves it with Caddy (pinned by digest, user `nobody`,
   port 8080) with CSP `script-src 'self'` and no `unsafe-inline`: the theme's
@@ -1849,11 +1968,14 @@ task 4.
   request. Also `nosniff`, `Referrer-Policy: same-origin`, HSTS, COOP, a
   year's cache only for the content-named files. CI builds the image.
   Checked in a browser: no CSP violation, search and anchors work
-- [ ] The Coolify app `privo-docs` and `docs.privo.club` (owner, 2026-11-24;
-  settings in `docs/privo-club-deployment.md`)
-- [ ] Link the docs from the landing page and the admin app's header
-- [ ] Coolify: add `!mkdocs.yml` to the gateway's Watch Paths
-  (`docs/privo-club-deployment.md`)
+- [x] The Coolify app `privo-docs` and `docs.privo.club` (DNS by the owner,
+  the app through the Coolify API, 2026-11-24; settings in
+  `docs/privo-club-deployment.md`). Checked live: 200 on pages, 404 page,
+  CSP and the other headers through Cloudflare, search with no console error
+- [x] Link the docs from the landing page (its refresh, 2026-11-25: nav, footer,
+  quick start, security and FAQ link to docs.privo.club; "Get started" opens it)
+- [ ] Link the docs from the admin app's header
+- [x] Coolify: `!mkdocs.yml` in the gateway's Watch Paths (2026-11-24)
 - [x] Rules: `CLAUDE.md` names `docs/site/` in the workflow, the quality bar
   and the layout
 - [ ] Later: a weekly external link check (for example `lychee` on

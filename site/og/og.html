@@ -1,0 +1,87 @@
+<!doctype html>
+<!-- The social preview image (site/public/og.png, 1200 × 630). Not served: render it with
+     headless Chrome after changing it (site/README.md, "Social preview image"). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: "Geist"; src: url(../public/fonts/geist-sans-latin-500-normal.woff2) format("woff2"); font-weight: 500; }
+  @font-face { font-family: "Geist"; src: url(../public/fonts/geist-sans-latin-600-normal.woff2) format("woff2"); font-weight: 600; }
+  @font-face { font-family: "Geist Mono"; src: url(../public/fonts/geist-mono-latin-400-normal.woff2) format("woff2"); font-weight: 400; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 1200px; height: 630px; overflow: hidden; }
+  body {
+    position: relative; font-family: "Geist", system-ui, sans-serif; color: #b8c6d9;
+    background:
+      radial-gradient(520px 420px at 900px 300px, rgba(255, 122, 89, .26), transparent 70%),
+      radial-gradient(480px 360px at 60px 0px, rgba(34, 179, 197, .18), transparent 70%),
+      linear-gradient(180deg, #071226 0%, #0a1b35 100%);
+  }
+  body::before {
+    content: ""; position: absolute; inset: 0;
+    background-image: radial-gradient(rgba(148, 177, 214, .2) 1px, transparent 1.3px); background-size: 24px 24px;
+    -webkit-mask-image: radial-gradient(560px 420px at 860px 300px, #000 20%, transparent 80%);
+  }
+  .copy { position: absolute; left: 72px; top: 64px; width: 600px; }
+  .brand { display: flex; align-items: center; gap: 16px; color: #fff; font-size: 34px; font-weight: 600; letter-spacing: -.02em; }
+  .brand svg { width: 52px; height: 52px; }
+  .pill { display: inline-flex; align-items: center; gap: 10px; margin-top: 44px; padding: 6px 16px 6px 6px; border-radius: 999px; border: 1px solid rgba(148, 177, 214, .3); font-size: 18px; font-weight: 500; }
+  .pill b { padding: 4px 12px; border-radius: 999px; background: linear-gradient(135deg, #ff7a59, #ffa94d 55%, #ffc145); color: #1d0f05; font-weight: 600; font-size: 16px; }
+  h1 { margin: 26px 0 0; color: #fff; font-size: 62px; line-height: 1.04; font-weight: 600; letter-spacing: -.045em; }
+  h1 span { background: linear-gradient(100deg, #ff8a5c, #ffb054 45%, #ffd98a); -webkit-background-clip: text; color: transparent; }
+  p { margin: 24px 0 0; font-size: 22px; line-height: 1.45; font-weight: 500; }
+  .url { position: absolute; right: 60px; bottom: 40px; font-family: "Geist Mono", monospace; font-size: 22px; color: #8a9db7; }
+  .board { position: absolute; right: 44px; top: 96px; width: 470px; height: 420px; }
+  .board text { font-family: "Geist", sans-serif; font-weight: 500; font-size: 15px; fill: #dce6f2; text-anchor: middle; dominant-baseline: central; }
+  .board .lbl { font-family: "Geist Mono", monospace; font-size: 11px; fill: #8a9db7; letter-spacing: .14em; }
+</style>
+</head>
+<body>
+  <div class="copy">
+    <div class="brand">
+      <svg viewBox="0 0 64 64" aria-hidden="true">
+        <defs><linearGradient id="b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff7a59"/><stop offset=".55" stop-color="#ffa94d"/><stop offset="1" stop-color="#ffc145"/></linearGradient></defs>
+        <rect width="64" height="64" rx="16" fill="url(#b)"/>
+        <path d="M24 46V18h10a9 9 0 010 18H24" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      Privo
+    </div>
+    <div class="pill"><b>Open source</b>MIT licensed · self-hosted</div>
+    <h1>Every AI tool call, through one door <span>you control.</span></h1>
+    <p>The gateway between your team’s AI clients and its MCP servers: rules, approvals, sealed keys and an audit you can verify.</p>
+  </div>
+  <div class="url">privo.club</div>
+
+  <svg class="board" viewBox="0 0 470 420" aria-hidden="true">
+    <defs>
+      <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff9a6b"/><stop offset=".5" stop-color="#ffc145" stop-opacity=".5"/><stop offset="1" stop-color="#22b3c5"/></linearGradient>
+      <linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ff7a59"/><stop offset=".55" stop-color="#ffa94d"/><stop offset="1" stop-color="#ffc145"/></linearGradient>
+      <filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="3.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    </defs>
+    <text class="lbl" x="58" y="40">AI CLIENTS</text>
+    <text class="lbl" x="412" y="40">MCP SERVERS</text>
+    <g fill="none" stroke="rgba(148,177,214,.24)" stroke-width="1.3">
+      <path d="M116 100C160 100 156 210 186 210"/><path d="M116 210C160 210 156 210 186 210"/><path d="M116 320C160 320 156 210 186 210"/>
+      <path d="M284 210C314 210 310 100 354 100"/><path d="M284 210C314 210 310 210 354 210"/><path d="M284 210C314 210 310 320 354 320"/>
+    </g>
+    <g fill="#0f203e" stroke="rgba(148,177,214,.3)">
+      <rect x="0" y="82" width="116" height="36" rx="18"/><rect x="0" y="192" width="116" height="36" rx="18"/><rect x="0" y="302" width="116" height="36" rx="18"/>
+      <rect x="354" y="82" width="116" height="36" rx="18"/><rect x="354" y="192" width="116" height="36" rx="18"/><rect x="354" y="302" width="116" height="36" rx="18" stroke="#34d399"/>
+    </g>
+    <text x="58" y="100">Claude Code</text><text x="58" y="210">Cursor</text><text x="58" y="320">ChatGPT</text>
+    <text x="412" y="100">GitHub</text><text x="412" y="210">Linear</text><text x="412" y="320">Supabase</text>
+    <rect x="186" y="130" width="98" height="160" rx="26" fill="#0d1d39" stroke="url(#edge)" stroke-width="1.6"/>
+    <g transform="translate(213 152)">
+      <rect width="44" height="44" rx="12" fill="url(#g)"/>
+      <path d="M16.5 31.6V12.4h6.9a6.2 6.2 0 010 12.4h-6.9" fill="none" stroke="#fff" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <text x="235" y="222" style="font-size:18px;font-weight:600;fill:#fff">Privo</text>
+    <g><circle cx="211" cy="258" r="4.5" fill="#34d399"/><circle cx="227" cy="258" r="4.5" fill="#34d399"/><circle cx="243" cy="258" r="4.5" fill="#fbbf24"/><circle cx="259" cy="258" r="4.5" fill="rgba(148,177,214,.3)"/></g>
+    <g filter="url(#glow)">
+      <circle cx="150" cy="128" r="6" fill="#fbbf24"/>
+      <circle cx="330" cy="292" r="6" fill="#34d399"/>
+      <circle cx="148" cy="296" r="6" fill="#fb7158"/>
+    </g>
+  </svg>
+</body>
+</html>

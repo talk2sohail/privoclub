@@ -407,3 +407,22 @@ proxy that checks a header will do.
    organisation. **Activity → Admin changes**: `signin.refused:not_in_org`.
 4. Unset the variable and redeploy: sign-in asks for no scope again.
 
+## 25. Arguments checked against the schema (needs 0.20.0+)
+
+1. With a server whose tools you accepted, ask your AI client to call one of
+   them with an argument of the wrong type or a made-up field (for example
+   "call echo with text set to the number 5").
+2. The client gets "The arguments do not match this tool's input schema, so
+   Privo did not send the call", naming the field. It usually corrects itself
+   and calls again.
+3. **Activity**: the call shows `refused:invalid_arguments`; the arguments
+   and the reason are not there. **Approvals** has no request for it, even
+   under an ask rule.
+4. A correct call still works, and still asks when a rule says so.
+5. Add a server with a tool whose `inputSchema` has a `$ref` to a URL (or
+   `"$schema": "https://json-schema.org/draft/2019-09/schema"`). The tool
+   review shows the `input-schema` warning before you accept it. Accept it
+   and disable then enable the server: **Health** warns that the tool's
+   input schema cannot be read, before anyone calls it. A tool
+   declaring `"$schema": "https://json-schema.org/draft-07/schema"` (no `#`)
+   is read and checked normally.

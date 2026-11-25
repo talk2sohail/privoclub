@@ -1,9 +1,9 @@
 FROM node:24-alpine
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000 DATA_DIR=/data
-COPY package.json package-lock.json ./
-RUN npm ci --omit=dev && npm cache clean --force
-COPY server.js mailer.js ./
+# No dependencies: Node's built-in http and sqlite modules only. package.json is needed for
+# "type": "module".
+COPY package.json server.js ./
 COPY public ./public
 RUN mkdir -p /data && chown node:node /data
 USER node
