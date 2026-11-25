@@ -20,6 +20,10 @@ linters:
       excludes:
         - G104 # unchecked errors are covered by errcheck
   exclusions:
+    paths:
+      # A copy of a third-party library, kept close to upstream so it can be
+      # updated (internal/jsonschema/PRIVO.md); its own style is not ours.
+      - internal/jsonschema/
     rules:
       - path: _test\.go
         linters: [gosec, noctx, bodyclose, contextcheck]

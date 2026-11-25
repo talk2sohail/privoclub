@@ -108,6 +108,9 @@ type fakeStore struct {
 	servers []store.Server
 	delay   time.Duration
 	prunes  []prune
+
+	acceptSeen bool // PinStatuses reports every recorded definition as accepted
+	seen       []store.Pin
 }
 
 // prune is one PrunePending call.
@@ -143,7 +146,27 @@ func (f *fakeStore) ServerCredentials(context.Context, store.OrgID, string) ([]s
 	return nil, nil
 }
 
-func (f *fakeStore) RecordSeen(context.Context, store.OrgID, []store.Pin) error { return nil }
+func (f *fakeStore) RecordSeen(_ context.Context, _ store.OrgID, pins []store.Pin) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen = append(f.seen, pins...)
+	return nil
+}
+
+func (f *fakeStore) PinStatuses(_ context.Context, _ store.OrgID, serverID string) (map[store.PinKey]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[store.PinKey]string{}
+	for _, p := range f.seen {
+		if p.ServerID == serverID {
+			out[store.PinKey{Kind: p.Kind, Name: p.Name, Hash: p.Hash}] = store.PinPending
+			if f.acceptSeen {
+				out[store.PinKey{Kind: p.Kind, Name: p.Name, Hash: p.Hash}] = store.PinAccepted
+			}
+		}
+	}
+	return out, nil
+}
 
 func TestStaleSyncCannotReenableDisabledServer(t *testing.T) {
 	t0 := time.Now()

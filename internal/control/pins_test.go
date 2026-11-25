@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"privo.club/privo/internal/scan"
 	"privo.club/privo/internal/store"
 )
 
@@ -128,5 +129,29 @@ func TestPinViewsFollowWhatIsServedNow(t *testing.T) {
 	}
 	if prev := unknown["h3"]["previous"].(map[string]any); prev["hash"] != "h2" {
 		t.Fatalf("without a connection previous is %v, want the newest accepted (h2)", prev["hash"])
+	}
+}
+
+// F02: a tool whose input schema Privo cannot read gets a warning in the
+// review, since the gateway refuses every call to it.
+func TestPinViewsFlagAnUnreadableSchema(t *testing.T) {
+	pins := []store.Pin{
+		{Kind: "tool", Name: "fine", Hash: "h1", Status: store.PinPending, Definition: `{"name":"fine","inputSchema":{"type":"object","properties":{"q":{"type":"string"}}}}`},
+		{Kind: "tool", Name: "remote", Hash: "h2", Status: store.PinPending, Definition: `{"name":"remote","inputSchema":{"type":"object","properties":{"q":{"$ref":"https://schemas.example/q.json"}}}}`},
+		{Kind: "prompt", Name: "p", Hash: "h3", Status: store.PinPending, Definition: `{"name":"p","inputSchema":{"type":7}}`},
+	}
+	flagged := map[string]bool{}
+	for _, v := range pinViews(pins, nil) {
+		for _, f := range v["findings"].([]scan.Finding) {
+			if f.Rule == "input-schema" {
+				if f.Severity != "warn" || !strings.Contains(f.Excerpt, "schemas.example") {
+					t.Errorf("%s: %+v", v["name"], f)
+				}
+				flagged[v["name"].(string)] = true
+			}
+		}
+	}
+	if !flagged["remote"] || flagged["fine"] || flagged["p"] {
+		t.Fatalf("flagged %v, want only remote", flagged)
 	}
 }

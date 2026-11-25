@@ -66,6 +66,7 @@ nav:
       - Each person's own account: using/connections.md
       - Teams and the catalog: using/teams.md
       - Rules, approvals and grants: using/rules.md
+      - Arguments checked against the schema: using/arguments.md
       - Tokens and AI clients: using/tokens.md
       - AI clients that sign in with OAuth: using/oauth-clients.md
       - Activity and metrics: using/activity.md
