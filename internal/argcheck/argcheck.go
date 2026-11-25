@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"unicode/utf8"
 
@@ -140,12 +141,38 @@ func (c *Checker) cached() int {
 }
 
 // The $schema values the library validates with; it refuses any other at
-// every call, so Privo refuses it here, where the review can show it.
-var versions = map[string]bool{
-	"": true,
-	"http://json-schema.org/draft-07/schema#":      true,
-	"https://json-schema.org/draft-07/schema#":     true,
-	"https://json-schema.org/draft/2020-12/schema": true,
+// every call.
+const (
+	draft07   = "http://json-schema.org/draft-07/schema#"
+	draft2020 = "https://json-schema.org/draft/2020-12/schema"
+)
+
+// schemaVersion gives the library's spelling of a $schema value, and false
+// for a draft Privo does not check. json-schema.org serves each meta-schema
+// over http and https, and a trailing "#" is an empty fragment, so
+// "https://json-schema.org/draft-07/schema" and
+// "https://json-schema.org/draft/2020-12/schema#" name the same drafts as the
+// library's spellings; servers write them all. Other drafts (2019-09,
+// draft-06, draft-04) stay refused: their keywords apply differently, and
+// checking with the wrong rules could pass arguments the schema forbids.
+func schemaVersion(s string) (string, bool) {
+	if s == "" {
+		return "", true
+	}
+	rest, ok := strings.CutPrefix(s, "https://")
+	if !ok {
+		rest, ok = strings.CutPrefix(s, "http://")
+	}
+	if !ok {
+		return "", false
+	}
+	switch strings.TrimSuffix(rest, "#") {
+	case "json-schema.org/draft-07/schema":
+		return draft07, true
+	case "json-schema.org/draft/2020-12/schema":
+		return draft2020, true
+	}
+	return "", false
 }
 
 // Compile prepares schema for checking. A nil schema (none sent) gives nil:
@@ -168,9 +195,11 @@ func Compile(schema any) (*jsonschema.Resolved, error) {
 	if err := json.Unmarshal(raw, &s); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrUnreadable, err)
 	}
-	if !versions[s.Schema] {
+	version, ok := schemaVersion(s.Schema)
+	if !ok {
 		return nil, fmt.Errorf("%w: $schema %q is not draft-07 or 2020-12", ErrUnreadable, clip(s.Schema, 80))
 	}
+	s.Schema = version
 	// No Loader: a reference outside the schema fails here, unfetched.
 	r, err := s.Resolve(nil)
 	if err != nil {

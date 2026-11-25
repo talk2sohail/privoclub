@@ -419,3 +419,10 @@ proxy that checks a header will do.
    and the reason are not there. **Approvals** has no request for it, even
    under an ask rule.
 4. A correct call still works, and still asks when a rule says so.
+5. Add a server with a tool whose `inputSchema` has a `$ref` to a URL (or
+   `"$schema": "https://json-schema.org/draft/2019-09/schema"`). The tool
+   review shows the `input-schema` warning before you accept it. Accept it
+   and disable then enable the server: **Health** warns that the tool's
+   input schema cannot be read, before anyone calls it. A tool
+   declaring `"$schema": "https://json-schema.org/draft-07/schema"` (no `#`)
+   is read and checked normally.

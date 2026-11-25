@@ -178,6 +178,25 @@ Tasks and the tests that name them:
   second). Info, left: integers beyond 2^53 are checked as 64-bit floats
   (rules compare exactly)
 
+- [x] PR review follow-up (2026-11-25). (1) The draft-07 and 2020-12
+  `$schema` URIs are read over `http` or `https` and with or without the
+  trailing `#` (the empty fragment), each with its own draft's rules; before,
+  only the library's exact spellings were, so a server writing
+  `https://json-schema.org/draft-07/schema` had every call refused. Other
+  drafts stay unreadable (`TestSchemaVersionSpellings`). (2) A tool accepted
+  before 0.20.0 whose schema cannot be read is flagged when its server
+  connects, not on its first refused call: each load of the server's
+  definitions reads the schemas of its accepted tools and puts a Health
+  warning per unreadable one, once per definition, at most 10 per load and a
+  count for the rest (`internal/upstream` `TestUnreadableSchemaWarnedAtLoad`).
+  Threat note: only accepted definitions are read at load, and each once per
+  connection entry; a server that changes its definitions on every refresh
+  only makes pending ones, which are not read, so it cannot make Privo
+  compile 2000 schemas every refresh gap
+  (`TestPendingUnreadableSchemaIsNotReadAtLoad`). The warning carries the
+  tool's name only (quoted, clipped by the recorder); the cause stays on the
+  review page.
+
 Later: an administrator's override for a server whose schemas are wrong.
 
 ## F03. Storage and tenancy

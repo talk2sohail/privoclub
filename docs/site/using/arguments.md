@@ -18,16 +18,18 @@ it — is refused as a tool error with a short reason the AI client can act on.
 ## Supported schemas and limits
 
 Draft 2020-12 and draft-07 JSON Schemas work, including local `$ref`
-references (`$defs` and `definitions`). A tool with no `inputSchema` accepts
-any JSON object.
+references (`$defs` and `definitions`). Their `$schema` may be written with
+`http` or `https` and with or without a trailing `#`; other drafts (2019-09,
+draft-06, draft-04) are not read. A tool with no `inputSchema` accepts any
+JSON object.
 
 Privo treats every upstream schema as untrusted input and fails closed:
 
 - **No remote fetches.** Privo never fetches a `$ref` from another URL. A tool
   whose schema refers to an external document, uses an unsupported draft, or
   cannot be parsed is flagged with a warning in the server's tool review and
-  its calls are refused (`refused:schema_unreadable`), with a warning on
-  **Activity → Log**.
+  its calls are refused (`refused:schema_unreadable`). Once the tool is
+  accepted, **Health** gets a warning naming it when its server connects.
 - **Bounded work.** Schemas are capped at 64 KiB and 64 nesting levels before
   decoding, and validation runs within a fixed step budget (1,000,000 units per
   call, 1,000 nesting frames). A schema with a `$ref` loop or exponential
@@ -38,6 +40,7 @@ Privo treats every upstream schema as untrusted input and fails closed:
   numeric comparison at any precision stays with [rules on arguments](rules.md#rules-on-arguments).
 
 !!! note
-    Tool definitions accepted before 0.20.0 are checked on their first call
-    after upgrading and fail closed the same way if their schema cannot be
-    read.
+    Tool definitions accepted before 0.20.0 are checked the same way after
+    upgrading. If a schema cannot be read, **Health** shows a warning for that
+    tool as soon as its server connects, before anyone calls it, and the
+    server's tool review says why.

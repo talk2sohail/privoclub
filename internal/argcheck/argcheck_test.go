@@ -74,6 +74,46 @@ func TestDraft07AndLocalRefs(t *testing.T) {
 	}
 }
 
+// Servers spell the two supported drafts with or without the trailing "#",
+// and over http or https; all of them are read, with the right draft's rules.
+func TestSchemaVersionSpellings(t *testing.T) {
+	var c Checker
+	for _, v := range []string{
+		"http://json-schema.org/draft-07/schema#", "https://json-schema.org/draft-07/schema#",
+		"http://json-schema.org/draft-07/schema", "https://json-schema.org/draft-07/schema",
+	} {
+		// In draft-07 a $ref's siblings are ignored, so "type":"string" does
+		// not apply; under 2020-12 rules {"x":7} would be refused.
+		src := fmt.Sprintf(`{"$schema":%q,"type":"object","properties":{"x":{"$ref":"#/definitions/X","type":"string"}},"definitions":{"X":{"type":"integer"}}}`, v)
+		if err := c.Check(v, schemaOf(t, src), json.RawMessage(`{"x":7}`)); err != nil {
+			t.Errorf("%s: %v, want draft-07 rules", v, err)
+		}
+	}
+	for _, v := range []string{
+		"https://json-schema.org/draft/2020-12/schema", "https://json-schema.org/draft/2020-12/schema#",
+		"http://json-schema.org/draft/2020-12/schema", "http://json-schema.org/draft/2020-12/schema#",
+	} {
+		src := fmt.Sprintf(`{"$schema":%q,"type":"object","properties":{"x":{"$ref":"#/$defs/X","type":"string"}},"$defs":{"X":{"type":"integer"}}}`, v)
+		var m *MismatchError
+		if err := c.Check(v, schemaOf(t, src), json.RawMessage(`{"x":7}`)); !errors.As(err, &m) {
+			t.Errorf("%s: %v, want 2020-12 rules (the sibling type applies)", v, err)
+		}
+	}
+	for _, v := range []string{
+		"https://json-schema.org/draft/2019-09/schema",
+		"http://json-schema.org/draft-06/schema#",
+		"https://json-schema.org/draft-07/schema#/definitions",
+		"https://example.com/json-schema.org/draft-07/schema",
+		"ftp://json-schema.org/draft-07/schema#",
+		"json-schema.org/draft-07/schema",
+	} {
+		src := fmt.Sprintf(`{"$schema":%q,"type":"object"}`, v)
+		if err := c.Check(v, schemaOf(t, src), json.RawMessage(`{}`)); !errors.Is(err, ErrUnreadable) {
+			t.Errorf("%s: %v, want unreadable", v, err)
+		}
+	}
+}
+
 func TestRemoteRefIsUnreadableAndNeverFetched(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
