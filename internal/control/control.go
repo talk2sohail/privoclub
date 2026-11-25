@@ -648,6 +648,9 @@ func (a *API) patchServer(w http.ResponseWriter, r *http.Request, p auth.Princip
 		if err := a.Store.SetServerEnabled(r.Context(), p.OrgID, s.ID, *req.Enabled); err != nil {
 			return err
 		}
+		if !*req.Enabled {
+			a.Grants.EvictServer(p.OrgID, s.ID)
+		}
 		a.adminEvent(r.Context(), p, "server.enabled="+strconv.FormatBool(*req.Enabled), s.Alias)
 		if err := a.Upstream.Sync(r.Context(), p.OrgID); err != nil {
 			return err
@@ -678,6 +681,7 @@ func (a *API) deleteServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 	if err := a.Store.DeleteServer(r.Context(), p.OrgID, s.ID); err != nil {
 		return err
 	}
+	a.Grants.EvictServer(p.OrgID, s.ID)
 	a.revokeLater(r.Context(), revoke)
 	a.adminEvent(r.Context(), p, "server.delete", s.Alias)
 	if err := a.Upstream.Sync(r.Context(), p.OrgID); err != nil {

@@ -171,6 +171,8 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 	if len(webCfg.Missing(cfg.PublicURL)) == 0 && cfg.PublicURL.Path == "" {
 		oauthClient = &upstreamauth.Client{HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1}), UserAgent: "privo/" + buildinfo.Version}
 		grantSvc = &grants.Service{Store: st, Keys: kr, Auth: oauthClient, PublicURL: cfg.PublicURL, Logger: logger, Diagnostics: rec}
+		grantSvc.Start(ctx)
+		defer grantSvc.Close() //nolint:contextcheck // runs after ctx is cancelled by SIGTERM, before st.Close()
 		grantSource = grantSvc
 	}
 	mgr := upstream.New(upstream.Options{Store: st, Keys: kr, Runner: rn, HTTPClient: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true}),

@@ -96,6 +96,9 @@ func (s *Store) DeleteTeam(ctx context.Context, org OrgID, slug string, ev Audit
 		if n, _ := res.RowsAffected(); n != 1 {
 			return ErrNotFound
 		}
+		if err := bumpPolicyVersion(ctx, tx, org); err != nil {
+			return err
+		}
 		return insertAudit(ctx, tx, org, []AuditEvent{ev})
 	})
 }

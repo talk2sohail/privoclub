@@ -539,7 +539,7 @@ until URL elicitation lands.
 - [x] R-05 (Low): require `oauth.issuer` when a client secret is supplied, so the secret cannot go to an authorization server the MCP server names **Fixed in 0.18.0:** a discovered server with a client secret needs `oauth.issuer` (`TestClientSecretNeedsANamedIssuer`); the catalog's own-app entries name theirs (GitHub, Asana, HubSpot, Slack, read from their protected resource metadata on 2026-11-21; `TestOwnAppEntriesNameTheirIssuer`)
 - [x] R-06 (Low): a failed save after a rotated refresh token loses the grant; retry the save with the token already obtained **Fixed in 0.18.0:** the save is retried with the token already obtained; when it keeps failing the new pair is kept in memory, used, and saved on the next refresh, never over a newer connection (`TestRotatedTokenIsNotLostWhenSavingFails`, `TestUnsavedTokenDoesNotOutliveAReconnection`)
 - [x] R-07 (Low): the GitHub callback uses up a state of any purpose before checking it; look the state up with its purpose and use one cookie per flow **Fixed in 0.7.1:** the sign-in callback reads no table; sign-in and connect have a cookie each; the connect lookup takes only connect rows. Tests: `internal/web` `TestSignInAndConnectFlowsDoNotEndEachOther`, `internal/store` `TestRowsOfOtherPurposesAreNotConnectStates`
-- [ ] R-08 (Low): every upstream HTTP request reads, decrypts and touches the grant on the single writer connection; cache the opened token until its expiry and flush `last_used_at` periodically
+- [x] R-08 (Low): every upstream HTTP request reads, decrypts and touches the grant on the single writer connection; cache the opened token until its expiry and flush `last_used_at` periodically — bounded 4096-entry LRU token cache (`internal/grants`, max 5 minutes and never past `Expiry - Skew`), synchronous eviction across `Save`, `SaveKey`, `Disconnect`, `doRefresh`, and `control` (`deleteServer`, `editServer`, `patchServer`, `removeMember`, `patchMember`), plus coalesced `last_used_at` flushing every 30s (`Start`) and synchronously on `Flush`/`Close` wired in `cmd/privo/serve.go` (`TestGrantCacheAvoidsRepeatedDecryptAndDBReads`, `TestGrantCacheEvictsOnDisconnectDisableEditAndRefresh`, `TestGrantCacheNeverServesExpiredToken`, `TestLastUsedAtFlushedPeriodicallyAndOnClose`, `TestControlMutationsEvictGrantCache`, `BenchmarkGrantAccessToken`)
 - [ ] R-09 (Info, ten notes): among them no backoff when a server rejects every token, discovery of up to a minute inside one admin request, an orphaned dynamic registration when the create fails afterwards
 
 ### Later in F07
@@ -688,7 +688,7 @@ ADRs: 0001, 0011, 0014, 0027
 - [x] Rules removed with their server
 - [ ] Cross-server flow rule (source and sink tags)
 - [ ] Admin overrides of annotations shown to clients
-- [ ] Cache rules per org with invalidation (now read per call)
+- [x] Cache rules per org with invalidation (now read per call) — see "A. Rules cached per org" below
 
 ### Second slice: conditions on arguments, safer grants, YAML (2026-11-20)
 
@@ -752,8 +752,8 @@ Acceptance:
    refused (fails closed).
 
 Tasks and tests:
-- [ ] Store: `policy_version` per org (`TestEveryPolicyWriteBumpsTheVersion`)
-- [ ] Gateway cache (`TestRuleChangeAppliesToTheNextCall`, `TestCacheReadFailureRefuses`); benchmark before and after
+- [x] Store: `policy_version` per org (`00018_policy_version.sql`, bumped transactionally in `CreatePolicies`, `ImportPolicies`, `DeletePolicy`, `SetSetting` for `policy.*`, `DeleteServer`, `DeleteTeam`; `TestEveryPolicyWriteBumpsTheVersion`)
+- [x] Gateway cache (`internal/gateway`, bounded per-org LRU keyed by `policy_version`, singleflight load per org shard with version re-check, fails closed on any read error; `TestRuleChangeAppliesToTheNextCall`, `TestCacheReadFailureRefuses`, `TestPolicyCacheIsIsolatedPerOrg`, `TestPolicyCacheBoundsEntryCount`, `BenchmarkGatewayDecide`)
 
 **B. Annotation overrides.** Goal: an admin corrects what a server says
 about a tool (`readOnlyHint`, `destructiveHint`, `openWorldHint`) for

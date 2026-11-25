@@ -240,7 +240,7 @@ func (s *Store) DeleteServer(ctx context.Context, org OrgID, id string) error {
 		if n, _ := res.RowsAffected(); n == 0 {
 			return ErrNotFound
 		}
-		return nil
+		return bumpPolicyVersion(ctx, tx, org)
 	})
 }
 

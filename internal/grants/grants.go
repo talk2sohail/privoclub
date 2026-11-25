@@ -87,12 +87,23 @@ type Service struct {
 	// Diagnostics receives grant events for the diagnostic log (ADR 0024);
 	// nil records none.
 	Diagnostics *telemetry.Recorder
+	// FlushInterval is how often queued last_used_at updates flush when Start
+	// is running; zero uses defaultFlushInterval (30s).
+	FlushInterval time.Duration
 
 	mu      sync.Mutex
 	flights map[string]*flight
 	// unsaved holds tokens the provider issued that could not be saved
 	// (F07 R-06): with rotating refresh tokens, losing them loses the grant.
-	unsaved map[string]unsavedToken
+	unsaved        map[string]unsavedToken
+	cache          tokenLRU
+	cacheEpoch     uint64
+	pendingTouches map[cacheKey]pendingTouch
+	touchClosed    bool
+	startOnce      sync.Once
+	closeOnce      sync.Once
+	stop           chan struct{}
+	done           chan struct{}
 }
 
 // unsavedToken is a sealed credential waiting to be saved over the stored
@@ -220,6 +231,7 @@ func (s *Service) Save(ctx context.Context, org store.OrgID, srv store.Server, u
 	g, err := s.Store.SaveGrant(ctx, org, store.Grant{ServerID: srv.ID, UserID: user.ID, Scopes: tok.Scope, ConnectedAt: s.now(), Credential: c}, catalogOK, ev)
 	if err == nil {
 		s.forgetUnsaved(string(org) + "\x00" + srv.ID + "\x00" + user.ID)
+		s.Evict(org, srv.ID, user.ID)
 	}
 	return g, err
 }
@@ -243,12 +255,34 @@ func (s *Service) SaveKey(ctx context.Context, org store.OrgID, srv store.Server
 	if err != nil {
 		return store.Grant{}, err
 	}
-	return s.Store.SaveGrant(ctx, org, store.Grant{ServerID: srv.ID, UserID: user.ID, ConnectedAt: s.now(), Credential: c}, catalogOK, ev)
+	g, err := s.Store.SaveGrant(ctx, org, store.Grant{ServerID: srv.ID, UserID: user.ID, ConnectedAt: s.now(), Credential: c}, catalogOK, ev)
+	if err == nil {
+		s.forgetUnsaved(string(org) + "\x00" + srv.ID + "\x00" + user.ID)
+		s.Evict(org, srv.ID, user.ID)
+	}
+	return g, err
 }
 
 // AccessToken returns a usable access token of the person's grant, refreshing
 // it when it is about to expire. ErrNotConnected when there is no grant.
 func (s *Service) AccessToken(ctx context.Context, org store.OrgID, srv store.Server, userID string) (string, error) {
+	now := s.now()
+	key := cacheKey{org: org, serverID: srv.ID, userID: userID}
+	s.mu.Lock()
+	c, ok := s.cache.get(key)
+	if ok && !cacheEntryValid(c, now) {
+		s.cache.remove(key)
+		ok = false
+	}
+	epoch := s.cacheEpoch
+	s.mu.Unlock()
+	if ok {
+		if (srv.Config.Auth == store.AuthKey) != (c.purpose == store.PurposeKeyGrant) {
+			return "", ErrNotConnected
+		}
+		s.recordTouch(org, srv.ID, userID, now)
+		return c.token, nil
+	}
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", ErrNotConnected
@@ -256,12 +290,13 @@ func (s *Service) AccessToken(ctx context.Context, org store.OrgID, srv store.Se
 	if err != nil {
 		return "", err
 	}
-	return s.usable(ctx, org, srv, g)
+	return s.usableWithEpoch(ctx, org, srv, g, epoch)
 }
 
 // CatalogAccessToken is AccessToken for the server's catalog grant; it also
 // returns whose grant that is.
 func (s *Service) CatalogAccessToken(ctx context.Context, org store.OrgID, srv store.Server) (userID, token string, err error) {
+	epoch := s.currentEpoch()
 	g, err := s.Store.CatalogGrant(ctx, org, srv.ID)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", "", ErrNotConnected
@@ -269,11 +304,31 @@ func (s *Service) CatalogAccessToken(ctx context.Context, org store.OrgID, srv s
 	if err != nil {
 		return "", "", err
 	}
-	token, err = s.usable(ctx, org, srv, g)
+	if (srv.Config.Auth == store.AuthKey) != (g.Credential.Purpose == store.PurposeKeyGrant) {
+		return g.UserID, "", ErrNotConnected
+	}
+	now := s.now()
+	key := cacheKey{org: org, serverID: srv.ID, userID: g.UserID}
+	s.mu.Lock()
+	c, ok := s.cache.get(key)
+	if ok {
+		if !cacheEntryValid(c, now) {
+			s.cache.remove(key)
+			ok = false
+		} else if c.credID != g.Credential.ID || c.rowVersion != g.Credential.RowVersion || c.purpose != g.Credential.Purpose {
+			ok = false
+		}
+	}
+	s.mu.Unlock()
+	if ok {
+		s.recordTouch(org, srv.ID, g.UserID, now)
+		return g.UserID, c.token, nil
+	}
+	token, err = s.usableWithEpoch(ctx, org, srv, g, epoch)
 	return g.UserID, token, err
 }
 
-func (s *Service) usable(ctx context.Context, org store.OrgID, srv store.Server, g store.Grant) (string, error) {
+func (s *Service) usableWithEpoch(ctx context.Context, org store.OrgID, srv store.Server, g store.Grant, epoch uint64) (string, error) {
 	// A key is used only for a server that takes keys, and an OAuth grant
 	// only for one that signs people in. Changing a server's sign-in method
 	// is planned; until the stored credentials follow, a mismatch reads as not
@@ -287,9 +342,8 @@ func (s *Service) usable(ctx context.Context, org store.OrgID, srv store.Server,
 	}
 	now := s.now()
 	if !tok.Expired(now, Skew) {
-		if err := s.Store.TouchGrant(ctx, org, srv.ID, g.UserID, now); err != nil {
-			s.logger().Warn("recording a grant's use failed", "server", srv.Alias, "err", err)
-		}
+		s.putCachedIfFresh(cacheKey{org: org, serverID: srv.ID, userID: g.UserID}, g.Credential, tok, now, epoch)
+		s.recordTouch(org, srv.ID, g.UserID, now)
 		return tok.AccessToken, nil
 	}
 	return s.refresh(ctx, org, srv, g.UserID, tok.AccessToken)
@@ -357,15 +411,23 @@ func (s *Service) current(ctx context.Context, org store.OrgID, srv store.Server
 }
 
 func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Server, userID, stale string) (string, error) {
+	serverID := srv.ID
+	s.evictCache(org, serverID, userID)
 	srv, err := s.current(ctx, org, srv)
 	if err != nil {
+		if errors.Is(err, ErrNotConnected) {
+			s.Evict(org, serverID, userID)
+		}
 		return "", err
 	}
 	if !srv.Enabled {
+		s.evictCache(org, serverID, userID)
 		return "", ErrServerOff
 	}
+	epoch := s.currentEpoch()
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if errors.Is(err, store.ErrNotFound) {
+		s.Evict(org, serverID, userID)
 		return "", ErrNotConnected
 	}
 	if err != nil {
@@ -379,6 +441,7 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 	s.mu.Lock()
 	p, held := s.unsaved[key]
 	s.mu.Unlock()
+	stillUnsaved := false
 	if held {
 		// The same credential at the same version: a reconnection makes a new
 		// credential, whose version may well be the same number.
@@ -392,15 +455,19 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 				// The grant went meanwhile (removed, disconnected, or the
 				// server's connections ended): nothing of it is used.
 				s.forgetUnsaved(key)
+				s.Evict(org, serverID, userID)
 				return "", ErrNotConnected
 			case errors.Is(err, store.ErrConflict):
 				s.forgetUnsaved(key) // another refresh saved a newer pair: theirs is read below
+				epoch = s.currentEpoch()
 				if g, err = s.Store.Grant(ctx, org, srv.ID, userID); err != nil {
+					s.Evict(org, serverID, userID)
 					return "", ErrNotConnected
 				}
 				stored = g.Credential.RowVersion
 			default:
 				g.Credential = p.c // still unsaved: use it, save it next time
+				stillUnsaved = true
 			}
 		} else {
 			s.forgetUnsaved(key) // the person connected again meanwhile
@@ -411,6 +478,9 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 		return "", err
 	}
 	if tok.AccessToken != stale && !tok.Expired(now, Skew) {
+		if !stillUnsaved {
+			s.putCachedIfFresh(cacheKey{org: org, serverID: serverID, userID: userID}, g.Credential, tok, now, epoch)
+		}
 		return tok.AccessToken, nil // refreshed meanwhile
 	}
 	if srv.Config.Auth == store.AuthKey || g.Credential.Purpose == store.PurposeKeyGrant {
@@ -429,6 +499,7 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 		if derr := s.Store.DeleteGrant(ctx, org, srv.ID, userID, ev); derr != nil && !errors.Is(derr, store.ErrNotFound) {
 			s.logger().Error("deleting a refused grant failed", "server", srv.Alias, "err", derr)
 		}
+		s.Evict(org, serverID, userID)
 		s.Diagnostics.Diagnose(org, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: srv.Alias, UserID: userID,
 			Message: "the authorization server refused a member's grant; they must connect again"})
 		return "", ErrNotConnected
@@ -452,21 +523,29 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 	if err != nil {
 		return "", err
 	}
+	saveEpoch := s.currentEpoch()
 	switch err := s.saveToken(ctx, org, srv.ID, userID, stored, c, now); {
 	case err == nil:
 		s.forgetUnsaved(key)
+		s.putCachedIfFresh(cacheKey{org: org, serverID: serverID, userID: userID}, c, next, now, saveEpoch)
 		return next.AccessToken, nil
 	case errors.Is(err, store.ErrNotFound):
+		s.Evict(org, serverID, userID)
 		return "", ErrNotConnected
 	case errors.Is(err, store.ErrConflict):
 		// Another replica refreshed (or the person reconnected) first: use theirs.
+		conflictEpoch := s.currentEpoch()
 		g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 		if err != nil {
+			s.Evict(org, serverID, userID)
 			return "", ErrNotConnected
 		}
 		t, err := s.token(ctx, org, g)
 		if err != nil || t.Expired(now, 0) {
 			return "", errors.New("refreshing the grant raced with another refresh")
+		}
+		if !t.Expired(now, Skew) {
+			s.putCachedIfFresh(cacheKey{org: org, serverID: serverID, userID: userID}, g.Credential, t, now, conflictEpoch)
 		}
 		return t.AccessToken, nil
 	default:
@@ -596,12 +675,15 @@ func (s *Service) RevokeLater(ctx context.Context, rs []Revocation) {
 // offers revocation (best effort) and deletes it with the audit record ev.
 func (s *Service) Disconnect(ctx context.Context, org store.OrgID, srv store.Server, userID string, ev store.AuditEvent) error {
 	s.forgetUnsaved(string(org) + "\x00" + srv.ID + "\x00" + userID)
+	s.Evict(org, srv.ID, userID)
 	g, err := s.Store.Grant(ctx, org, srv.ID, userID)
 	if err != nil {
 		return err
 	}
 	s.Revoke(ctx, s.Revocations(ctx, org, srv, []store.Grant{g}))
-	return s.Store.DeleteGrant(ctx, org, srv.ID, userID, ev)
+	err = s.Store.DeleteGrant(ctx, org, srv.ID, userID, ev)
+	s.Evict(org, srv.ID, userID)
+	return err
 }
 
 func (s *Service) token(ctx context.Context, org store.OrgID, g store.Grant) (upstreamauth.Token, error) {
