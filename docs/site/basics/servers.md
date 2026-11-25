@@ -4,8 +4,10 @@ A server is an MCP server Privo reaches for your team: GitHub, Linear,
 Sentry, your own. You add it once on **Servers**; its tools then reach the AI
 clients of the teams you choose, after you have reviewed them.
 
-The catalog arrived in 0.6.0, **Block** in tool review in 0.12.0, and editing
-a server in 0.17.0.
+The catalog arrived in 0.6.0
+([ADR 0020](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0020-teams-and-server-catalog.md)), **Block** in tool
+review in 0.12.0, and editing a server in 0.17.0
+([ADR 0029](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0029-editing-a-server.md)).
 
 ## Add a server from the catalog
 
@@ -93,9 +95,10 @@ On the server's page:
 
 ## Going further
 
-- [Which tools each team sees](../using/teams.md#which-tools-each-team-sees):
-  a team can see only some of a server's tools.
-- [A server that does not say where its people sign in](../using/connections.md#a-server-that-does-not-say-where-its-people-sign-in):
-  OAuth settings entered by hand.
-- [Adding servers with the admin API](../using/servers.md), and local
-  command (stdio) servers for development.
+- [Per-team toolsets](../advanced/toolsets.md): a team can see only some of a
+  server's tools.
+- [Custom upstream sign-in](../advanced/upstream-auth.md): OAuth settings
+  entered by hand, and each person's own API key in detail.
+- [Admin API and script tokens](../advanced/api-and-automation.md): adding and
+  editing servers with the API.
+- [Local stdio servers](../advanced/stdio-runner.md), for development.

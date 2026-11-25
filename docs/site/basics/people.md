@@ -56,8 +56,7 @@ back.
 
 ## Going further
 
-- [Roles](../using/roles.md): holding several roles, and who may change whose.
-- Limiting sign-in to members of your GitHub organisations:
-  `PRIVO_GITHUB_ORG_IDS` in the
-  [configuration reference](../installation/configuration.md).
-- [Inviting from the command line](../using/people.md).
+- [Roles and access](../advanced/roles-and-access.md): holding several roles,
+  who may change whose, and limiting sign-in to your GitHub organisations.
+- [Admin API and script tokens](../advanced/api-and-automation.md): inviting,
+  changing roles and removing from the command line or the API.

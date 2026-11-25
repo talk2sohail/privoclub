@@ -36,8 +36,8 @@ or AI client, the server and tool, the rule's decision, and how it ended.
 Calls a rule denied are here too, so you see what agents tried, not only
 what ran.
 
-Under **Filter and export**, narrow the list by who made the call, the action
-or the decision, then choose **Filter**. Export the list as CSV from the same
+Under **Filter and export**, narrow the list by who made the call, the
+server, the action, the decision and a date range, then choose **Filter**. Export the list as CSV from the same
 place; the recorded arguments are never part of the file.
 
 ## Admin changes
@@ -55,7 +55,7 @@ to one server start failing.
 
 ## Going further
 
-- [Prometheus metrics](../using/activity.md#prometheus-metrics): the same
-  figures for your monitoring.
-- [The audit trail](../using/audit.md): checking that no record was rewritten,
-  retention, and erasing a person's recorded arguments.
+- [Metrics, diagnostics and telemetry](../advanced/observability.md): what the
+  figures hold, Prometheus metrics and the telemetry API.
+- [The tamper-evident audit trail](../advanced/audit.md): checking that no
+  record was rewritten, retention, and recorded arguments.

@@ -67,9 +67,10 @@ appears at the top of **Start**, and you can withdraw it there.
 
 ## Going further
 
-- [Roles](../using/roles.md): what each role may do, and holding several.
-- [AI clients that sign in with OAuth](../using/oauth-clients.md): the
+- [Roles and access](../advanced/roles-and-access.md): what each role may do,
+  holding several, limiting sign-in to your GitHub organisations, and
+  sessions.
+- [AI clients that sign in with OAuth](../advanced/oauth-clients.md): the
   **Clients** page.
-- Limiting sign-in to members of your GitHub organisations:
-  `PRIVO_GITHUB_ORG_IDS` in the
-  [configuration reference](../installation/configuration.md).
+- [Admin API and script tokens](../advanced/api-and-automation.md): the API
+  behind every page.

@@ -42,12 +42,16 @@ What a team uses day to day, all in the browser:
 ## Advanced features
 
 For admins who need more control:
-[which tools each team sees](using/teams.md#which-tools-each-team-sees),
-[rules on arguments and rules as a file](using/rules.md#rules-on-arguments),
-[OAuth settings entered by hand](using/connections.md#a-server-that-does-not-say-where-its-people-sign-in),
-[AI clients that sign in with OAuth](using/oauth-clients.md),
-[roles](using/roles.md), [the audit trail](using/audit.md) and
-[metrics](using/activity.md#prometheus-metrics).
+[per-team toolsets](advanced/toolsets.md),
+[conditional rules, grants and YAML](advanced/policy-engine.md),
+[arguments checked against the schema](advanced/arguments.md),
+[AI clients that sign in with OAuth](advanced/oauth-clients.md),
+[custom upstream sign-in](advanced/upstream-auth.md),
+[roles and access](advanced/roles-and-access.md),
+[the tamper-evident audit trail](advanced/audit.md),
+[metrics and telemetry](advanced/observability.md),
+[the admin API and script tokens](advanced/api-and-automation.md) and
+[local stdio servers](advanced/stdio-runner.md).
 
 ## Operations and reference
 

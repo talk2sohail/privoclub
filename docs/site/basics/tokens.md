@@ -65,7 +65,7 @@ Admins also see **All tokens**, everyone's, and can revoke any of them.
 
 ## Going further
 
-- [AI clients that sign in with OAuth](../using/oauth-clients.md): no token
+- [AI clients that sign in with OAuth](../advanced/oauth-clients.md): no token
   to paste at all.
-- [Tokens for scripts](../using/tokens.md#tokens-from-the-command-line):
-  API tokens and tokens that belong to nobody.
+- [Tokens for scripts](../advanced/api-and-automation.md#tokens): API tokens
+  and tokens that belong to nobody.

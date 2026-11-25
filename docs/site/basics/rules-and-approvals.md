@@ -11,7 +11,9 @@ grants, withdrawing and **History** in 0.13.0.
 
 At the top of **Rules**, **When no rule matches** sets the default for every
 call no rule covers: **allow**, **ask for approval** or **deny**. Choose one
-and **Save**. A new Privo allows.
+and **Save**. A new Privo allows. Even under **allow**, a tool that declares
+itself destructive asks a person first; to ask about every tool, choose
+**ask for approval**.
 
 ## Add a rule
 
@@ -27,8 +29,9 @@ Under **Add a rule**:
 5. **Note**, if you like: why the rule exists.
 6. Choose **Add rule**.
 
-When several rules match a call, the most specific one wins. Some rules to
-start from:
+When several rules match a call, the strictest one wins: deny beats ask, and
+ask beats allow. So an allow rule cannot make an exception to an ask or a deny
+that also matches. Some rules to start from:
 
 | Server | Tool | Who | Action | What it does |
 | --- | --- | --- | --- | --- |
@@ -55,8 +58,8 @@ time, the call goes ahead at once. Otherwise the client is told that the
 request waits for a person, with a link, and to make the same call again
 once it is approved.
 
-**Nobody approves their own calls.** A request you made yourself waits for
-someone else.
+**Nobody approves their own calls**, by default. A request you made yourself
+waits for someone else.
 
 ### Grants
 
@@ -77,9 +80,11 @@ it asks again.
 
 ## Going further
 
-- [Rules on arguments](../using/rules.md#rules-on-arguments): ask or deny
-  only when a call's arguments match, such as `repo` equals `prod`.
-- [Rules as a file](../using/rules.md#rules-as-a-file): export every rule as
-  YAML, review it like code, and import it back.
-- [Rules for one team or one person](../using/rules.md), which the rules file
-  and the admin API can name.
+- [Conditions on a call's arguments](../advanced/policy-engine.md#conditions-on-a-calls-arguments):
+  ask or deny only when the arguments match, such as `repo` equals `prod`.
+- [Which rule wins](../advanced/policy-engine.md#which-rule-wins): priorities,
+  for exceptions to a stricter rule.
+- [Rules for one team or one person](../advanced/policy-engine.md#who-a-rule-is-for),
+  which the rules file and the admin API can name.
+- [Rules as a file](../advanced/policy-engine.md#rules-as-a-file): export every
+  rule as YAML, review it like code, and import it back.

@@ -2,7 +2,7 @@
 
 0.20.0, [ADR 0001](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0001-request-pipeline.md)
 (stage 5). Every tool call's arguments are checked against the `inputSchema` of
-the tool definition you accepted, before [rules and approvals](rules.md).
+the tool definition you accepted, before [rules and approvals](../basics/rules-and-approvals.md).
 
 ## What happens on a mismatch
 
@@ -12,7 +12,7 @@ it — is refused as a tool error with a short reason the AI client can act on.
 
 - Nothing is sent to the upstream server.
 - No approval request is created, even when a rule would ask for approval.
-- [Activity](activity.md) and [the audit trail](audit.md) record the call as
+- [Activity](../basics/activity.md) and [the audit trail](audit.md) record the call as
   `refused:invalid_arguments`, without the arguments or the error reason.
 
 ## Supported schemas and limits
@@ -37,7 +37,7 @@ Privo treats every upstream schema as untrusted input and fails closed:
   too costly to check within the budget are refused
   (`refused:arguments_too_costly`).
 - **Numbers.** Schema validation checks numbers as 64-bit floats; exact
-  numeric comparison at any precision stays with [rules on arguments](rules.md#rules-on-arguments).
+  numeric comparison at any precision stays with [conditions on arguments](policy-engine.md#conditions-on-a-calls-arguments).
 
 !!! note
     Tool definitions accepted before 0.20.0 are checked the same way after
