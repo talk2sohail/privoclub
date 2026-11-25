@@ -36,9 +36,9 @@ What the architecture is today:
   be backed up apart from it.
 - **Remote MCP servers only in production.** The stdio runner is local and
   for development (0007); the isolated runner is not built.
-- **People sign in with GitHub (0016) or OpenID Connect (0034).** Generic OIDC
-  (Google Workspace, Microsoft Entra, Okta, Keycloak) is accepted in 0034 and
-  built on F20 A.
+- **People sign in with GitHub (0016).** Generic OpenID Connect (Google
+  Workspace, Microsoft Entra, Okta, Keycloak) is accepted in 0034 and is not
+  built yet (F20 A).
 - **Several organisations in one SQLite install are isolated by code only**
   (0002); large customers get their own install.
 

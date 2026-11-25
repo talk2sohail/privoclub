@@ -18,3 +18,6 @@ web/node_modules
 _backup-*
 .env
 .DS_Store
+# Master keys made by the quick starts: never in the build context
+master.key
+secrets

@@ -3,11 +3,12 @@
 ## Try locally with Docker (no Go needed)
 
 1. Build the image and generate a master key readable by the container's
-   `nonroot` user (`65532`):
+   `nonroot` user (`65532`). The key file is world-readable so the container
+   can read it; the `0700` directory keeps other users of your machine out:
 
    ```sh
    make image
-   umask 077 && openssl rand -base64 32 > master.key && chmod 644 master.key
+   mkdir -m 700 secrets && openssl rand -base64 32 > secrets/master.key && chmod 644 secrets/master.key
    ```
 
 2. Start Privo on `http://localhost:8080` (for browser sign-in, also pass
@@ -17,13 +18,14 @@
    ```sh
    docker run -d --name privo -p 127.0.0.1:8080:8080 \
      -v privo_data:/data \
-     -v "$PWD/master.key:/run/secrets/master_key:ro" \
+     -v "$PWD/secrets/master.key:/run/secrets/master_key:ro" \
      -e PRIVO_PUBLIC_URL=http://localhost:8080 \
      -e PRIVO_MASTER_KEY_FILE=/run/secrets/master_key \
      privo:$(tr -d '[:space:]' < internal/buildinfo/VERSION)
    ```
 
-3. Claim the owner account in the browser (or issue a CLI token below):
+3. Claim the owner account in the browser (needs the GitHub settings from
+   step 2), or issue a CLI token below:
 
    ```sh
    docker exec privo /privo admin setup-link
@@ -45,7 +47,7 @@ Every setting is in the [configuration reference](configuration.md) and can
 also live in [a configuration file](configuration-file.md).
 
 !!! warning
-    Back up `master.key`. Without it, every stored credential in the data
+    Back up the master key. Without it, every stored credential in the data
     directory is unreadable, and a backup cannot be restored.
 
 ## Your first sign-in or token

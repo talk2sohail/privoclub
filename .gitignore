@@ -8,6 +8,10 @@ coverage.out
 /_backup-*/
 /_to_delete/
 
+# Master keys made by the quick starts (README, docs/site/installation/build-and-run.md)
+/master.key
+/secrets/
+
 # Landing page (site/) local files
 /site/node_modules/
 /site/.env

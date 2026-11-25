@@ -19,7 +19,8 @@ Privo runs on [Coolify](https://coolify.io/) as a single distroless, non-root
 In **Persistent Storage**, add two **file mounts** (readable by UID `65532`):
 
 - `/run/secrets/privo_master_key`: output of `openssl rand -base64 32`
-- `/run/secrets/privo_github_client_secret`: client secret from step 3
+- `/run/secrets/privo_github_client_secret`: client secret from
+  [Sign in with GitHub](#sign-in-with-github)
 
 In **Environment Variables**, set:
 
@@ -39,6 +40,13 @@ PRIVO_BACKUP_INTERVAL=24h
     stored credentials in `/data` and backups cannot be read. To rotate it
     later, mount the retiring key at `PRIVO_MASTER_KEY_PREVIOUS_FILE` first.
 
+Secrets are files because an environment variable stays readable in
+`/proc/<pid>/environ` while the process runs. To move an existing install off
+`PRIVO_MASTER_KEY`: add the file mount with the same content, set
+`PRIVO_MASTER_KEY_FILE`, deploy, then delete `PRIVO_MASTER_KEY` (the normal
+and the preview entry) and deploy again. The file wins when both are set, so
+the first deploy is safe.
+
 See the [configuration reference](configuration.md) for every setting (including
 `PRIVO_GITHUB_ORG_IDS` and GitHub Enterprise Server).
 
@@ -52,20 +60,30 @@ See the [configuration reference](configuration.md) for every setting (including
 3. On the Coolify host, print the one-time owner setup link:
 
    ```sh
-   docker exec <container> /privo admin setup-link
+   docker exec <container> /privo admin setup-link --person "<your name>"
    ```
 
 4. Open the printed URL within 1 hour and choose **Continue with GitHub**.
+   The GitHub account you sign in with becomes the owner.
 
 !!! warning
-    Treat the setup link as a secret until claimed (it expires after 1 hour
-    and works once). Enable GitHub 2FA for accounts that approve tool calls.
+    Treat the setup link as a secret until claimed: it works once and expires
+    after 1 hour, and it sits in the URL path, so a proxy's access log may
+    record it. Privo cannot require GitHub 2FA; turn it on for accounts that
+    approve tool calls (an organisation can require it).
+
+Sessions end after 2 hours idle or 12 hours in all
+(`PRIVO_SESSION_IDLE_TIMEOUT`, `PRIVO_SESSION_MAX_AGE`). With GitHub
+Enterprise Server, set `PRIVO_GITHUB_BASE_URL` and `PRIVO_GITHUB_API_URL`, and
+add its network to `PRIVO_EGRESS_ALLOW_CIDRS` if it is private.
 
 Everything else now happens in the browser at `https://app.example.com/admin`:
 add servers, rules, invite teammates, and mint AI client tokens on **Tokens**
 (no `curl` or bootstrap token needed). For per-user GitHub MCP connections,
 create a *second* OAuth App with callback
 `https://app.example.com/connect/callback` ([Each person's own account](../using/connections.md)).
+Authorization servers that use Privo's client ID metadata document must reach
+`https://app.example.com/oauth/client-metadata.json` from the internet.
 
 ## Optional setup
 
@@ -84,14 +102,21 @@ To let AI clients sign in directly without pasted tokens
 
 1. Set `PRIVO_OAUTH_SERVER=on` (requires `PRIVO_PUBLIC_URL` with no path and
    working web sign-in) and redeploy.
-2. Optional: `PRIVO_OAUTH_CLIENTS=approved|any` (default `known`);
+2. Check: `https://app.example.com/.well-known/oauth-authorization-server`
+   answers JSON, and
+   `https://app.example.com/.well-known/oauth-protected-resource/mcp` lists
+   `https://app.example.com` under `authorization_servers`.
+3. Optional: `PRIVO_OAUTH_CLIENTS=approved|any` (default `known`);
    `PRIVO_OAUTH_DYNAMIC_REGISTRATION=on` for Cursor, Gemini CLI and Mistral.
 
 ### Metrics
 
 Set `PRIVO_METRICS_ADDR=0.0.0.0:9464` to let Prometheus scrape `/metrics` on
 an internal Docker network. **Never** publish port `9464` or attach a domain
-to it — `/metrics` has no authentication.
+to it: `/metrics` has no authentication. Every container on that network can
+read server aliases, call counts by outcome, upstream status and the exact
+version, so give Prometheus and Privo a network of their own if others share
+it.
 
 ### First run: your first admin token
 
@@ -99,9 +124,12 @@ to it — `/metrics` has no authentication.
 SSH.*
 
 1. Generate a one-time owner control token locally:
-   `go run ./cmd/privo token generate`
-2. Mount it as a file at `PRIVO_BOOTSTRAP_TOKEN_FILE` and deploy (valid for 24
-   hours on `/api/v1` only).
+   `go run ./cmd/privo token generate` (or `docker run --rm <image> token
+   generate`). A token made by hand is refused at startup.
+2. Mount it as a file at `PRIVO_BOOTSTRAP_TOKEN_FILE` and deploy. The log shows
+   `bootstrap owner token installed`; the token works on `/api/v1` only, for
+   24 hours, and never installs again. (`PRIVO_BOOTSTRAP_TOKEN` takes the value
+   instead, but stays readable in `/proc/<pid>/environ`.)
 3. Mint your permanent token and revoke the bootstrap token:
 
    ```sh
@@ -117,5 +145,40 @@ SSH.*
 4. Remove `PRIVO_BOOTSTRAP_TOKEN_FILE` from Coolify and redeploy. (If 24 hours
    pass unused, run `docker exec <container> /privo token create --name owner
    --role owner --kind control` over SSH instead.)
+
+### Deploys from GitHub
+
+Pushes to `main` can deploy through one GitHub webhook (Coolify's "Manual Git
+webhooks", for a repository reached with a deploy key):
+
+1. Advanced → Deployment: Auto deploy = "Deploy on push (webhooks)".
+2. Webhooks → GitHub: set a webhook secret (16 characters or more). When
+   several Coolify apps track the same repository and branch, give them all
+   the **same** secret: Coolify checks each delivery against each app's own
+   secret.
+3. GitHub → the repository → Settings → Webhooks → Add webhook: the Payload
+   URL Coolify shows under "Manual Git webhooks", content type
+   `application/json`, the shared secret, SSL verification on, "Just the push
+   event".
+4. **Watch Paths** (General → Build; one pattern per line, the last match
+   wins), so a documentation change does not restart the gateway:
+
+   ```
+   **
+   !site/**
+   !docs/**
+   !test/**
+   !.github/**
+   !**/*.md
+   !**/*_test.go
+   !Makefile
+   !mkdocs.yml
+   !.golangci.yml
+   !.gitignore
+   ```
+
+GitHub → the webhook → Recent Deliveries should answer 200 for each push. Watch
+Paths filter webhook pushes only; a deploy started from the dashboard always
+runs.
 
 Next: [Backup, restore and upgrades](operations.md).

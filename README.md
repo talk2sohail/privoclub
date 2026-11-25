@@ -20,9 +20,9 @@ Or with Docker (`localhost:8080`, no Go needed):
 
 ```sh
 make image
-umask 077 && openssl rand -base64 32 > master.key && chmod 644 master.key
+mkdir -m 700 secrets && openssl rand -base64 32 > secrets/master.key && chmod 644 secrets/master.key
 docker run -d --name privo -p 127.0.0.1:8080:8080 \
-  -v privo_data:/data -v "$PWD/master.key:/run/secrets/master_key:ro" \
+  -v privo_data:/data -v "$PWD/secrets/master.key:/run/secrets/master_key:ro" \
   -e PRIVO_PUBLIC_URL=http://localhost:8080 \
   -e PRIVO_MASTER_KEY_FILE=/run/secrets/master_key \
   privo:$(tr -d '[:space:]' < internal/buildinfo/VERSION)
