@@ -27,7 +27,7 @@ The words these pages use, in the order you meet them.
 
 ## The record and the keys
 
-- **Audit trail**: Every call and every admin change, written down before it runs and sealed into signed blocks. See [The audit trail](../using/audit.md).
+- **Audit trail**: Every call and every admin change, written down before it runs and sealed into signed blocks. See [The tamper-evident audit trail](../advanced/audit.md).
 - **Activity**: How calls went: counts, failures, refusals and timings, by server, tool, person and client. See [Viewing activity](../basics/activity.md).
 - **Master key**: The key that protects every credential Privo stores. It lives outside the database, and you keep a copy. See [Deploy Privo](deploy.md).
 - **Public URL**: The HTTPS address people, AI clients and sign-in providers reach Privo at: `PRIVO_PUBLIC_URL` in the [configuration reference](../installation/configuration.md).

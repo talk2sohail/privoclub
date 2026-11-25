@@ -46,6 +46,6 @@ server as you until you connect again.
 
 ## Going further
 
-- [Each person's own account](../using/connections.md): how admins add
-  servers like these, servers that need OAuth settings entered by hand, and
+- [Custom upstream sign-in and connections](../advanced/upstream-auth.md): how
+  Privo signs in to these servers, settings entered by hand, and
   **Everyone's connections** for admins.

@@ -15,6 +15,11 @@ repo_url: https://github.com/talk2sohail/privoclub
 edit_uri: edit/main/docs/site/
 docs_dir: docs/site
 site_dir: build/site
+# The old using/ pages moved to basics/ and advanced/ (#62). They stay, out of
+# the navigation and unchanged, until the open pull requests that still edit
+# them have merged; then they go, with their URLs redirected (#59).
+not_in_nav: |
+  using/*.md
 extra_css:
   - theme/privo.css
 
@@ -53,24 +58,22 @@ nav:
       - Connecting AI clients: basics/tokens.md
       - Rules and approvals: basics/rules-and-approvals.md
       - Viewing activity: basics/activity.md
-  - Installation:
-      - Build and run: installation/build-and-run.md
+  - Advanced Features:
+      - Per-team toolsets: advanced/toolsets.md
+      - Conditional rules, grants and YAML: advanced/policy-engine.md
+      - AI clients that sign in with OAuth: advanced/oauth-clients.md
+      - Custom upstream sign-in and connections: advanced/upstream-auth.md
+      - Roles and access: advanced/roles-and-access.md
+      - The tamper-evident audit trail: advanced/audit.md
+      - Metrics, diagnostics and telemetry: advanced/observability.md
+      - Admin API and script tokens: advanced/api-and-automation.md
+      - Local stdio servers: advanced/stdio-runner.md
+  - Operations and Reference:
       - Deploy on Coolify: installation/coolify.md
+      - Build and run locally: installation/build-and-run.md
       - Configuration reference: installation/configuration.md
       - The configuration file: installation/configuration-file.md
       - Backup, restore and upgrades: installation/operations.md
-  - Using Privo:
-      - The admin site and signing in: using/admin-site.md
-      - Inviting your team: using/people.md
-      - Adding servers: using/servers.md
-      - Each person's own account: using/connections.md
-      - Teams and the catalog: using/teams.md
-      - Rules, approvals and grants: using/rules.md
-      - Tokens and AI clients: using/tokens.md
-      - AI clients that sign in with OAuth: using/oauth-clients.md
-      - Activity and metrics: using/activity.md
-      - The audit trail: using/audit.md
-      - Roles: using/roles.md
   - Security:
       - Reporting a vulnerability: security/disclosure.md
   - Development:

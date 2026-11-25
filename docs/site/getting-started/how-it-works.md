@@ -37,7 +37,7 @@ Privo. This is what happens to that call.
    (see the [configuration reference](../installation/configuration.md)). If
    the decision takes longer, Claude Code is told that the request waits for
    a person, with a link, and to repeat the same call once it is approved.
-   Nobody approves their own calls.
+   By default, nobody approves their own calls.
 6. **Whose account the server sees.** Privo opens the credential for this one
    call: a key the whole team shares, or Ada's own account, by an OAuth grant
    or her own API key. GitHub sees Ada, as Ada. The AI client never holds the

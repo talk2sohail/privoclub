@@ -1852,6 +1852,21 @@ task 4.
   it arrived in and a "Going further" list into the advanced pages; the
   welcome page and Getting Started link to them. The `using/` pages stay
   until phase 3 (#62) moves their advanced parts and retires them
+- [x] Advanced Features section (#62, phase 3): nine pages in
+  `docs/site/advanced/` (toolsets, conditional rules, grants and YAML, AI
+  clients with OAuth, upstream sign-in and connections, roles and access,
+  the tamper-evident audit, metrics and telemetry, the admin API and script
+  tokens, local stdio servers), with every fact of the old `using/` pages now
+  in a basic or advanced page; Installation renamed Operations and Reference;
+  the welcome page, Getting Started and Basic Features link only to the new
+  pages; the `using/` pages leave the navigation (`not_in_nav`), unchanged
+- [ ] Retire `docs/site/using/` (#62, second step), once #35, #42, #66 and #67
+  have merged: carry their `using/` edits over (#66, the breaker-state metric,
+  to `advanced/observability.md`; #67, the grant token cache and the rules
+  cache, to `advanced/upstream-auth.md` and `advanced/policy-engine.md`; #35,
+  its page, to `advanced/arguments.md`), point the `installation/` pages'
+  links at the new pages, trim `installation/coolify.md`, delete `using/`,
+  and redirect `/using/*` (#65)
 - [ ] Later: a weekly external link check (for example `lychee` on
   `build/site`)
 

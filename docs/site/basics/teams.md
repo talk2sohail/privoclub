@@ -4,7 +4,8 @@ Teams decide which servers each person reaches. A person sees the servers of
 every team they are in, and nothing else: a call to any other server's tools
 is answered as if the tool did not exist.
 
-Teams arrived in 0.6.0.
+Teams arrived in 0.6.0
+([ADR 0020](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0020-teams-and-server-catalog.md)).
 
 ## Everyone
 
@@ -54,7 +55,8 @@ teams.
 
 ## Going further
 
-- [Which tools each team sees](../using/teams.md#which-tools-each-team-sees):
-  a team can see only some of a server's tools.
-- [Rules for a team](../using/rules.md): allow, ask or deny for one team.
-- [Teams through the admin API](../using/teams.md#the-api).
+- [Per-team toolsets](../advanced/toolsets.md): a team can see only some of a
+  server's tools.
+- [Rules for a team](../advanced/policy-engine.md#who-a-rule-is-for): allow,
+  ask or deny for one team.
+- [Teams through the admin API](../advanced/api-and-automation.md#teams).
