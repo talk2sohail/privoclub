@@ -86,18 +86,32 @@ type pipeAddr struct{}
 func (pipeAddr) Network() string { return "pipe" }
 func (pipeAddr) String() string  { return "pipe" }
 
-func serveInMemoryHTTP(t *testing.T, handler http.Handler) (string, *http.Client) {
+func serveInMemoryHTTP(t *testing.T, handler http.Handler) (string, *http.Client, func()) {
 	t.Helper()
 	ln := newPipeListener()
 	srv := &http.Server{Handler: handler}
-	go func() { _ = srv.Serve(ln) }()
-	t.Cleanup(func() {
-		_ = srv.Close()
-		_ = ln.Close()
-	})
+	var serveDone sync.WaitGroup
+	serveDone.Add(1)
+	go func() {
+		defer serveDone.Done()
+		_ = srv.Serve(ln)
+	}()
+	var once sync.Once
+	shutdown := func() {
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := srv.Shutdown(ctx); err != nil {
+				_ = srv.Close()
+			}
+			_ = ln.Close()
+			serveDone.Wait()
+		})
+	}
+	t.Cleanup(shutdown)
 	tr := &http.Transport{DialContext: ln.DialContext}
 	t.Cleanup(tr.CloseIdleConnections)
-	return "http://pipe.local", &http.Client{Transport: tr}
+	return "http://pipe.local", &http.Client{Transport: tr}, shutdown
 }
 
 type bearerRT struct {
@@ -149,16 +163,17 @@ func newSlowHTTPUpstream(t *testing.T, stateless bool) *slowUpstreamProbe {
 }
 
 type testGatewayHarness struct {
-	st      *store.Store
-	org     store.OrgID
-	aw      *audit.Writer
-	rec     *telemetry.Recorder
-	mgr     *upstream.Manager
-	app     *approval.Service
-	gw      *Gateway
-	tok     token.Token
-	baseURL string
-	client  *http.Client
+	st       *store.Store
+	org      store.OrgID
+	aw       *audit.Writer
+	rec      *telemetry.Recorder
+	mgr      *upstream.Manager
+	app      *approval.Service
+	gw       *Gateway
+	tok      token.Token
+	baseURL  string
+	client   *http.Client
+	shutdown func()
 }
 
 func newCancelGatewayHarness(t *testing.T, upstreamStateless bool) (*testGatewayHarness, *slowUpstreamProbe) {
@@ -181,7 +196,7 @@ func newCancelGatewayHarness(t *testing.T, upstreamStateless bool) (*testGateway
 	}
 
 	probe := newSlowHTTPUpstream(t, upstreamStateless)
-	upURL, upClient := serveInMemoryHTTP(t, probe.handler)
+	upURL, upClient, _ := serveInMemoryHTTP(t, probe.handler)
 
 	now := time.Now()
 	tok, err := token.New()
@@ -247,11 +262,11 @@ func newCancelGatewayHarness(t *testing.T, upstreamStateless bool) (*testGateway
 		CallTimeout: 10 * time.Second,
 		Logger:      logger,
 	}
-	baseURL, gwClient := serveInMemoryHTTP(t, gw.Handler())
+	baseURL, gwClient, gwShutdown := serveInMemoryHTTP(t, gw.Handler())
 	gwClient.Transport = bearerRT{token: tok.Plain, next: gwClient.Transport}
 	return &testGatewayHarness{
 		st: st, org: org.ID, aw: aw, rec: rec, mgr: mgr, app: app, gw: gw, tok: tok,
-		baseURL: baseURL, client: gwClient,
+		baseURL: baseURL, client: gwClient, shutdown: gwShutdown,
 	}, probe
 }
 
@@ -357,7 +372,11 @@ func TestCancelledCallStillWritesAuditCompletion(t *testing.T) {
 			t.Fatal("upstream never observed cancellation")
 		}
 
-		// Flush audit & telemetry queues before querying the store.
+		// Wait for all active gateway HTTP handlers (including cancelled calls
+		// and cancellation notifications) to finish queueing audit & telemetry
+		// before closing the writers.
+		_ = cs.Close()
+		h.shutdown()
 		h.aw.Close()
 		h.rec.Close()
 
@@ -425,6 +444,8 @@ func TestCancelledCallStillWritesAuditCompletion(t *testing.T) {
 			t.Fatalf("approval row = %+v, want withdrawn with empty args", ap)
 		}
 
+		_ = cs.Close()
+		h.shutdown()
 		h.aw.Close()
 		h.rec.Close()
 
