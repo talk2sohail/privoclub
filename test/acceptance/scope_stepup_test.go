@@ -119,14 +119,15 @@ func newScopeStepUpUpstream(t *testing.T) *scopeStepUpUpstream {
 		})
 	})
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		meta := map[string]any{
 			"issuer":                           u.srv.URL,
 			"authorization_endpoint":           u.srv.URL + "/authorize",
 			"token_endpoint":                   u.srv.URL + "/token",
 			"registration_endpoint":            u.srv.URL + "/register",
 			"code_challenge_methods_supported": []string{"S256"},
-			"authorization_response_iss_parameter_supported": true,
-		})
+		}
+		meta["authorization_response_iss_parameter_supported"] = true
+		_ = json.NewEncoder(w).Encode(meta)
 	})
 	mux.HandleFunc("POST /register", func(w http.ResponseWriter, _ *http.Request) {
 		u.mu.Lock()
