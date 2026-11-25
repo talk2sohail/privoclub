@@ -348,7 +348,9 @@ func TestCancelledCallStillWritesAuditCompletion(t *testing.T) {
 			t.Fatal("upstream tool never started")
 		}
 		cancel()
-		_ = <-done
+		if err := <-done; err == nil {
+			t.Fatal("expected cancellation error")
+		}
 		select {
 		case <-probe.cancelled:
 		case <-time.After(3 * time.Second):
@@ -405,7 +407,9 @@ func TestCancelledCallStillWritesAuditCompletion(t *testing.T) {
 			t.Fatal("pending approval never created")
 		}
 		cancel()
-		_ = <-done
+		if err := <-done; err == nil {
+			t.Fatal("expected cancellation error")
+		}
 
 		// Wait briefly for the gateway handler's post-cancel withdrawal to finish.
 		deadline = time.Now().Add(3 * time.Second)
