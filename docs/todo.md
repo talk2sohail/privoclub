@@ -1275,13 +1275,12 @@ Tasks and the tests that name them:
 - [x] Re-enabling a removed member; editing a server (third slice above, 0.17.0)
 - [x] Home page (owner's request, 2026-11-20): `/` offered nothing but a link to privo.club, so people typed `/admin` by hand. It now has **Sign in** (to `/admin/`) when the admin site is set up, says so when it is not, and shows the MCP address from `PRIVO_PUBLIC_URL` for AI clients. Still static for a configuration: no script, nothing read from the request, the configured address escaped. Tests: `internal/server` `TestRootPage` (unchanged hardening checks), `TestHomeOffersSignInAndTheMCPAddress`, `TestHomeWithoutTheAdminSite`, `TestHomeEscapesItsConfiguration`
 
-## F15. Coolify deployment
+## F15. Deployment and operations
 Status: In progress (deployed on Coolify since 2026-10-29, guide in `docs/site/installation/coolify.md`; snapshot backup, restore and the built-in schedule done; scheduled backups are off in production by the owner's choice)
 
-ADRs: 0010
+ADRs: 0010, 0030
 
-- [ ] Docker Compose file with all defaults; generated secrets; master key file
-- [ ] `privo migrate`, snapshot before upgrade, pinned tags
+- [x] Migrations run automatically on start (`store.Open`); separate `privo migrate` superseded by ADR 0030 (`privo backup` before upgrade + pinned image tags)
 - [x] Snapshot backup and restore, the first slice of the ADR 0010 backup plan (owner's go-ahead, 2026-10-29): `privo backup [--to PATH] [--keep N]` and `privo restore --from FILE [--force]`. Acceptance:
   1. `backup` takes a consistent copy of a live database (gateway running, writes in flight, no downtime) with `VACUUM INTO` on a reader connection. It writes `<name>.partial`, removes the writer-lease row from the copy, checks it (`PRAGMA integrity_check`, schema version known to this binary), and only then links it to its final name. Mode 0600 in a 0700 directory, one file (no `-wal`/`-shm`), and it never overwrites: an existing target is an error and stays intact.
   2. `--to` is a file or a directory (default `<data dir>/backups`). A directory gets `privo-<UTC yyyymmddThhmmssZ>.db`. `--keep N` (N >= 1, directories only) keeps the newest N files of that name pattern and deletes older ones of that pattern only.
@@ -1295,6 +1294,24 @@ ADRs: 0010
 - [x] The owner's manual test plan is automated (owner's request, 2026-10-29), through the real binary, the admin API and a real MCP client (the Go SDK's) against the echo server: `test/acceptance/testplan_test.go` `TestPlanDenyRuleCanBeListedAndRemoved`, `TestPlanAskApprovalAndAllowSelfToggle`, `TestPlanRevocationOnALiveSession`, `TestPlanPresetsAndDefaultPolicy`, `TestPlanAuditFieldsAndOutcomes`, `TestPlanPromptsAndResourcesThroughTheClient`; flows `policy_test.go` already covers are not repeated (the header of the file lists them). The echoserver has an `outcomes` mode (tools `fine`, `fail`, `boom`) for the audit outcomes
 - [ ] Built-in WAL shipping backup (RPO 1 minute) to S3-compatible storage; off-host upload of snapshots
 - [ ] Install, upgrade, backup and key-backup guide
+
+### Releases and the reference deployment (ADR 0030, proposed 2026-11-24)
+One instance per organisation, from signed releases; local `docker run` quick
+start plus Docker Compose with Caddy as the team reference. Accept the ADR first.
+- [ ] Release workflow on a `v<version>` tag: `ghcr.io/talk2sohail/privo`
+  for linux/amd64 and arm64 with `org.opencontainers.image.source`, SBOM and
+  provenance, binaries with `SHA256SUMS`, cosign keyless signatures; a dry run
+  on a pre-release tag including an unauthenticated `docker pull`
+- [ ] `deploy/compose/`: `compose.yaml` (`privo` unexposed on host, Caddy on
+  80/443, pinned internal network CIDR for `PRIVO_TRUSTED_PROXIES`),
+  `Caddyfile`, `.env.example` (GitHub and OIDC), secret files readable by UID
+  `65532`, daily snapshots on; checked on a fresh host from DNS to the first
+  sign-in
+- [ ] Installation pages: Quick start (local `docker run` + team Compose)
+  first; Coolify, Kubernetes manifests (one replica, `Recreate`, unbuffered
+  Ingress), binary with systemd; Verify a release
+- [ ] Load test on the reference deployment; publish the figures
+- [ ] Merge generic OIDC sign-in (ADR 0034, F20 A) before HA
 
 ## F16. Observability
 Status: In progress (health endpoints and drain only)

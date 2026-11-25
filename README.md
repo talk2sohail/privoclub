@@ -10,17 +10,29 @@ per feature is in `docs/todo.md`.
 ## Quick start
 
 ```sh
-make build                                        # bin/privo; needs Go 1.26+
+make build                                        # bin/privo; needs Go 1.27+
 openssl rand -base64 32 > master.key              # back this key up
 PRIVO_MASTER_KEY_FILE=master.key PRIVO_DATA_DIR=./data bin/privo serve
 curl localhost:8080/livez
 ```
 
+Or with Docker (`localhost:8080`, no Go needed):
+
+```sh
+make image
+mkdir -m 700 secrets && openssl rand -base64 32 > secrets/master.key && chmod 644 secrets/master.key
+docker run -d --name privo -p 127.0.0.1:8080:8080 \
+  -v privo_data:/data -v "$PWD/secrets/master.key:/run/secrets/master_key:ro" \
+  -e PRIVO_PUBLIC_URL=http://localhost:8080 \
+  -e PRIVO_MASTER_KEY_FILE=/run/secrets/master_key \
+  privo:$(tr -d '[:space:]' < internal/buildinfo/VERSION)
+```
+
 ## Documentation
 
-Everything else is on the documentation site, built from
+Everything else is on [docs.privo.club](https://docs.privo.club), built from
 [`docs/site/`](docs/site/index.md) with MkDocs (`make docs-serve` to read it
-locally; it will be published at docs.privo.club):
+locally):
 
 - [Build and run](docs/site/installation/build-and-run.md),
   [Deploy on Coolify](docs/site/installation/coolify.md),
