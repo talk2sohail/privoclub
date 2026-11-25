@@ -146,39 +146,4 @@ SSH.*
    pass unused, run `docker exec <container> /privo token create --name owner
    --role owner --kind control` over SSH instead.)
 
-### Deploys from GitHub
-
-Pushes to `main` can deploy through one GitHub webhook (Coolify's "Manual Git
-webhooks", for a repository reached with a deploy key):
-
-1. Advanced → Deployment: Auto deploy = "Deploy on push (webhooks)".
-2. Webhooks → GitHub: set a webhook secret (16 characters or more). When
-   several Coolify apps track the same repository and branch, give them all
-   the **same** secret: Coolify checks each delivery against each app's own
-   secret.
-3. GitHub → the repository → Settings → Webhooks → Add webhook: the Payload
-   URL Coolify shows under "Manual Git webhooks", content type
-   `application/json`, the shared secret, SSL verification on, "Just the push
-   event".
-4. **Watch Paths** (General → Build; one pattern per line, the last match
-   wins), so a documentation change does not restart the gateway:
-
-   ```
-   **
-   !site/**
-   !docs/**
-   !test/**
-   !.github/**
-   !**/*.md
-   !**/*_test.go
-   !Makefile
-   !mkdocs.yml
-   !.golangci.yml
-   !.gitignore
-   ```
-
-GitHub → the webhook → Recent Deliveries should answer 200 for each push. Watch
-Paths filter webhook pushes only; a deploy started from the dashboard always
-runs.
-
 Next: [Backup, restore and upgrades](operations.md).
