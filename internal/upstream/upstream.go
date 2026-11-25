@@ -26,6 +26,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"privo.club/privo/internal/argcheck"
 	"privo.club/privo/internal/buildinfo"
 	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/keyring"
@@ -75,6 +76,7 @@ type Store interface {
 	ListServers(ctx context.Context, org store.OrgID) ([]store.Server, error)
 	ServerCredentials(ctx context.Context, org store.OrgID, serverID string) ([]store.Credential, error)
 	RecordSeen(ctx context.Context, org store.OrgID, pins []store.Pin) error
+	PinStatuses(ctx context.Context, org store.OrgID, serverID string) (map[store.PinKey]string, error)
 	PrunePending(ctx context.Context, org store.OrgID, serverID string, keep []store.PinKey) (int, error)
 }
 
@@ -133,6 +135,8 @@ type entry struct {
 	loading  atomic.Bool  // a refresh is running
 	dirty    atomic.Bool  // another refresh was requested meanwhile
 	lastLoad atomic.Int64 // when the last load ended, unix nanoseconds
+
+	schemas map[string]bool // accepted tool definitions read so far, by hash: whether Privo can read the input schema; e.mu
 }
 
 // New returns a manager.
@@ -647,10 +651,14 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 	}
 	pins := make([]store.Pin, 0, len(items))
 	keep := make([]store.PinKey, 0, len(items))
+	tools := map[string][]byte{} // tool definitions by hash, for the schema check
 	for _, it := range items {
 		def, _ := json.Marshal(firstNonNil(it))
 		pins = append(pins, store.Pin{ServerID: it.ServerID, Kind: it.Kind, Name: it.Name, Hash: it.Hash, Definition: string(def)})
 		keep = append(keep, store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash})
+		if it.Kind == KindTool {
+			tools[it.Hash] = def
+		}
 	}
 	if err := m.opts.Store.RecordSeen(ctx, e.org, pins); err != nil {
 		return fmt.Errorf("recording definitions: %w", err)
@@ -662,6 +670,7 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 	if _, err := m.opts.Store.PrunePending(ctx, e.org, e.srv.ID, keep); err != nil {
 		m.opts.Logger.Warn("upstream: pruning unreviewed definitions failed", "server", e.srv.Alias, "err", err)
 	}
+	m.warnUnreadable(e, m.newlyUnreadable(ctx, e, items, tools))
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.session != nil && e.session != session {
@@ -670,6 +679,63 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 	e.state = ServerState{Status: StatusUp, Items: items}
 	e.session = session
 	return nil
+}
+
+// maxSchemaWarnings bounds the warnings one load writes; the rest are counted.
+const maxSchemaWarnings = 10
+
+// newlyUnreadable reads the input schema of each accepted tool in items and
+// returns those Privo cannot read that it had not already found (F02): the
+// gateway refuses every call to them. It runs when the definitions load, so a
+// tool accepted before arguments were checked is flagged when its server
+// connects, not on its first refused call.
+//
+// Only accepted definitions are read. A server can change its definitions on
+// every refresh, and each new one is pending until a person accepts it, so it
+// cannot make Privo compile schemas over and over; the review reads pending
+// ones when it is shown. What was read is kept per entry by hash, so a reload
+// of the same list reads nothing again.
+func (m *Manager) newlyUnreadable(ctx context.Context, e *entry, items []Item, defs map[string][]byte) []Item {
+	statuses, err := m.opts.Store.PinStatuses(ctx, e.org, e.srv.ID)
+	if err != nil {
+		m.opts.Logger.Warn("upstream: reading definition statuses failed", "server", e.srv.Alias, "err", err)
+		return nil
+	}
+	e.mu.Lock()
+	prev := e.schemas
+	e.mu.Unlock()
+	read := map[string]bool{}
+	var fresh []Item
+	for _, it := range items {
+		if it.Kind != KindTool || statuses[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] != store.PinAccepted {
+			continue
+		}
+		ok, known := prev[it.Hash]
+		if !known {
+			ok = argcheck.DefinitionProblem(defs[it.Hash]) == ""
+			if !ok {
+				fresh = append(fresh, it)
+			}
+		}
+		read[it.Hash] = ok
+	}
+	e.mu.Lock()
+	e.schemas = read
+	e.mu.Unlock()
+	return fresh
+}
+
+// warnUnreadable puts a warning on Health for each tool, at most
+// maxSchemaWarnings and a count for the rest. The cause is on the server's
+// tool review; the warning carries only the tool's name.
+func (m *Manager) warnUnreadable(e *entry, tools []Item) {
+	for i, it := range tools {
+		if i == maxSchemaWarnings {
+			m.diagnose(e, store.LevelWarn, fmt.Sprintf("the input schemas of %d more tools cannot be read, so calls to them are refused; see the server's tool review", len(tools)-i))
+			return
+		}
+		m.diagnose(e, store.LevelWarn, fmt.Sprintf("the input schema of tool %q cannot be read, so calls to it are refused; see the server's tool review", it.Name))
+	}
 }
 
 // errNullEntry reports a list that has a JSON null among its items. The upstream
