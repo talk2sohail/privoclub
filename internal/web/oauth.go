@@ -46,14 +46,10 @@ type authorizeRequest struct {
 	Expires int64  `json:"e"`
 }
 
-// returnOK reports whether a path is one a person may be sent back to after
-// signing in. There are two fixed shapes and no other: /oauth/authorize, or
-// /connect/<alias> with at most a validated scope query parameter.
-func (s *Server) returnOK(next string) bool {
-	_, ok := s.safeReturnTo(next)
-	return ok
-}
-
+// safeReturnTo reports whether a path is one a person may be sent back to after
+// signing in, returning its normalized form. There are two fixed shapes and no
+// other: /oauth/authorize, or /connect/<alias> with at most a validated scope
+// query parameter.
 func (s *Server) safeReturnTo(next string) (string, bool) {
 	if next == authorizePath {
 		return authorizePath, s.o.AuthServer != nil

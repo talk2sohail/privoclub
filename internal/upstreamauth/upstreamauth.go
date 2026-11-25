@@ -949,7 +949,7 @@ func isScopeToken(s string) bool {
 	}
 	for i := 0; i < len(s); i++ {
 		b := s[i]
-		if !(b == 0x21 || (b >= 0x23 && b <= 0x5b) || (b >= 0x5d && b <= 0x7e)) {
+		if b != 0x21 && (b < 0x23 || b > 0x5b) && (b < 0x5d || b > 0x7e) {
 			return false
 		}
 	}
