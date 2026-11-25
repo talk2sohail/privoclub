@@ -8,8 +8,7 @@ particular to our servers. It is not published.
 
 The repository holds three apps on Coolify, all deploying from `main` on
 talk2sohail/privoclub with the same deploy key: the landing page, the
-gateway, and (once task 4 of `docs/documentation-site.md` is done) the
-documentation site.
+gateway and the documentation site.
 
 | | Landing page | Gateway |
 |---|---|---|
@@ -31,7 +30,8 @@ says `<container>` and `<data volume>`.
 
 | | |
 |---|---|
-| Domain | `https://docs.privo.club` |
+| Coolify app | `privo-docs` (`8an2pu8fbxd8n1kmbjf2ufow`), project SN Enterprise, production |
+| Domain | `https://docs.privo.club` (proxied A record, as app.privo.club) |
 | Base directory | `/` (the build needs `mkdocs.yml` at the root) |
 | Dockerfile location | `/docs/Dockerfile` |
 | Port | 8080 |
@@ -52,6 +52,12 @@ mkdocs.yml
 It deploys from `main` through the same webhook and shared secret as the
 other two apps (Deploys, below). Rolling updates can stay on: nothing is
 shared between two containers.
+
+Created through the Coolify API on 2026-11-24 with the deploy key the other
+apps use, the watch paths above and the gateway's webhook secret; first
+deploy of `6f10fc7` finished and healthy, and the live site answers with the
+security headers of `docs/Caddyfile`. The first push that touches the site
+confirms the webhook deploys it.
 
 ## State of the live gateway
 
@@ -102,7 +108,7 @@ Pushes to `main` deploy through one GitHub webhook (Coolify's "Manual Git webhoo
 
    Everything excluded for the gateway is outside the binary (the `.dockerignore` already leaves `docs`, `site` and `*.md` out of the build context).
 
-   `!mkdocs.yml` was added to this list on 2026-11-22 with the documentation site; **it is not yet set on the live gateway app**. Until it is, a change to `mkdocs.yml` alone redeploys the gateway (harmless, a few seconds of downtime).
+   `!mkdocs.yml` was added to this list on 2026-11-22 with the documentation site and set on the live gateway app on 2026-11-24.
 
 ### Status (2026-10-29)
 
