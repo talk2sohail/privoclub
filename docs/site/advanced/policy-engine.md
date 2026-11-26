@@ -157,3 +157,31 @@ and 1 MiB.
 With the admin API: `GET /api/v1/policies/export`, and
 `POST /api/v1/policies/import` with
 `{"yaml": "...", "mode": "merge", "dry_run": true}`.
+
+## Cross-server data flow
+
+[ADR 0032](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0032-cross-server-flow-rule.md)
+(proposed). On each server's page under **Cross-server data flow**, an admin can
+tag the whole server or individual accepted tools as:
+
+- **`untrusted_source`** — servers or tools that read outside content (email,
+  CRM records, issues, web pages).
+- **`egress_sink`** — servers or tools that send data out (chat, email, HTTP).
+
+When a caller reads from an `untrusted_source` (`tools/call` or `resources/read`)
+and then invokes an `egress_sink` within the organisation's flow window
+(`10m` by default, configurable from `10s` to `24h` via `flow_window` on
+`PATCH /api/v1/settings/policy`), Privo escalates any `allow` decision —
+including scoped grants and the default `allow` — to **ask** for human
+approval, naming the source and how long ago it was read. Explicit **deny**
+rules still deny; `prompts/get` and `resources/read` on a sink fail closed as
+denied when tainted.
+
+Taint is kept in memory per `(org, caller, client)` with a per-org cap; if an
+organisation exceeds capacity, excess callers fail closed (require approval) for
+the active window rather than silently dropping taint. This is a heuristic
+tripwire that adds human review, not a formal data-flow proof.
+
+API: `GET /api/v1/servers/{alias}/flow-tags`,
+`PUT /api/v1/servers/{alias}/flow-tags` with
+`{"tags": [{"tool_name": "", "tag": "untrusted_source"}]}`.

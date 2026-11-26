@@ -796,8 +796,8 @@ Tasks and tests:
 - [ ] App; Vitest; acceptance `TestToolsetsForPromptsAndResources`
 
 ## F09. Policies
-Status: In progress (core done, reviewed; second slice built 2026-11-20, ported onto main as 0.15.0 on 2026-11-21, ADR 0027 accepted 2026-11-21)
-ADRs: 0001, 0011, 0014, 0027
+Status: In progress (core done, reviewed; second slice built 2026-11-20, ported onto main as 0.15.0 on 2026-11-21, ADR 0027 accepted 2026-11-21; slice C cross-server flow built 2026-11-25, ADR 0032 proposed)
+ADRs: 0001, 0011, 0014, 0027, 0032
 
 - [x] Allow, deny, ask rules by server alias, tool pattern, subject (`*`, `role:`, `token:`); priority, ties deny > ask > allow; expiring rules (`internal/policy`)
 - [x] Own glob matcher where `*` covers any characters, including `/`
@@ -806,7 +806,7 @@ ADRs: 0001, 0011, 0014, 0027
 - [x] Annotations tighten defaults only (explicit destructiveHint means ask)
 - [x] Admin API: list, create, delete rules, apply presets, set default; every change audited
 - [x] Rules removed with their server
-- [ ] Cross-server flow rule (source and sink tags)
+- [x] Cross-server flow rule (source and sink tags)
 - [ ] Admin overrides of annotations shown to clients
 - [ ] Cache rules per org with invalidation (now read per call)
 
@@ -888,15 +888,35 @@ Acceptance:
 Tasks and tests: `TestOverrideShownToClients`, `TestRulesReadOverrides`,
 `TestOverrideFollowsTheAcceptedDefinition`; app; acceptance.
 
-**C. Cross-server flow rules** (source and sink tags), e.g. nothing read
-from `crm` may be sent to `web`. ADR needed first (0032). It decides:
+**C. Cross-server flow rules** (source and sink tags, ADR 0032). Goal: blunt
+prompt injection moving data from an `untrusted_source` (for example `crm`)
+to an `egress_sink` (for example `web`) by escalating sink calls to `ask`.
 
-- how a session's reads are remembered (per client session, bounded, not
-  stored);
-- what "sent to" means (a later call on a sink tag in the same session);
-- why this is a tripwire that asks or denies, not data-flow proof.
+Acceptance:
+1. Servers or individual tools/items can be tagged `untrusted_source` or
+   `egress_sink` (`flow_tags` table, deleted with the server; admin API
+   `GET`/`PUT /api/v1/servers/{alias}/flow-tags` and server page controls).
+2. `policy.FlowTracker` keys source reads in memory by
+   `(org_id, caller_id, client)` with configurable per-org `policy.flow_window`
+   (default `10m`, validated `10s`..`24h`), hard bounds (`10_000` global,
+   `2_048` per org), and fail-closed org overflow within the window.
+3. Calling an `egress_sink` while tainted escalates any `allow` outcome
+   (including F10 scoped grants and org default `allow`) to `ask` with the
+   source and age in the reason; `deny` rules still win; `prompts/get` and
+   `resources/read` fail closed as `denied`.
 
-Tasks and tests: after the ADR.
+Threat note:
+- Heuristic tripwire escalating to human approval, not formal information-flow
+  proof: tracks gateway-observed source reads and sink calls within the window,
+  never persisted to disk.
+
+Tasks and tests:
+- [x] ADR 0032 (`docs/adr/0032-cross-server-flow-rule.md`), `docs/site/using/rules.md`
+- [x] Store: migration `00018_flow_tags.sql`, `FlowTag`, `SetFlowTags`, `ListFlowTags`, `OrgFlowTags`, `DeleteServer` cleanup (`TestFlowTagsCRUDAndDeleteServer`, `TestFlowTagsIsolatedPerOrg`)
+- [x] Policy: `FlowTracker`, `ParseFlowWindow` (`TestFlowWindowParsing`, `TestFlowRuleExpiresAfterWindow`, `TestFlowRuleIsolatedByOrgAndUser`, `TestFlowRuleBoundedMemoryFailsClosed`)
+- [x] Gateway: source recording on upstream start and sink escalation (`TestFlowRuleEscalatesSinkAfterUntrustedSource`, `TestFlowRuleNeverOverridesDeny`, `TestFlowDecideEdgeCasesFailClosed`, `TestFlowWindowRespectsConfiguredSetting`)
+- [x] Control API & UI: `GET`/`PUT /api/v1/servers/{alias}/flow-tags`, `flow_window` in `PATCH /api/v1/settings/policy`, server page checkboxes + Vitest (`TestServerAndToolFlowTagsCRUDAndAudit`, `TestFlowTagsOrgIsolationInAPI`, `TestFlowApprovalRefusesGrant`, `pages.test.tsx`)
+- [x] Acceptance: `TestCrossServerFlowEscalatesToApproval`
 
 ## F10. Approvals
 Status: In progress (core done, reviewed)

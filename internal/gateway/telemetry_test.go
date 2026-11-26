@@ -31,6 +31,9 @@ type statStore struct {
 func (s *statStore) ListPolicies(context.Context, store.OrgID) ([]store.Policy, error) {
 	return nil, nil
 }
+func (s *statStore) OrgFlowTags(context.Context, store.OrgID) ([]store.FlowTag, error) {
+	return nil, nil
+}
 func (s *statStore) Setting(_ context.Context, _ store.OrgID, key, def string) (string, error) {
 	if key == SettingPolicyDefault {
 		return s.def, nil

@@ -4,7 +4,7 @@ import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
 import { Link, navigate } from "../router";
 import { TeamPicker } from "../catalog";
-import type { Pin, ServerConnection, ServerView, Team } from "../types";
+import type { FlowTag, FlowTagName, Pin, ServerConnection, ServerView, Team } from "../types";
 import { Definition, Findings, previousOf, warnings } from "../review";
 import { Empty, ErrorLine, Loading, Status, firstLine, flash, when, useAction } from "../ui";
 import { authLabel } from "./servers";
@@ -128,6 +128,7 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
       )}
       {session.can.teams && <Access srv={current} />}
       {session.can.servers && (current.teams ?? []).length > 0 && <Toolsets srv={current} tools={toolNames(accepted)} />}
+      {(session.can.rules || session.can.servers) && <FlowTags key={alias} alias={alias} tools={toolNames(accepted)} canEdit={session.can.rules} />}
       {(current.auth === "oauth" || current.auth === "key") && <Connected alias={alias} />}
       {current.transport !== "stdio" && <Edit key={current.alias + current.target} srv={current} />}
       <Settings srv={current} />
@@ -343,6 +344,130 @@ function TeamToolset({ alias, slug, name, saved, tools }: { alias: string; slug:
         </button>
       </div>
     </fieldset>
+  );
+}
+
+function flowTagKey(t: Pick<FlowTag, "tool_name" | "tag">): string {
+  return t.tool_name + "\x00" + t.tag;
+}
+
+function canonicalFlowKeys(tags: FlowTag[]): string {
+  return [...new Set(tags.map(flowTagKey))].sort().join("\n");
+}
+
+// FlowTags marks servers or individual accepted tools as untrusted_source or
+// egress_sink for cross-server flow escalation (ADR 0032).
+function FlowTags({ alias, tools, canEdit }: { alias: string; tools: string[]; canEdit: boolean }) {
+  const path = "/v1/servers/" + seg(alias) + "/flow-tags";
+  const res = useData<{ tags: FlowTag[] }>(path);
+  const [draft, setDraft] = useState<FlowTag[] | undefined>(undefined);
+  const [busy, run] = useAction();
+
+  const saved = res.data?.tags ?? [];
+  const current = draft ?? saved;
+  const changed = draft !== undefined && canonicalFlowKeys(draft) !== canonicalFlowKeys(saved);
+  const active = new Set(current.map(flowTagKey));
+
+  const toggle = (toolName: string, tag: FlowTagName, on: boolean) => {
+    const k = flowTagKey({ tool_name: toolName, tag });
+    const base = current.filter((t) => flowTagKey(t) !== k);
+    if (on) base.push({ tool_name: toolName, tag });
+    setDraft(base);
+  };
+
+  const offered = [...new Set([...tools, ...current.map((t) => t.tool_name).filter((n) => n !== "")])].sort();
+
+  const save = () =>
+    void run(async () => {
+      await api("PUT", path, { tags: current.map((t) => ({ tool_name: t.tool_name, tag: t.tag })) });
+      invalidate(path);
+      setDraft(undefined);
+    }, "Saved. Cross-server flow tags apply to the next call.");
+
+  return (
+    <section class="card">
+      <h2>Cross-server data flow</h2>
+      <p class="meta">
+        Mark servers or tools that read untrusted input (<code>untrusted_source</code>) or send data out (<code>egress_sink</code>). When a caller reads from
+        an untrusted source and then calls a sink within the flow window, Privo asks a person to approve the sink call.
+      </p>
+      <ErrorLine text={res.error} />
+      {res.loading && !res.data && <Loading what="flow tags" />}
+      {res.data && (
+        <>
+          <div class="list-wrap">
+            <table class="list">
+              <thead>
+                <tr>
+                  <th>Scope</th>
+                  <th>Untrusted source</th>
+                  <th>Egress sink</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <strong>Whole server</strong>
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={active.has(flowTagKey({ tool_name: "", tag: "untrusted_source" }))}
+                      disabled={busy || !canEdit}
+                      aria-label="Whole server: Untrusted source"
+                      onChange={(e) => toggle("", "untrusted_source", (e.currentTarget as HTMLInputElement).checked)}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="checkbox"
+                      checked={active.has(flowTagKey({ tool_name: "", tag: "egress_sink" }))}
+                      disabled={busy || !canEdit}
+                      aria-label="Whole server: Egress sink"
+                      onChange={(e) => toggle("", "egress_sink", (e.currentTarget as HTMLInputElement).checked)}
+                    />
+                  </td>
+                </tr>
+                {offered.map((tool) => (
+                  <tr key={tool}>
+                    <td>
+                      <code>{tool}</code>
+                      {!tools.includes(tool) && <small class="meta"> not offered now</small>}
+                    </td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={active.has(flowTagKey({ tool_name: tool, tag: "untrusted_source" }))}
+                        disabled={busy || !canEdit}
+                        aria-label={tool + ": Untrusted source"}
+                        onChange={(e) => toggle(tool, "untrusted_source", (e.currentTarget as HTMLInputElement).checked)}
+                      />
+                    </td>
+                    <td>
+                      <input
+                        type="checkbox"
+                        checked={active.has(flowTagKey({ tool_name: tool, tag: "egress_sink" }))}
+                        disabled={busy || !canEdit}
+                        aria-label={tool + ": Egress sink"}
+                        onChange={(e) => toggle(tool, "egress_sink", (e.currentTarget as HTMLInputElement).checked)}
+                      />
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {offered.length === 0 && <p class="meta">Accepted tools appear here once reviewed; whole-server tags cover tools, prompts and resources.</p>}
+          {canEdit && (
+            <div class="actions">
+              <button type="button" class="primary" disabled={busy || !changed} onClick={save}>
+                Save flow tags
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </section>
   );
 }
 
