@@ -64,6 +64,18 @@ type Store interface {
 	AccessFor(ctx context.Context, org store.OrgID, userID string) (store.Access, error)
 }
 
+type annotationOverrideStore interface {
+	PinAnnotationOverrides(ctx context.Context, org store.OrgID, serverID string) (map[store.PinKey]store.AnnotationOverrides, error)
+}
+
+func (g *Gateway) annotationOverrides(ctx context.Context, org store.OrgID, serverID string) (map[store.PinKey]store.AnnotationOverrides, error) {
+	os, ok := g.Store.(annotationOverrideStore)
+	if !ok {
+		return nil, nil
+	}
+	return os.PinAnnotationOverrides(ctx, org, serverID)
+}
+
 // Gateway is the MCP data plane.
 type Gateway struct {
 	Store    Store
@@ -267,10 +279,19 @@ func (g *Gateway) listTools(ctx context.Context, p auth.Principal) (mcp.Result, 
 	if err != nil {
 		return nil, err
 	}
+	overrides := map[string]map[store.PinKey]store.AnnotationOverrides{}
 	res := &mcp.ListToolsResult{Cacheable: listCache(), Tools: make([]*mcp.Tool, 0, len(items))}
 	for _, it := range items {
+		ovMap, ok := overrides[it.ServerID]
+		if !ok {
+			if ovMap, err = g.annotationOverrides(ctx, p.OrgID, it.ServerID); err != nil {
+				return nil, err
+			}
+			overrides[it.ServerID] = ovMap
+		}
 		t := *it.Tool
 		t.Name = PublicName(it.Alias, it.Name)
+		t.Annotations = policy.ApplyAnnotationOverrides(it.Tool.Annotations, ovMap[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}])
 		res.Tools = append(res.Tools, &t)
 	}
 	return res, nil
@@ -347,7 +368,15 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	}
 	var ann *mcp.ToolAnnotations
 	if c.item.Tool != nil {
-		ann = c.item.Tool.Annotations
+		ovMap, err := g.annotationOverrides(ctx, c.p.OrgID, c.item.ServerID)
+		if err != nil {
+			return decision{}, err
+		}
+		kind := c.item.Kind
+		if kind == "" {
+			kind = upstream.KindTool
+		}
+		ann = policy.ApplyAnnotationOverrides(c.item.Tool.Annotations, ovMap[store.PinKey{Kind: kind, Name: c.item.Name, Hash: c.item.Hash}])
 	}
 	// Rules match tools, prompts and resources alike by upstream name, so a
 	// server-wide deny or a default deny covers everything the server offers.

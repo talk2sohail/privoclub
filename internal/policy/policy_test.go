@@ -226,3 +226,46 @@ func TestValidSubjectTeam(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyAnnotationOverrides(t *testing.T) {
+	b := func(v bool) *bool { return &v }
+
+	if got := ApplyAnnotationOverrides(nil, store.AnnotationOverrides{}); got != nil {
+		t.Fatalf("nil base + empty ov = %+v, want nil", got)
+	}
+
+	gotFromNil := ApplyAnnotationOverrides(nil, store.AnnotationOverrides{ReadOnlyHint: b(true), DestructiveHint: b(false)})
+	if gotFromNil == nil || !gotFromNil.ReadOnlyHint || gotFromNil.DestructiveHint == nil || *gotFromNil.DestructiveHint || gotFromNil.OpenWorldHint != nil {
+		t.Fatalf("nil base + ov = %+v", gotFromNil)
+	}
+
+	origDestructive := false
+	origOpenWorld := false
+	base := &mcp.ToolAnnotations{
+		Title:           "Read File",
+		ReadOnlyHint:    true,
+		IdempotentHint:  true,
+		DestructiveHint: &origDestructive,
+		OpenWorldHint:   &origOpenWorld,
+	}
+	ov := store.AnnotationOverrides{ReadOnlyHint: b(false), DestructiveHint: b(true)}
+	eff := ApplyAnnotationOverrides(base, ov)
+	if eff == base {
+		t.Fatal("returned pointer aliased base")
+	}
+	if eff.Title != "Read File" || !eff.IdempotentHint || eff.ReadOnlyHint || eff.DestructiveHint == nil || !*eff.DestructiveHint || eff.OpenWorldHint == nil || *eff.OpenWorldHint {
+		t.Fatalf("effective = %+v", eff)
+	}
+	// Mutating eff or ov never mutates base.
+	*eff.DestructiveHint = false
+	*eff.OpenWorldHint = true
+	*ov.DestructiveHint = false
+	if !base.ReadOnlyHint || *base.DestructiveHint || *base.OpenWorldHint {
+		t.Fatalf("base was mutated: %+v", base)
+	}
+	// Empty overrides still return a defensive copy when base is non-nil.
+	copied := ApplyAnnotationOverrides(base, store.AnnotationOverrides{})
+	if copied == base || copied.DestructiveHint == base.DestructiveHint || copied.OpenWorldHint == base.OpenWorldHint {
+		t.Fatal("empty overrides returned aliased pointers")
+	}
+}

@@ -104,6 +104,7 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("POST /api/v1/invites", wrap(auth.PermManageTokens, a.createInvite))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", wrap(auth.PermManageServers, a.acceptPins))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:block", wrap(auth.PermManageServers, a.blockPins))
+	mux.Handle("PATCH /api/v1/servers/{alias}/pins/annotations", wrap(auth.PermManageServers, a.patchPinAnnotations))
 	mux.Handle("PATCH /api/v1/servers/{alias}/teams/{slug}", wrap(auth.PermManageServers, a.patchTeamTools))
 	mux.Handle("GET /api/v1/tokens", wrap(auth.PermManageTokens, a.listTokens))
 	mux.Handle("POST /api/v1/tokens", wrap(auth.PermManageTokens, a.createToken))
@@ -741,6 +742,15 @@ func pinViews(pins []store.Pin, current map[store.PinKey]bool) []map[string]any 
 			"definition": json.RawMessage(pin.Definition),
 			// F11: signs of hidden instructions, for the reviewer (a hint, never a decision).
 			"findings": findings(pin)}
+		if pin.Kind == upstream.KindTool {
+			var tool mcp.Tool
+			var upstreamAnn *mcp.ToolAnnotations
+			if json.Unmarshal([]byte(pin.Definition), &tool) == nil {
+				upstreamAnn = tool.Annotations
+			}
+			v["annotations"] = upstreamAnn
+			v["annotation_overrides"] = pin.AnnotationOverrides
+		}
 		if current != nil && pin.Status == store.PinAccepted {
 			v["serving"] = serving(pin)
 		}
@@ -824,6 +834,121 @@ func (a *API) decidePins(w http.ResponseWriter, r *http.Request, p auth.Principa
 	a.adminEvent(r.Context(), p, pinsAction(verb, done), s.Alias)
 	writeJSON(w, http.StatusOK, map[string]any{verb + "ed": len(done), "requested": len(keys)})
 	return nil
+}
+
+// optBool distinguishes an absent JSON field from an explicit null or boolean
+// in PATCH bodies.
+type optBool struct {
+	set bool
+	val *bool
+}
+
+func (o *optBool) UnmarshalJSON(data []byte) error {
+	o.set = true
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		o.val = nil
+		return nil
+	}
+	var b bool
+	if err := json.Unmarshal(data, &b); err != nil {
+		return err
+	}
+	o.val = &b
+	return nil
+}
+
+// patchPinAnnotations sets or clears admin annotation overrides for an exact
+// tool pin (server, name, hash). Explicit null clears that override field back
+// to upstream's value; omitted fields keep their existing override.
+func (a *API) patchPinAnnotations(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	s, err := a.server(r, p)
+	if err != nil {
+		return err
+	}
+	var req struct {
+		Kind            string  `json:"kind"`
+		Name            string  `json:"name"`
+		Hash            string  `json:"hash"`
+		ReadOnlyHint    optBool `json:"readOnlyHint"`
+		DestructiveHint optBool `json:"destructiveHint"`
+		OpenWorldHint   optBool `json:"openWorldHint"`
+	}
+	if err := decode(r, &req); err != nil {
+		return err
+	}
+	if req.Kind != "" && req.Kind != upstream.KindTool {
+		return errorf(http.StatusUnprocessableEntity, "annotation overrides apply to tools only")
+	}
+	if strings.TrimSpace(req.Name) == "" || strings.TrimSpace(req.Hash) == "" {
+		return errorf(http.StatusUnprocessableEntity, "name and hash are required")
+	}
+	if !req.ReadOnlyHint.set && !req.DestructiveHint.set && !req.OpenWorldHint.set {
+		return errorf(http.StatusUnprocessableEntity, "nothing to change")
+	}
+	key := store.PinKey{Kind: upstream.KindTool, Name: req.Name, Hash: req.Hash}
+	pin, err := a.Store.PinDefinition(r.Context(), p.OrgID, s.ID, key)
+	if errors.Is(err, store.ErrNotFound) {
+		return errorf(http.StatusNotFound, "no tool pin %q (%s) on server %q", req.Name, req.Hash, s.Alias)
+	}
+	if err != nil {
+		return err
+	}
+	before := pin.AnnotationOverrides
+	after := before
+	if req.ReadOnlyHint.set {
+		after.ReadOnlyHint = req.ReadOnlyHint.val
+	}
+	if req.DestructiveHint.set {
+		after.DestructiveHint = req.DestructiveHint.val
+	}
+	if req.OpenWorldHint.set {
+		after.OpenWorldHint = req.OpenWorldHint.val
+	}
+	if err := a.Store.SetPinAnnotations(r.Context(), p.OrgID, s.ID, key, after); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errorf(http.StatusNotFound, "no tool pin %q (%s) on server %q", req.Name, req.Hash, s.Alias)
+		}
+		return err
+	}
+	ev := store.AuditEvent{
+		ID:       ids.New(),
+		CallID:   ids.New(),
+		Time:     time.Now(),
+		Actor:    p.Name,
+		ActorID:  p.ActorID(),
+		Server:   s.Alias,
+		Item:     req.Name,
+		Action:   "pin.annotations:" + s.Alias + ":" + req.Name,
+		Decision: "allow",
+		Outcome:  fmt.Sprintf("hash=%s before=%s after=%s", req.Hash, formatOverrides(before), formatOverrides(after)),
+	}
+	if aerr := a.Audit.Admin(r.Context(), p.OrgID, ev); aerr != nil {
+		a.Logger.Error("audit admin event", "action", ev.Action, "err", aerr)
+	}
+	var tool mcp.Tool
+	var upstreamAnn *mcp.ToolAnnotations
+	if json.Unmarshal([]byte(pin.Definition), &tool) == nil {
+		upstreamAnn = tool.Annotations
+	}
+	resp := map[string]any{
+		"server":      s.Alias,
+		"kind":        upstream.KindTool,
+		"name":        req.Name,
+		"hash":        req.Hash,
+		"annotations": upstreamAnn,
+		"effective":   policy.ApplyAnnotationOverrides(upstreamAnn, after),
+	}
+	resp["annotation_overrides"] = after
+	writeJSON(w, http.StatusOK, resp)
+	return nil
+}
+
+func formatOverrides(ov store.AnnotationOverrides) string {
+	b, err := json.Marshal(ov)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
 }
 
 // ---- tokens
@@ -1193,10 +1318,17 @@ func (a *API) applyPreset(w http.ResponseWriter, r *http.Request, p auth.Princip
 	if err != nil {
 		return err
 	}
+	overrides, err := a.Store.PinAnnotationOverrides(r.Context(), p.OrgID, s.ID)
+	if err != nil {
+		return err
+	}
 	var tools []policy.PresetTool
 	for _, it := range st.Items {
-		if it.Kind == upstream.KindTool && pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinAccepted {
-			tools = append(tools, policy.PresetTool{Tool: it.Tool, Hash: it.Hash})
+		key := store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}
+		if it.Kind == upstream.KindTool && pins[key] == store.PinAccepted {
+			tool := *it.Tool
+			tool.Annotations = policy.ApplyAnnotationOverrides(it.Tool.Annotations, overrides[key])
+			tools = append(tools, policy.PresetTool{Tool: &tool, Hash: it.Hash})
 		}
 	}
 	if len(tools) == 0 {
@@ -1435,6 +1567,7 @@ func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval
 	}
 	var def mcp.Tool
 	_ = json.Unmarshal([]byte(pin.Definition), &def) // annotations only tighten; none is the safe reading
+	ann := policy.ApplyAnnotationOverrides(def.Annotations, pin.AnnotationOverrides)
 	rules, err := a.Store.ListPolicies(ctx, p.OrgID)
 	if err != nil {
 		return store.Policy{}, err
@@ -1450,7 +1583,7 @@ func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval
 	}
 	now := time.Now()
 	dec := policy.Evaluate(rules, policy.Request{Roles: gateway.CallerRoles(requester, acc), TokenID: tok.ID, UserID: tok.UserID, Teams: acc.Teams,
-		Server: ap.ServerAlias, Tool: ap.Tool, PinHash: ap.PinHash, Annotations: def.Annotations, Args: args}, dflt, now)
+		Server: ap.ServerAlias, Tool: ap.Tool, PinHash: ap.PinHash, Annotations: ann, Args: args}, dflt, now)
 	if dec.Action != store.ActionAsk {
 		return refuse("The rules changed while this request waited: this call would now be " + map[string]string{store.ActionAllow: "allowed", store.ActionDeny: "denied"}[dec.Action] + ".")
 	}

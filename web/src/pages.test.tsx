@@ -1102,3 +1102,78 @@ describe("everyone's connections (F07 A)", () => {
     expect(srv.calls.some((c) => c.url.startsWith("/admin/api/v1/connections"))).toBe(false);
   });
 });
+
+describe("tool annotation overrides (F09 B)", () => {
+  it("shows upstream vs overridden annotations and saves or resets hints", async () => {
+    at("/admin/servers/notes");
+    const pins = [
+      {
+        kind: "tool",
+        name: "read_note",
+        hash: "h12345678",
+        status: "accepted",
+        serving: true,
+        definition: { description: "Read a note." },
+        annotations: { readOnlyHint: true },
+        annotation_overrides: {},
+      },
+      {
+        kind: "tool",
+        name: "write_note",
+        hash: "h22345678",
+        status: "pending",
+        definition: { description: "Write a note." },
+        annotations: { readOnlyHint: true, openWorldHint: false },
+        annotation_overrides: { readOnlyHint: false, destructiveHint: true },
+      },
+      {
+        kind: "prompt",
+        name: "greet",
+        hash: "hp1234567",
+        status: "accepted",
+        serving: true,
+        definition: { description: "Greet." },
+      },
+    ];
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": {
+        servers: [{ alias: "notes", status: "up", target: "t", transport: "http", enabled: true, items: { tool: 1, prompt: 1 }, pending_review: 1, teams: ["everyone"] }],
+      },
+      "GET /admin/api/v1/servers/notes/pins": { pins },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "PATCH /admin/api/v1/servers/notes/pins/annotations": { server: "notes", name: "read_note", hash: "h12345678" },
+    });
+
+    await screen.findByText("Available to AI clients");
+    // Pending tool displays both upstream claims and active overrides.
+    expect(screen.getByText(/Upstream annotations: readOnlyHint=true, openWorldHint=false/)).toBeTruthy();
+    expect(screen.getByText(/Overrides: readOnlyHint=false, destructiveHint=true/)).toBeTruthy();
+    // Prompts have no annotation override controls.
+    expect(screen.queryByLabelText(/readOnlyHint for greet/)).toBeNull();
+
+    const readRow = screen.getByText("read_note").closest("tr")!;
+    const saveRead = within(readRow).getByRole("button", { name: "Save annotations" }) as HTMLButtonElement;
+    expect(saveRead.disabled).toBe(true);
+    fireEvent.change(within(readRow).getByLabelText("readOnlyHint for read_note (h1234567)"), { target: { value: "false" } });
+    fireEvent.change(within(readRow).getByLabelText("destructiveHint for read_note (h1234567)"), { target: { value: "true" } });
+    expect(saveRead.disabled).toBe(false);
+    fireEvent.click(saveRead);
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]).toMatchObject({
+      method: "PATCH",
+      url: "/admin/api/v1/servers/notes/pins/annotations",
+      body: { name: "read_note", hash: "h12345678", readOnlyHint: false, destructiveHint: true, openWorldHint: null },
+    });
+
+    // Resetting an overridden hint to Upstream default sends null for that field.
+    const writeRow = screen.getByText("write_note").closest("tr")!;
+    fireEvent.change(within(writeRow).getByLabelText("destructiveHint for write_note (h2234567)"), { target: { value: "" } });
+    fireEvent.click(within(writeRow).getByRole("button", { name: "Save annotations" }));
+    await waitFor(() => expect(srv.writes()).toHaveLength(2));
+    expect(srv.writes()[1]).toMatchObject({
+      method: "PATCH",
+      url: "/admin/api/v1/servers/notes/pins/annotations",
+      body: { name: "write_note", hash: "h22345678", readOnlyHint: false, destructiveHint: null, openWorldHint: null },
+    });
+  });
+});

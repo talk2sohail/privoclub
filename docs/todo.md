@@ -807,7 +807,7 @@ ADRs: 0001, 0011, 0014, 0027
 - [x] Admin API: list, create, delete rules, apply presets, set default; every change audited
 - [x] Rules removed with their server
 - [ ] Cross-server flow rule (source and sink tags)
-- [ ] Admin overrides of annotations shown to clients
+- [x] Admin overrides of annotations shown to clients
 - [ ] Cache rules per org with invalidation (now read per call)
 
 ### Second slice: conditions on arguments, safer grants, YAML (2026-11-20)
@@ -885,8 +885,13 @@ Acceptance:
 2. Clients get the overridden annotations. Rules on annotations
    (presets) read them. The upstream's own values stay visible to admins.
 
-Tasks and tests: `TestOverrideShownToClients`, `TestRulesReadOverrides`,
-`TestOverrideFollowsTheAcceptedDefinition`; app; acceptance.
+Tasks and tests:
+- [x] Migration `00018_pin_annotation_overrides.sql` & Store (`AnnotationOverrides`, `SetPinAnnotations`, `PinAnnotationOverrides`, `ListPins`/`PinDefinition` decoding; `TestAnnotationOverridesPersistPerPinHash`, `TestAnnotationOverridesIsolatedPerOrg`)
+- [x] Policy & Gateway (`policy.ApplyAnnotationOverrides`, `listTools`, `decide` without mutating upstream cache; `TestApplyAnnotationOverrides`, `TestOverrideShownToClients`, `TestRulesReadOverrides`, `TestOverrideFollowsTheAcceptedDefinition`, `TestOverrideDoesNotMutateUpstreamCache`, `TestAnnotationOverridesFailClosedOnStoreError`)
+- [x] Admin API (`PATCH /api/v1/servers/{alias}/pins/annotations`, upstream + override fields on `GET /api/v1/servers/{alias}/pins`, `applyPreset` and `planGrant` use effective annotations, audited `pin.annotations:<alias>:<tool>`; `TestAnnotationOverrideAPIPermissionsAndAudit`, `TestPresetAndGrantRespectAnnotationOverrides`)
+- [x] App (`web/src/types.ts`, `web/src/pages/server.tsx` upstream vs overrides display + true/false/Upstream default controls, Vitest `pages.test.tsx`)
+- [x] Acceptance (`test/acceptance/annotation_overrides_test.go`: `TestAnnotationOverridesEndToEnd`)
+- [x] Docs (`docs/site/using/rules.md`, `docs/todo.md`)
 
 **C. Cross-server flow rules** (source and sink tags), e.g. nothing read
 from `crm` may be sent to `web`. ADR needed first (0032). It decides:

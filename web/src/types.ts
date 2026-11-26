@@ -22,12 +22,28 @@ export type ServerView = {
   has_client_secret?: boolean;
 };
 
+export type ToolAnnotations = {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  openWorldHint?: boolean;
+  idempotentHint?: boolean;
+  title?: string;
+};
+
+export type AnnotationOverrides = {
+  readOnlyHint?: boolean;
+  destructiveHint?: boolean;
+  openWorldHint?: boolean;
+};
+
 export type Pin = {
   kind: string;
   name: string;
   hash: string;
   status: string;
-  definition: { description?: string; title?: string; [key: string]: unknown } | null;
+  definition: { description?: string; title?: string; annotations?: ToolAnnotations; [key: string]: unknown } | null;
+  annotations?: ToolAnnotations | null; // upstream original claims (F09 B)
+  annotation_overrides?: AnnotationOverrides; // admin overrides (F09 B)
   findings?: Finding[]; // signs of hidden instructions (F11 scan); a hint, never a decision
   serving?: boolean; // an accepted definition the server presents now; absent while unknown
   previous?: { hash: string; definition: Pin["definition"] }; // what a pending one would replace

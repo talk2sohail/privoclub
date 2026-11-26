@@ -4,7 +4,7 @@ import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
 import { Link, navigate } from "../router";
 import { TeamPicker } from "../catalog";
-import type { Pin, ServerConnection, ServerView, Team } from "../types";
+import type { AnnotationOverrides, Pin, ServerConnection, ServerView, Team } from "../types";
 import { Definition, Findings, previousOf, warnings } from "../review";
 import { Empty, ErrorLine, Loading, Status, firstLine, flash, when, useAction } from "../ui";
 import { authLabel } from "./servers";
@@ -98,12 +98,15 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
               </thead>
               <tbody>
                 {accepted.map((p) => (
-                  <tr key={p.kind + p.name}>
+                  <tr key={p.kind + "|" + p.hash + "|" + p.name}>
                     <td>{p.kind}</td>
                     <td>
                       <code>{p.name}</code>
                     </td>
-                    <td>{firstLine(p.definition?.description)}</td>
+                    <td>
+                      {firstLine(p.definition?.description)}
+                      {p.kind === "tool" && <ToolAnnotations alias={alias} pin={p} />}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -197,6 +200,7 @@ function Review({ alias, pending, all, loading }: { alias: string; pending: Pin[
                       <td>
                         <Findings list={p.findings ?? []} />
                         <Definition pin={p} previous={previousOf(p, all)} />
+                        {p.kind === "tool" && <ToolAnnotations alias={alias} pin={p} />}
                       </td>
                     </tr>
                   );
@@ -236,6 +240,100 @@ function Review({ alias, pending, all, loading }: { alias: string; pending: Pin[
         </details>
       )}
     </section>
+  );
+}
+
+const HINT_KEYS = ["readOnlyHint", "destructiveHint", "openWorldHint"] as const;
+type HintKey = (typeof HINT_KEYS)[number];
+
+function hintText(v: boolean | undefined): string {
+  return v === undefined ? "unset" : String(v);
+}
+
+function summarizeHints(obj: Partial<Record<HintKey, boolean>> | null | undefined): string {
+  if (!obj) return "none";
+  const parts: string[] = [];
+  for (const h of HINT_KEYS) {
+    const v = obj[h];
+    if (v !== undefined) parts.push(`${h}=${String(v)}`);
+  }
+  return parts.length > 0 ? parts.join(", ") : "none";
+}
+
+function ToolAnnotations({ alias, pin }: { alias: string; pin: Pin }) {
+  const upstream = pin.annotations ?? pin.definition?.annotations ?? null;
+  const saved: AnnotationOverrides = pin.annotation_overrides ?? {};
+  const [draft, setDraft] = useState<AnnotationOverrides | undefined>(undefined);
+  const [busy, run, error] = useAction();
+  const current = draft ?? saved;
+  const changed = draft !== undefined && HINT_KEYS.some((h) => current[h] !== saved[h]);
+  const hasAny = HINT_KEYS.some((h) => upstream?.[h] !== undefined || saved[h] !== undefined);
+  const hasOverride = HINT_KEYS.some((h) => saved[h] !== undefined);
+
+  const save = (e: Event) => {
+    e.preventDefault();
+    void run(async () => {
+      await api("PATCH", "/v1/servers/" + seg(alias) + "/pins/annotations", {
+        name: pin.name,
+        hash: pin.hash,
+        readOnlyHint: current.readOnlyHint ?? null,
+        destructiveHint: current.destructiveHint ?? null,
+        openWorldHint: current.openWorldHint ?? null,
+      });
+      setDraft(undefined);
+      invalidate("/v1/servers/" + seg(alias) + "/pins");
+    }, "Saved annotation overrides for " + pin.name + ".");
+  };
+
+  return (
+    <div class="tool-annotations">
+      {hasAny && (
+        <p class="meta">
+          Upstream annotations: {summarizeHints(upstream)}
+          {hasOverride && (
+            <>
+              {" · "}
+              <span class="badge">overridden</span> Overrides: {summarizeHints(saved)}
+            </>
+          )}
+        </p>
+      )}
+      <details class="annotations-edit">
+        <summary>{hasOverride ? "Annotation overrides (active)" : "Annotation overrides"}</summary>
+        <form class="stack annotations-form" onSubmit={save}>
+          {HINT_KEYS.map((h) => (
+            <label key={h}>
+              <span>
+                <code>{h}</code> <small class="meta">(upstream: {hintText(upstream?.[h])})</small>
+              </span>
+              <select
+                aria-label={`${h} for ${pin.name} (${pin.hash.slice(0, 8)})`}
+                value={current[h] === undefined ? "" : String(current[h])}
+                onChange={(e) => {
+                  const val = (e.currentTarget as HTMLSelectElement).value;
+                  setDraft((prev) => {
+                    const next: AnnotationOverrides = { ...(prev ?? saved) };
+                    if (val === "") delete next[h];
+                    else next[h] = val === "true";
+                    return next;
+                  });
+                }}
+              >
+                <option value="">Upstream default</option>
+                <option value="true">true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+          ))}
+          <ErrorLine text={error} />
+          <div class="actions">
+            <button type="submit" class="primary small" disabled={busy || !changed}>
+              Save annotations
+            </button>
+          </div>
+        </form>
+      </details>
+    </div>
   );
 }
 
