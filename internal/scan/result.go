@@ -26,11 +26,11 @@ type ResultFinding struct {
 	Offset   int    `json:"offset"`
 }
 
-// ScanResult scans the text fields of an MCP CallToolResult, GetPromptResult or
+// Result scans the text fields of an MCP CallToolResult, GetPromptResult or
 // ReadResourceResult using the existing hidden-character and instruction rules,
 // up to capBytes across all walked text in the result (default DefaultResultCap).
 // Findings never contain result text.
-func ScanResult(res any, capBytes int) []ResultFinding {
+func Result(res any, capBytes int) []ResultFinding {
 	if capBytes <= 0 {
 		capBytes = DefaultResultCap
 	}

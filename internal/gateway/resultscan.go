@@ -28,6 +28,7 @@ const (
 	// scanning upstream results and resource contents ("flag" default, or "block").
 	SettingResultScan = "policy.result_scan"
 
+	// Supported modes for SettingResultScan.
 	ResultScanFlag  = "flag"
 	ResultScanBlock = "block"
 )
@@ -440,7 +441,7 @@ func (g *Gateway) processResult(ctx context.Context, c call, callID string, rpl 
 		}
 	}
 
-	warns := uniqueWarnFindings(scan.ScanResult(result, scan.DefaultResultCap))
+	warns := uniqueWarnFindings(scan.Result(result, scan.DefaultResultCap))
 	if len(warns) == 0 {
 		return completionOutcome, nil
 	}

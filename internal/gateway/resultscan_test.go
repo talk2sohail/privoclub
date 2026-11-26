@@ -171,7 +171,7 @@ func (e *testEnv) sealCred(t *testing.T, org store.OrgID, serverID, ownerID, pur
 	return c
 }
 
-func (e *testEnv) issueToken(t *testing.T, org store.OrgID, name, role, userID string) string {
+func (e *testEnv) issueToken(t *testing.T, org store.OrgID, name, userID string) string {
 	t.Helper()
 	tok, err := token.New()
 	if err != nil {
@@ -182,7 +182,7 @@ func (e *testEnv) issueToken(t *testing.T, org store.OrgID, name, role, userID s
 		OrgID:      org,
 		ID:         tok.ID,
 		Name:       name,
-		Role:       role,
+		Role:       store.RoleMember,
 		Kind:       store.KindGateway,
 		UserID:     userID,
 		SecretHash: tok.SecretHash,
@@ -230,7 +230,7 @@ func (e *testEnv) connect(t *testing.T, tok string) *mcp.ClientSession {
 	return s
 }
 
-func (e *testEnv) registerSharedServer(t *testing.T, org store.OrgID, alias string, headerNames []string, creds []store.Credential) store.Server {
+func (e *testEnv) registerSharedServer(t *testing.T, org store.OrgID, alias string, headerNames []string, creds []store.Credential) {
 	t.Helper()
 	ctx := context.Background()
 	srv := store.Server{
@@ -257,7 +257,6 @@ func (e *testEnv) registerSharedServer(t *testing.T, org store.OrgID, alias stri
 		t.Fatalf("server %s state = %+v (ok=%v)", alias, st, ok)
 	}
 	e.acceptAll(t, org, srv.ID)
-	return srv
 }
 
 func TestResultWithHiddenInstructionIsFlagged(t *testing.T) {
@@ -289,7 +288,7 @@ func TestResultWithHiddenInstructionIsFlagged(t *testing.T) {
 
 	env := newTestEnv(t, mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{JSONResponse: true}))
 	env.registerSharedServer(t, env.org, "srv", nil, nil)
-	tok := env.issueToken(t, env.org, "ada", store.RoleMember, "")
+	tok := env.issueToken(t, env.org, "ada", "")
 	cs := env.connect(t, tok)
 	ctx := context.Background()
 
@@ -403,7 +402,7 @@ func TestResultTextNeverLogged(t *testing.T) {
 
 	env := newTestEnv(t, mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, &mcp.StreamableHTTPOptions{JSONResponse: true}))
 	env.registerSharedServer(t, env.org, "srv", nil, nil)
-	tok := env.issueToken(t, env.org, "ada", store.RoleMember, "")
+	tok := env.issueToken(t, env.org, "ada", "")
 	cs := env.connect(t, tok)
 	ctx := context.Background()
 
@@ -463,7 +462,7 @@ func TestBlockModeWithholds(t *testing.T) {
 	if err := env.st.SetSetting(ctx, env.org, SettingResultScan, ResultScanBlock); err != nil {
 		t.Fatal(err)
 	}
-	tok := env.issueToken(t, env.org, "ada", store.RoleMember, "")
+	tok := env.issueToken(t, env.org, "ada", "")
 	cs := env.connect(t, tok)
 
 	// Warn finding in tools/call returns IsError: true with fixed message.
@@ -593,7 +592,7 @@ func TestKnownCallSecretRedactedFromTextAndStructuredContent(t *testing.T) {
 	env.mgr.WaitSettled(ctx, srvID, 5*time.Second)
 	env.acceptAll(t, env.org, srvID)
 
-	tok := env.issueToken(t, env.org, "ada", store.RoleMember, "")
+	tok := env.issueToken(t, env.org, "ada", "")
 	cs := env.connect(t, tok)
 
 	res, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: "srv__echo_all", Arguments: map[string]any{}})
@@ -702,7 +701,7 @@ func TestSecretRedactionNeverMatchesOtherOrgsOrMembers(t *testing.T) {
 	}
 	env.registerSharedServerWithID(t, env.org, srvAID, "srva", []string{"Authorization", "X-Short"}, credsA)
 
-	tokA := env.issueToken(t, env.org, "callerA", store.RoleMember, "")
+	tokA := env.issueToken(t, env.org, "callerA", "")
 	csA := env.connect(t, tokA)
 	resA, err := csA.CallTool(ctx, &mcp.CallToolParams{Name: "srva__probe", Arguments: map[string]any{}})
 	if err != nil {
@@ -751,7 +750,7 @@ func TestSecretRedactionNeverMatchesOtherOrgsOrMembers(t *testing.T) {
 	env.mgr.WaitSettled(ctx, srvPID, 5*time.Second)
 	env.acceptAll(t, env.org, srvPID)
 
-	adaTok := env.issueToken(t, env.org, "ada-gw", store.RoleMember, ada.ID)
+	adaTok := env.issueToken(t, env.org, "ada-gw", ada.ID)
 	csAda := env.connect(t, adaTok)
 	resAda, err := csAda.CallTool(ctx, &mcp.CallToolParams{Name: "pers__probe", Arguments: map[string]any{}})
 	if err != nil {

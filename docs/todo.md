@@ -1038,7 +1038,7 @@ text, with characters a person cannot see made visible (⟦U+200B⟧).
 - [x] Scan for hidden instructions (`internal/scan`): every string of a definition (description, titles, the schema's property names and descriptions, annotations) for characters a person cannot see, tags that address the model, overriding or concealing instructions, "before using this tool you must", secret files and exfiltration (warnings); secret words, long texts and encoded runs (notes). At most 50 findings; `findings` on every pin
   - tests: `internal/scan` `TestScanFindsInstructionsAfterTheFirstLine`, `TestScanFindsHiddenCharacters`, `TestScanWalksSchemaAndAnnotations`, `TestScanNotesLongAndEncodedText`, `TestScanQuietOnOrdinaryTools` (no warning on GitHub, Notion and DeepWiki shapes), `TestScanUnreadableAndBounded`, `TestReveal`; `internal/store` `TestBlockPins`; `internal/control` `TestPinReviewShowsPreviousAndFindings`; acceptance `TestAdminUIFromScratch` (an honest tool has no findings); Vitest `review.test.ts`, `pages.test.tsx` (the whole description as text, nothing chosen by default, the diff and warnings, block)
 - [ ] Scope keys on pins (per team or per person), with toolsets (F08)
-- [x] Scan of resource contents, prompts and tool results (`internal/scan` `ScanResult`, `gateway`, `control` `policy.result_scan` — F11 A)
+- [x] Scan of resource contents, prompts and tool results (`internal/scan` `Result`, `gateway`, `control` `policy.result_scan` — F11 A)
 - [ ] Phrases in other languages
 - [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-control-plane-1-security-review.md`, with F05 R-01, F07 R-02, R-03 and F24 R-01, R-02): no findings at 0.8 or above. Acted on: pin decisions are audited with each `kind/name@hash`
 - [x] From that review: `previous` and "Available to AI clients" should follow the definition the gateway serves now, not the newest accepted one by time; route token events through `audit.Writer`; refuse refreshing a disabled server's grant **Done in 0.18.0:** pins carry `serving` (accepted and presented by the server now); `previous` is the one served now, else the newest accepted; the app lists only served ones (`TestPinViewsFollowWhatIsServedNow`, Vitest). A disabled server's grants are not refreshed (`ErrServerOff`, `TestNoRefreshForAServerTurnedOff`). Token events stay in the token's own transaction (F24 R-02 needs it); since F12 every audit row is sealed into the chain whatever wrote it, so the chain, not `audit.Writer`, is the complete record a future sink reads
@@ -1055,7 +1055,7 @@ Acceptance:
    (`result_scan=block`, default off).
 2. It never logs the text; the record has the rule and position only.
 
-**Done:** `ScanResult` in `internal/scan` walks `tools/call` (`TextContent`,
+**Done:** `scan.Result` in `internal/scan` walks `tools/call` (`TextContent`,
 `EmbeddedResource`, `ResourceLink`, `StructuredContent`), `prompts/get` and
 `resources/read` up to 256 KiB with UTF-8 rune-boundary truncation, returning
 `ResultFinding{Rule, Severity, Offset}` with no text snippet; gateway enforces
