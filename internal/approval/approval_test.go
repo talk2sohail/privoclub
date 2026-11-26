@@ -605,3 +605,89 @@ func TestCancelReleasesHoldSlot(t *testing.T) {
 		t.Fatalf("leaked %d hold slots after all calls finished", remaining)
 	}
 }
+
+type cancelDuringCreateStore struct {
+	*store.Store
+	cancel            context.CancelFunc
+	failCreate        bool
+	skipCreateInsert  bool
+	failSecondOpenCtx bool
+	openCalls         int
+}
+
+func (c *cancelDuringCreateStore) CreateApproval(_ context.Context, org store.OrgID, a store.Approval) error {
+	if c.failCreate {
+		c.cancel()
+		if !c.skipCreateInsert {
+			if err := c.Store.CreateApproval(context.Background(), org, a); err != nil {
+				return err
+			}
+		}
+		return context.Canceled
+	}
+	return c.Store.CreateApproval(context.Background(), org, a)
+}
+
+func (c *cancelDuringCreateStore) OpenApproval(ctx context.Context, org store.OrgID, b store.ApprovalBinding, now time.Time) (store.Approval, error) {
+	c.openCalls++
+	if c.failSecondOpenCtx && c.openCalls == 2 {
+		c.cancel()
+		return store.Approval{}, context.Canceled
+	}
+	return c.Store.OpenApproval(ctx, org, b, now)
+}
+
+func TestGateWithdrawsIfCancelledDuringCreate(t *testing.T) {
+	t.Run("cancelled after insert in CreateApproval", func(t *testing.T) {
+		svc, st, org := setup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		svc.Store = &cancelDuringCreateStore{Store: st, cancel: cancel, failCreate: true}
+
+		out, err := svc.Gate(ctx, req(org, "cancel-create"))
+		if err != nil {
+			t.Fatalf("Gate err = %v, want nil with Cancelled outcome", err)
+		}
+		if out.Result != Cancelled || !out.Withdrawn || out.ID == "" {
+			t.Fatalf("Gate out = %+v, want Result=Cancelled Withdrawn=true", out)
+		}
+		got, gerr := st.GetApproval(context.Background(), org, out.ID)
+		if gerr != nil {
+			t.Fatal(gerr)
+		}
+		if got.Status != store.ApprovalWithdrawn || len(got.Args) != 0 || got.DecidedBy != "caller cancelled" {
+			t.Fatalf("approval row = %+v, want withdrawn with purged args", got)
+		}
+	})
+
+	t.Run("cancelled during post-create OpenApproval", func(t *testing.T) {
+		svc, st, org := setup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		svc.Store = &cancelDuringCreateStore{Store: st, cancel: cancel, failSecondOpenCtx: true}
+
+		out, err := svc.Gate(ctx, req(org, "cancel-open"))
+		if err != nil {
+			t.Fatalf("Gate err = %v, want nil with Cancelled outcome", err)
+		}
+		if out.Result != Cancelled || !out.Withdrawn || out.ID == "" {
+			t.Fatalf("Gate out = %+v, want Result=Cancelled Withdrawn=true", out)
+		}
+		got, gerr := st.GetApproval(context.Background(), org, out.ID)
+		if gerr != nil {
+			t.Fatal(gerr)
+		}
+		if got.Status != store.ApprovalWithdrawn || len(got.Args) != 0 || got.DecidedBy != "caller cancelled" {
+			t.Fatalf("approval row = %+v, want withdrawn with purged args", got)
+		}
+	})
+
+	t.Run("cancelled before CreateApproval commits returns error", func(t *testing.T) {
+		svc, st, org := setup(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		svc.Store = &cancelDuringCreateStore{Store: st, cancel: cancel, failCreate: true, skipCreateInsert: true}
+
+		_, err := svc.Gate(ctx, req(org, "cancel-before-insert"))
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Gate err = %v, want context.Canceled", err)
+		}
+	})
+}

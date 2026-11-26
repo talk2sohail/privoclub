@@ -117,6 +117,9 @@ func (s *Service) Gate(ctx context.Context, r Request) (Outcome, error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		if a, err = s.create(ctx, r, b); err != nil {
+			if ctx.Err() != nil && a.ID != "" {
+				return s.cancelHeld(ctx, r.Org, a)
+			}
 			return Outcome{}, err
 		}
 	case err != nil:
@@ -177,7 +180,7 @@ func (s *Service) create(ctx context.Context, r Request, b store.ApprovalBinding
 		Status: store.ApprovalPending, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 	sealed, err := s.seal(ctx, r.Org, a.ID, r.Args)
 	if err != nil {
-		return a, err
+		return store.Approval{}, err
 	}
 	a.Args = sealed
 	if err := s.Store.CreateApproval(ctx, r.Org, a); err != nil {
@@ -185,12 +188,10 @@ func (s *Service) create(ctx context.Context, r Request, b store.ApprovalBinding
 	}
 	// Re-read: if another caller created the row first, use theirs.
 	got, err := s.Store.OpenApproval(ctx, r.Org, b, now)
-	if err != nil && ctx.Err() != nil {
-		cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_, _ = s.Store.CancelPendingApproval(cancelCtx, r.Org, a.ID, "caller cancelled", s.clock())
-		cancel()
+	if err != nil {
+		return a, err
 	}
-	return got, err
+	return got, nil
 }
 
 // evaluate returns the outcome for the approval's current state, consuming it
@@ -286,6 +287,9 @@ func (s *Service) cancelHeld(ctx context.Context, org store.OrgID, a store.Appro
 	}
 	cur, gerr := s.Store.GetApproval(cancelCtx, org, a.ID)
 	if gerr != nil {
+		if errors.Is(gerr, store.ErrNotFound) {
+			return Outcome{}, ctx.Err()
+		}
 		return Outcome{}, gerr
 	}
 	switch cur.EffectiveStatus(s.clock()) {

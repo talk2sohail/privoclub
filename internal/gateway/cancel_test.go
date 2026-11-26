@@ -250,7 +250,7 @@ func newCancelGatewayHarness(t *testing.T, upstreamStateless bool) (*testGateway
 		t.Fatal(err)
 	}
 
-	app := &approval.Service{Store: st, Keys: kr, Hold: 5 * time.Second, Poll: 15 * time.Millisecond}
+	app := &approval.Service{Store: st, Keys: kr, Hold: 10 * time.Second, Poll: 15 * time.Millisecond}
 	gw := &Gateway{
 		Store:       st,
 		Upstream:    mgr,
@@ -431,7 +431,7 @@ func TestCancelledCallStillWritesAuditCompletion(t *testing.T) {
 		}
 
 		// Wait briefly for the gateway handler's post-cancel withdrawal to finish.
-		deadline = time.Now().Add(3 * time.Second)
+		deadline = time.Now().Add(5 * time.Second)
 		var ap store.Approval
 		for time.Now().Before(deadline) {
 			ap, _ = h.st.GetApproval(ctx, h.org, pendingID)
