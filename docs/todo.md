@@ -1999,11 +1999,18 @@ task 4.
   in a basic or advanced page; Installation renamed Operations and Reference;
   the welcome page, Getting Started and Basic Features link only to the new
   pages; the `using/` pages leave the navigation (`not_in_nav`), unchanged
-- [ ] Retire `docs/site/using/` (#62, second step), once #42, #66 and #67
+- [x] Links point at the new pages (after #42 merged, 2026-11-27): the
+  `installation/` pages, the README and the landing page no longer link to
+  `using/` (sign-in to Getting Started → First setup; connections, OAuth
+  clients and tokens to their basic and advanced pages). `installation/coolify.md`
+  was trimmed by #42
+- [ ] Retire `docs/site/using/` (#62, second step), once #66, #67, #71 and #72
   have merged: carry their `using/` edits over (#66, the breaker-state metric,
   to `advanced/observability.md`; #67, the grant token cache and the rules
-  cache, to `advanced/upstream-auth.md` and `advanced/policy-engine.md`),
-  point the `installation/` pages' links at the new pages, trim `installation/coolify.md`, delete `using/`,
+  cache, to `advanced/upstream-auth.md` and `advanced/policy-engine.md`; #71,
+  scope step-up in `using/connections.md`, to `advanced/upstream-auth.md`;
+  #72, withdrawing held approvals in `using/rules.md`, to
+  `basics/rules-and-approvals.md`), delete `using/`,
   and redirect `/using/*` (#65)
 - [ ] Later: a weekly external link check (for example `lychee` on
   `build/site`)

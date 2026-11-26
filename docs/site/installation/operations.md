@@ -92,7 +92,7 @@ back to 0.9.x is the older image; it ignores the two new tables.
 
 No migration and no new setting. Servers that take each person's own API key,
 and OAuth servers that publish no sign-in metadata, can now be added
-([Each person's own account](../using/connections.md)). Both need GitHub
+([Connecting your accounts](../basics/connections.md)). Both need GitHub
 sign-in and `PRIVO_PUBLIC_URL`, like the other per-person servers. Going back
 to 0.8.x is the older image; servers added with a personal key do not work
 there (it does not know them) until they are deleted.
@@ -102,7 +102,7 @@ there (it does not know them) until they are deleted.
 Migration `00008` adds four tables; it also drops three columns of
 `oauth_states` that 0.7.1 stopped writing and clears that table, whose rows
 live ten minutes. **Nothing changes until you switch it on**
-([AI clients that sign in with OAuth](../using/oauth-clients.md)).
+([AI clients that sign in with OAuth](../advanced/oauth-clients.md)).
 
 Have the authorization server reviewed for security before switching it on in
 production. Going back: switch it off, or run the 0.7.1 or 0.7.2 image, which

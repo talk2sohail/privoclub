@@ -34,13 +34,17 @@ Everything else is on [docs.privo.club](https://docs.privo.club), built from
 [`docs/site/`](docs/site/index.md) with MkDocs (`make docs-serve` to read it
 locally):
 
+- Getting started: [deploy Privo](docs/site/getting-started/deploy.md),
+  [first setup and sign-in](docs/site/getting-started/first-setup.md),
+  [your first server and AI client](docs/site/getting-started/first-call.md)
+- [The admin site](docs/site/basics/admin-site.md),
+  [servers](docs/site/basics/servers.md), [teams](docs/site/basics/teams.md),
+  [rules and approvals](docs/site/basics/rules-and-approvals.md),
+  [connecting AI clients](docs/site/basics/tokens.md),
+  [the audit trail](docs/site/advanced/audit.md)
 - [Build and run](docs/site/installation/build-and-run.md),
   [Deploy on Coolify](docs/site/installation/coolify.md),
   [Configuration reference](docs/site/installation/configuration.md)
-- [The admin site](docs/site/using/admin-site.md),
-  [servers](docs/site/using/servers.md), [teams](docs/site/using/teams.md),
-  [rules and approvals](docs/site/using/rules.md),
-  [tokens](docs/site/using/tokens.md), [the audit trail](docs/site/using/audit.md)
 - [How a feature is made](docs/site/development/workflow.md),
   [architecture decisions](docs/site/development/decisions.md)
 
