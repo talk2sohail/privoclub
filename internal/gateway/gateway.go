@@ -40,6 +40,7 @@ import (
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/safe"
+	"privo.club/privo/internal/scan"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstream"
@@ -62,6 +63,9 @@ type Store interface {
 	ListPolicies(ctx context.Context, org store.OrgID) ([]store.Policy, error)
 	UserByID(ctx context.Context, org store.OrgID, id string) (store.User, error)
 	AccessFor(ctx context.Context, org store.OrgID, userID string) (store.Access, error)
+	ServerByID(ctx context.Context, org store.OrgID, id string) (store.Server, error)
+	ServerCredentials(ctx context.Context, org store.OrgID, serverID string) ([]store.Credential, error)
+	Grant(ctx context.Context, org store.OrgID, serverID, userID string) (store.Grant, error)
 }
 
 // Gateway is the MCP data plane.
@@ -89,7 +93,8 @@ type Gateway struct {
 	hiddenMu sync.Mutex
 	hidden   map[string]time.Time // last record of a hidden call, per caller, server and reason
 
-	args argcheck.Checker // compiled input schemas of the tools called
+	args    argcheck.Checker // compiled input schemas of the tools called
+	outputs argcheck.Checker // compiled output schemas for redacted structured content
 }
 
 // Handler returns the authenticated MCP HTTP handler.
@@ -509,16 +514,34 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 
 	outcome := "error"
 	var result any
+	var preSecrets []string
 	connecting := time.Now()
-	session, err := g.session(ctx, c)
+	session, owner, err := g.sessionForCall(ctx, c)
 	st.ConnectUS = time.Since(connecting).Microseconds()
 	if err == nil {
+		if owner != "" && g.Upstream != nil {
+			if tok, serr := g.Upstream.CallSecret(ctx, c.p.OrgID, c.item.ServerID, owner); serr == nil && tok != "" {
+				preSecrets = append(preSecrets, tok)
+			}
+		}
 		calling := time.Now()
 		outcome, result, err = g.callUpstream(ctx, c, session, do)
 		st.UpstreamUS = time.Since(calling).Microseconds()
 	}
+	secrets, secErr := g.collectCallSecrets(ctx, c, owner, preSecrets)
+	if err == nil && secErr != nil {
+		g.recordScanAudit(ctx, c, callID, "result.blocked:", "block", []scan.ResultFinding{{Rule: "redaction", Severity: scan.Warn, Offset: 0}})
+		outcome = "result.blocked:redaction"
+		err = &refusal{msg: resultRedactionFailMsg, class: "result_blocked"}
+	}
+	rpl := secretReplacer(secrets)
+	completionOutcome := outcome
+	statOut := statOutcome(outcome)
+	if err == nil {
+		completionOutcome, err = g.processResult(ctx, c, callID, rpl, outcome, result)
+	}
 	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
-		Item: c.item.Name, Action: c.action, Outcome: outcome, LatencyMS: time.Since(start).Milliseconds()}
+		Item: c.item.Name, Action: c.action, Outcome: completionOutcome, LatencyMS: time.Since(start).Milliseconds()}
 	if aerr := g.Audit.Completion(ctx, c.p.OrgID, completion); aerr != nil {
 		g.Logger.Error("audit completion not queued", "err", aerr)
 	}
@@ -530,10 +553,15 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	if err == nil {
 		st.ResultBytes = resultSize(result)
 	} else {
-		outcome = store.OutcomeError
+		var r *refusal
+		if errors.As(err, &r) {
+			statOut = store.OutcomeRefused
+		} else {
+			statOut = store.OutcomeError
+		}
 	}
-	record(statOutcome(outcome), class)
-	return g.clientFacing(c, err)
+	record(statOut, class)
+	return g.clientFacingRedacted(c, err, rpl)
 }
 
 // statOutcome maps the audit outcome of a call that ran to a statistic's.
@@ -551,9 +579,12 @@ func errorClass(err error) string {
 	if err == nil {
 		return ""
 	}
+	var r *refusal
 	var acct *accountError
 	var rpc *jsonrpc.Error
 	switch {
+	case errors.As(err, &r):
+		return r.class
 	case errors.As(err, &acct):
 		return acct.class
 	case errors.Is(err, grants.ErrKeyRefused):
@@ -622,26 +653,28 @@ func resultSize(v any) int64 {
 	return n
 }
 
-// session picks the upstream session for a call: the server's shared one, or,
-// for a server where each person uses their own account (ADR 0017), one that
-// carries the caller's own grant. It never falls back to someone else's.
-func (g *Gateway) session(ctx context.Context, c call) (*mcp.ClientSession, error) {
+// sessionForCall picks the upstream session for a call: the server's shared
+// one, or, for a server where each person uses their own account (ADR 0017),
+// one that carries the caller's own grant. It never falls back to someone else's.
+// For per-person servers it also returns the verified grant owner's user ID.
+func (g *Gateway) sessionForCall(ctx context.Context, c call) (*mcp.ClientSession, string, error) {
 	if !g.Upstream.PerPerson(c.item.ServerID) {
-		return g.Upstream.Session(c.p.OrgID, c.item.ServerID)
+		s, err := g.Upstream.Session(c.p.OrgID, c.item.ServerID)
+		return s, "", err
 	}
 	owner, err := g.grantOwner(ctx, c)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	s, err := g.Upstream.PersonSession(ctx, c.p.OrgID, c.item.ServerID, owner)
 	if errors.Is(err, grants.ErrNotConnected) {
-		return nil, g.connectFirst(c.item.Alias)
+		return nil, owner, g.connectFirst(c.item.Alias)
 	}
 	if errors.Is(err, grants.ErrKeyRefused) {
 		// The handshake with the person's own key was refused (ADR 0023).
-		return nil, g.keyRefused(c.item.Alias)
+		return nil, owner, g.keyRefused(c.item.Alias)
 	}
-	return s, err
+	return s, owner, err
 }
 
 // grantOwner is the member whose own account a call to a per-person server
@@ -747,12 +780,32 @@ func sdkLocalCode(code int64) bool {
 // every URL. The upstream's own JSON-RPC answer passes through (the error
 // alone, not the text the SDK wrapped around it), and so do the gateway's own.
 func (g *Gateway) clientFacing(c call, err error) error {
+	return g.clientFacingRedacted(c, err, nil)
+}
+
+func (g *Gateway) clientFacingRedacted(c call, err error, rpl *strings.Replacer) error {
 	if err == nil {
 		return nil
 	}
 	var rpc *jsonrpc.Error
 	if errors.As(err, &rpc) && !sdkLocalCode(rpc.Code) {
-		return rpc
+		if rpl == nil {
+			return rpc
+		}
+		cp := *rpc
+		cp.Message = rpl.Replace(rpc.Message)
+		if len(rpc.Data) > 0 {
+			if nv, changed, rerr := redactStructuredValue(rpl, rpc.Data, 0); rerr == nil && changed {
+				if raw, ok := nv.(json.RawMessage); ok {
+					cp.Data = raw
+				}
+			} else if rerr != nil {
+				if b, merr := json.Marshal(rpl.Replace(string(rpc.Data))); merr == nil {
+					cp.Data = b
+				}
+			}
+		}
+		return &cp
 	}
 	var r *refusal
 	if errors.Is(err, errMalformedReply) || errors.Is(err, errNeedsInput) {
@@ -764,7 +817,11 @@ func (g *Gateway) clientFacing(c call, err error) error {
 	if errors.As(err, &r) || errors.As(err, &acct) || errors.Is(err, upstream.ErrUnavailable) || errors.Is(err, errCallTimeout) {
 		return err
 	}
-	g.Logger.Warn("upstream call failed", "server", c.item.Alias, "action", c.action, "err", upstream.RedactText(err.Error()))
+	msg := upstream.RedactText(err.Error())
+	if rpl != nil {
+		msg = rpl.Replace(msg)
+	}
+	g.Logger.Warn("upstream call failed", "server", c.item.Alias, "action", c.action, "err", msg)
 	return fmt.Errorf("the upstream server %q did not answer or failed; an administrator can see details in the server status and the log", c.item.Alias)
 }
 
@@ -869,7 +926,10 @@ func (g *Gateway) getPrompt(ctx context.Context, p auth.Principal, params *mcp.G
 		result = res
 		return "ok", res, nil
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // rewriteRead gives every content of an upstream's resources/read reply its
@@ -915,7 +975,10 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 		result = res
 		return "ok", res, nil
 	})
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // hiddenWindow is how often one caller's calls on one server for one reason

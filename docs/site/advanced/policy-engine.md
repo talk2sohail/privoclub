@@ -157,3 +157,37 @@ and 1 MiB.
 With the admin API: `GET /api/v1/policies/export`, and
 `POST /api/v1/policies/import` with
 `{"yaml": "...", "mode": "merge", "dry_run": true}`.
+
+## Result scanning and secret redaction
+
+After an upstream server answers a tool call, prompt read or resource read,
+Privo checks and protects the reply before returning it to the AI client
+([ADR 0001](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0001-request-pipeline.md)
+stage 13):
+
+- **Secret redaction.** Active credentials belonging to that exact call — the
+  server's active headers or environment secrets for shared servers, or only
+  the caller's own active token for per-person servers (never another
+  organisation's or member's secret) — are scrubbed from text, prompt,
+  resource and structured JSON fields, as well as upstream error messages, by
+  replacing exact, URL-escaped and base64 variants (`>= 8` bytes) with
+  `[REDACTED]` while preserving JSON numbers, booleans, arrays and objects.
+  When redaction modifies `structuredContent` on a tool that defines an
+  `outputSchema`, Privo re-validates the redacted output within bounded
+  schema limits (64 KiB, 64 nesting levels, no remote `$ref`, bounded step
+  budget) and withholds the result if validation fails.
+- **Hidden instruction scanning.** Privo scans result text, prompts,
+  resources and structured output up to 256 KiB per reply using the same
+  hidden-character and instruction rules used during tool review.
+  - **`flag` (default):** replies with a warning pass through to the client,
+    and [the audit trail](audit.md) records `result.flagged:<rule>` with the
+    byte offset only (result text is never written to logs or audit events).
+  - **`block`:** replies with a warning are withheld (`Result withheld by
+    Privo: suspicious instructions detected`) and audited as
+    `result.blocked:<rule>` (with outcome `refused` and class `result_blocked`
+    in [Activity](../basics/activity.md)). Note-severity findings never block
+    or flag.
+
+Change the mode with `PATCH /api/v1/settings/policy` (`{"result_scan":
+"block"}` or `"flag"`, requiring the `policy.manage` permission); read the
+current setting on `GET /api/v1/policies` or `GET /api/v1/settings/policy`.
