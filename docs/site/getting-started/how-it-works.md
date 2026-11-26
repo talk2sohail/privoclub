@@ -65,6 +65,6 @@ You run one Privo per organisation, on your own servers:
 - The request pipeline: [ADR 0001](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0001-request-pipeline.md).
 - Protocol versions and the stateless gateway: [ADR 0004](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0004-protocol-versions.md).
 - Each person's own account on a server: [ADR 0017](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0017-upstream-oauth-broker.md).
-- The threat model: [ADR 0009](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0009-threat-model.md).
+- The threat model: [Threat model](../security/threat-model.md), from [ADR 0009](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0009-threat-model.md).
 
 Next: [Key concepts](concepts.md).

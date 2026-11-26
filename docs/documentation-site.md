@@ -233,7 +233,9 @@ private).** A third Coolify app, `privo-docs`, built from
   serving `build/site/`. Headers:
   - CSP: `default-src 'self'; script-src 'self'; style-src 'self'
     'unsafe-inline'`. The readthedocs theme writes some inline styles; check
-    the built pages before tightening it.
+    the built pages before tightening it. As built: `docs/Caddyfile` has no
+    `'unsafe-inline'`, and the theme's inline styles are removed after the
+    build (`docs/externalize_inline_scripts.py`, #64).
   - `X-Content-Type-Options: nosniff`.
   - `Referrer-Policy: same-origin`.
   - Long caching only for hashed assets.

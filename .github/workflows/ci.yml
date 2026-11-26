@@ -76,8 +76,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: make docs PYTHON=python
-      # The image docs.privo.club runs: no inline script may be left for the
-      # Content-Security-Policy (docs/externalize_inline_scripts.py).
+      # The image docs.privo.club runs: no inline script or style may be left
+      # for the Content-Security-Policy (docs/externalize_inline_scripts.py).
       - run: docker build -f docs/Dockerfile -t privo-docs:ci .
 
   image:

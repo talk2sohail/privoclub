@@ -1,17 +1,339 @@
-/* Small overrides of the readthedocs theme (mkdocs.yml, extra_css). */
+/*
+ * Privo's look on MkDocs' built-in readthedocs theme (mkdocs.yml, extra_css).
+ *
+ * This file is the whole of it: no plugin, no theme package, nothing loaded
+ * from another site. The Content-Security-Policy (docs/Caddyfile) allows
+ * styles from this site only, so nothing here may depend on inline styles.
+ * Colours come from the landing page (site/public/styles.css). Every pair of
+ * text and background below passes WCAG AA (4.5:1, and 3:1 for focus rings);
+ * several of the theme's own defaults did not.
+ */
+
+:root {
+  --privo-navy: #0a2540;
+  --privo-ink: #0c1b33;
+  --privo-ink-2: #12264a;
+  --privo-ink-3: #071226;
+  --privo-ink-text: #b8c6d9;
+  --privo-coral: #ff7a59;
+  --privo-sun: #ffc145;
+  --privo-link: #0b7484;        /* 5.3:1 on the page; the theme's #2980b9 was 4.2:1 */
+  --privo-link-hover: #c4421f;
+  --privo-text-2: #425466;
+  --privo-tint: #f5f7fa;
+  --privo-line: #e3e8ee;
+  --privo-line-2: #d5dbe1;
+  --privo-code: #e6edf5;
+}
+
+/* ---------- Sidebar, its header, and the top bar on phones ---------- */
+
+.wy-nav-side {
+  background: var(--privo-ink);
+}
 .wy-side-nav-search,
 .wy-nav-top {
-  background-color: #1f2a44;
+  background-color: var(--privo-navy);
 }
 .wy-side-nav-search > a,
 .wy-nav-top a {
   color: #ffffff;
 }
+.wy-side-nav-search input[type="text"] {
+  border-color: var(--privo-ink-2);
+}
+.wy-menu-vertical a {
+  color: var(--privo-ink-text);
+}
+.wy-menu-vertical a:hover {
+  background-color: var(--privo-ink-2);
+  color: #ffffff;
+}
+
+/* The six section names: a coral label with a rule above, so they scan. */
+.wy-menu-vertical p.caption {
+  color: var(--privo-coral);
+  letter-spacing: 0.06em;
+  margin-top: 16px;
+  border-top: 1px solid rgba(148, 177, 214, 0.16);
+}
+
+/* The page you are on: a coral bar and dark text (the theme's grey links on
+   light grey were 3.1:1). */
+.wy-menu-vertical li.current {
+  background: var(--privo-tint);
+}
+.wy-menu-vertical li.current a {
+  color: var(--privo-text-2);
+  border-right: 0;
+}
+.wy-menu-vertical li.current a:hover {
+  background: var(--privo-line);
+  color: var(--privo-navy);
+}
+.wy-menu-vertical li.toctree-l1.current > a {
+  color: var(--privo-navy);
+  font-weight: 700;
+  border-top: 1px solid var(--privo-line);
+  border-bottom: 1px solid var(--privo-line);
+  box-shadow: inset 4px 0 0 var(--privo-coral);
+}
+.wy-menu-vertical li.toctree-l2.current > a,
+.wy-menu-vertical li.toctree-l2.current li.toctree-l3 > a {
+  background: var(--privo-line);
+  color: var(--privo-navy);
+}
+
+/* The bar at the foot of the sidebar: GitHub, Previous, Next. The theme
+   colours these links with an inline style, which the policy refuses;
+   docs/externalize_inline_scripts.py removes it and this rule replaces it. */
+.rst-versions,
+.rst-versions .rst-current-version {
+  background: var(--privo-ink-3);
+}
+.rst-versions a,
+.rst-versions .rst-current-version a {
+  color: #fcfcfc;
+}
+
+/* ---------- Content ---------- */
+
+/* Room for tables and code; running text keeps a readable measure. */
+.wy-nav-content {
+  max-width: 880px;
+}
+.rst-content .section > p,
+.rst-content .section > ul,
+.rst-content .section > ol,
+.rst-content .section > .admonition {
+  max-width: 42rem;
+}
+
+.rst-content h1,
+.rst-content h2,
+.rst-content h3,
+.rst-content h4 {
+  color: var(--privo-navy);
+  font-family: Lato, proxima-nova, "Helvetica Neue", Arial, sans-serif;
+  letter-spacing: -0.01em;
+}
+.rst-content h1 {
+  font-size: 2rem;
+  line-height: 1.25;
+}
+.rst-content h2 {
+  font-size: 1.5rem;
+  margin-top: 2.25rem;
+  margin-bottom: 16px;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--privo-line);
+}
+.rst-content h3 {
+  font-size: 1.2rem;
+  margin-top: 1.75rem;
+  margin-bottom: 12px;
+}
+
+.rst-content a,
+.rst-content a:visited {
+  color: var(--privo-link);
+}
+.rst-content a:hover {
+  color: var(--privo-link-hover);
+}
+/* A link in running text is underlined, so colour is never the only sign
+   of it (WCAG 1.4.1): against body text the link colour is under 3:1. */
+.rst-content .section p a,
+.rst-content .section li a,
+.rst-content .section td a {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.15em;
+}
+
+/* Inline code: dark on a light tint (the theme's red was 3.8:1). */
+.rst-content code {
+  color: var(--privo-navy);
+  background: var(--privo-tint);
+  border: 1px solid var(--privo-line);
+  border-radius: 4px;
+  font-size: 85%;
+}
+.rst-content a code {
+  color: inherit;
+}
+
+/* Code blocks: dark, like the landing page, and scrolling inside the block
+   instead of widening the page on a phone. */
+.rst-content pre {
+  background: var(--privo-ink);
+  border: 1px solid var(--privo-ink-2);
+  border-radius: 8px;
+  margin: 0 0 24px;
+  overflow-x: auto;
+}
+.rst-content pre code {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--privo-code);
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 14px 16px;
+}
+
+/* !!! note and !!! warning: a coloured edge and dark titles (the theme's
+   white titles were 2.4:1 and 1.8:1). */
+.rst-content .admonition {
+  background: var(--privo-tint);
+  border-left: 4px solid var(--privo-line-2);
+  border-radius: 0 8px 8px 0;
+  padding: 12px 16px;
+}
+.rst-content .admonition-title {
+  background: transparent;
+  color: var(--privo-navy);
+  margin: 0 0 6px;
+  padding: 0;
+}
+.rst-content .note {
+  background: #e2f6f8;
+  border-left-color: var(--privo-link);
+}
+.rst-content .note .admonition-title {
+  background: transparent;
+  color: #0a5f6c;
+}
+.rst-content .warning {
+  background: #fff0eb;
+  border-left-color: var(--privo-link-hover);
+}
+.rst-content .warning .admonition-title {
+  background: transparent;
+  color: #a3361a;
+}
+
+/* Tables: cells wrap and align to the top. A table still too wide for a
+   phone scrolls inside its own frame (.wy-table-responsive), never the page;
+   code in a cell wraps at spaces only, never mid-word (the theme's
+   break-word would let Chrome squeeze the column and split a path). */
+.rst-content table td code,
+.rst-content table th code {
+  overflow-wrap: normal;
+  word-wrap: normal;
+}
+.rst-content table.docutils {
+  border-color: var(--privo-line);
+}
 .rst-content table.docutils td,
-.rst-content table td {
+.rst-content table.docutils th {
+  border-color: var(--privo-line);
+  padding: 8px 12px;
+  vertical-align: top;
   white-space: normal;
+}
+.rst-content table.docutils thead th {
+  background: var(--privo-tint);
+  color: var(--privo-navy);
+  border-bottom: 2px solid var(--privo-line-2);
+  white-space: normal;
+}
+.rst-content table.docutils:not(.field-list) tr:nth-child(2n-1) td {
+  background-color: #f7f9fb;
 }
 .wy-table-responsive table td,
 .wy-table-responsive table th {
   white-space: normal;
+}
+/* Column alignment comes as align="…" (mkdocs.yml, tables), not a style. */
+.rst-content table [align="center"] {
+  text-align: center;
+}
+.rst-content table [align="right"] {
+  text-align: right;
+}
+
+/* ---------- Keyboard focus ---------- */
+
+.rst-content a:focus-visible,
+.rst-content button:focus-visible,
+.rst-content input:focus-visible,
+.wy-breadcrumbs a:focus-visible,
+.rst-footer-buttons .btn:focus-visible {
+  outline: 3px solid var(--privo-link);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+.wy-nav-side a:focus-visible,
+.wy-side-nav-search input:focus-visible,
+.rst-versions a:focus-visible,
+.wy-nav-top a:focus-visible {
+  outline: 3px solid var(--privo-sun);
+  outline-offset: -3px;
+}
+
+/* ---------- The welcome page's cards ---------- */
+
+/* index.md wraps a list of the six sections in <div class="privo-cards">.
+   Without this file, or on GitHub, it is a plain list of links. */
+.rst-content .section .privo-cards ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin: 8px 0 32px;
+  padding: 0;
+  max-width: none;
+  list-style: none;
+}
+.rst-content .section .privo-cards ul li {
+  position: relative;
+  margin: 0;
+  padding: 16px 18px;
+  list-style: none;
+  background: #ffffff;
+  border: 1px solid var(--privo-line);
+  border-radius: 10px;
+  box-shadow: 0 2px 5px -1px rgba(50, 50, 93, 0.12), 0 1px 3px -1px rgba(0, 0, 0, 0.08);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.rst-content .section .privo-cards ul li:hover {
+  border-color: var(--privo-link);
+  box-shadow: 0 13px 27px -5px rgba(50, 50, 93, 0.16), 0 8px 16px -8px rgba(0, 0, 0, 0.16);
+}
+.rst-content .section .privo-cards ul li:focus-within {
+  outline: 3px solid var(--privo-link);
+  outline-offset: 2px;
+}
+.rst-content .section .privo-cards ul li > p {
+  margin: 0;
+  color: var(--privo-text-2);
+}
+.rst-content .section .privo-cards ul li > p:first-child {
+  margin-bottom: 4px;
+}
+.rst-content .section .privo-cards ul li a {
+  color: var(--privo-navy);
+  font-size: 1.05rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+/* The whole card follows its one link; the card shows the focus ring. */
+.rst-content .section .privo-cards ul li a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 10px;
+}
+.rst-content .section .privo-cards ul li a:focus-visible {
+  outline: none;
+}
+@media (max-width: 640px) {
+  .rst-content .section .privo-cards ul {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rst-content .section .privo-cards ul li {
+    transition: none;
+  }
 }
