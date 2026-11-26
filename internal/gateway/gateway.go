@@ -43,6 +43,7 @@ import (
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstream"
+	"privo.club/privo/internal/upstreamauth"
 	"privo.club/privo/internal/vault"
 )
 
@@ -517,15 +518,24 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 		outcome, result, err = g.callUpstream(ctx, c, session, do)
 		st.UpstreamUS = time.Since(calling).Microseconds()
 	}
+	var scopeErr *upstreamauth.InsufficientScopeError
+	if errors.As(err, &scopeErr) {
+		g.recordScopeNeeded(ctx, c, dec.label, scopeErr.Scopes)
+		err = g.insufficientScope(c.item.Alias, scopeErr.Scopes)
+	}
 	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Outcome: outcome, LatencyMS: time.Since(start).Milliseconds()}
 	if aerr := g.Audit.Completion(ctx, c.p.OrgID, completion); aerr != nil {
 		g.Logger.Error("audit completion not queued", "err", aerr)
 	}
 	class := errorClass(err)
-	if class == "key_refused" {
+	switch class {
+	case "key_refused":
 		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: c.item.Alias,
 			UserID: c.p.UserID, Message: "the server refused a member's own API key"})
+	case "insufficient_scope":
+		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: c.item.Alias,
+			UserID: c.p.UserID, Message: "the server asked a member for another scope"})
 	}
 	if err == nil {
 		st.ResultBytes = resultSize(result)
@@ -552,10 +562,13 @@ func errorClass(err error) string {
 		return ""
 	}
 	var acct *accountError
+	var scopeErr *upstreamauth.InsufficientScopeError
 	var rpc *jsonrpc.Error
 	switch {
 	case errors.As(err, &acct):
 		return acct.class
+	case errors.As(err, &scopeErr):
+		return "insufficient_scope"
 	case errors.Is(err, grants.ErrKeyRefused):
 		return "key_refused"
 	case errors.Is(err, grants.ErrNotConnected):
@@ -666,7 +679,7 @@ func (g *Gateway) grantOwner(ctx context.Context, c call) (string, error) {
 // text is fixed and safe to show to the AI client and the person.
 type accountError struct {
 	msg   string
-	class string // no_account, not_connected or key_refused (ADR 0024)
+	class string // no_account, not_connected, key_refused or insufficient_scope (ADR 0024)
 }
 
 func (e *accountError) Error() string { return e.msg }
@@ -725,6 +738,68 @@ func (g *Gateway) keyRefused(alias string) error {
 	}
 	link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias)
 	return &accountError{fmt.Sprintf("%s refused your API key. Enter a new one: open %s in your browser, then try again.", alias, link), "key_refused"}
+}
+
+// insufficientScope tells the person which scopes the server asked for and
+// where to grant them, using only validated scope tokens.
+func (g *Gateway) insufficientScope(alias string, scopes []string) error {
+	need := strings.Join(scopes, " ")
+	if need == "" {
+		if g.BaseURL == "" {
+			return &accountError{fmt.Sprintf("%s needs additional scope. Reconnect your account on the Privo admin site, then try again.", alias), "insufficient_scope"}
+		}
+		link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias)
+		return &accountError{fmt.Sprintf("%s needs additional scope. Grant access by opening %s in your browser, then try again.", alias, link), "insufficient_scope"}
+	}
+	if g.BaseURL == "" {
+		return &accountError{fmt.Sprintf("%s needs additional scope (%s). Reconnect your account on the Privo admin site, then try again.", alias, need), "insufficient_scope"}
+	}
+	link := strings.TrimSuffix(g.BaseURL, "/") + "/connect/" + url.PathEscape(alias) + "?scope=" + url.QueryEscape(need)
+	return &accountError{fmt.Sprintf("%s needs additional scope (%s). Grant access by opening %s in your browser, then try again.", alias, need, link), "insufficient_scope"}
+}
+
+const maxScopeNeededAction = 256
+
+func scopeNeededAction(alias string, scopes []string) string {
+	if len(scopes) == 0 {
+		act := "upstream.scope_needed:" + alias
+		if len(act) > maxScopeNeededAction {
+			return act[:maxScopeNeededAction]
+		}
+		return act
+	}
+	prefix := "upstream.scope_needed:" + alias + ":"
+	joined := strings.Join(scopes, ",")
+	if len(prefix)+len(joined) <= maxScopeNeededAction {
+		return prefix + joined
+	}
+	if len(prefix)+3 >= maxScopeNeededAction {
+		return prefix[:maxScopeNeededAction]
+	}
+	return prefix + joined[:maxScopeNeededAction-len(prefix)-3] + "..."
+}
+
+func (g *Gateway) recordScopeNeeded(ctx context.Context, c call, decLabel string, scopes []string) {
+	if g.Audit == nil {
+		return
+	}
+	ev := store.AuditEvent{
+		ID:       ids.New(),
+		CallID:   ids.New(),
+		Time:     time.Now(),
+		Actor:    c.p.Name,
+		ActorID:  c.p.TokenID,
+		UserID:   c.p.UserID,
+		Client:   c.p.Client,
+		Server:   c.item.Alias,
+		Item:     c.item.Name,
+		Action:   scopeNeededAction(c.item.Alias, scopes),
+		Decision: decLabel,
+		Outcome:  "refused",
+	}
+	if err := g.Audit.Admin(context.WithoutCancel(ctx), c.p.OrgID, ev); err != nil && g.Logger != nil {
+		g.Logger.Error("audit scope needed", "server", c.item.Alias, "err", err)
+	}
 }
 
 // sdkLocalCode reports the JSON-RPC codes the SDK raises itself (unknown error,

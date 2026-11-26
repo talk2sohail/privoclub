@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 
 	"privo.club/privo/internal/auth"
@@ -220,13 +221,79 @@ func (s *Server) connectTarget(w http.ResponseWriter, r *http.Request, sess stor
 	return srv, true
 }
 
+const maxUnionScopes = 50
+
+// resolveConnectScopes computes the OAuth scopes to ask for. When rawScope is
+// empty it uses the server's configured scopes. When rawScope is non-empty it
+// validates it, enforces the server's configured scope list (if non-empty),
+// and returns the deduplicated union of the person's existing grant scopes and
+// the requested scopes.
+func (s *Server) resolveConnectScopes(w http.ResponseWriter, r *http.Request, sess store.Session, u store.User, srv store.Server, rawScope string) (ask []string, requested string, ok bool) {
+	o := srv.Config.OAuth
+	if rawScope == "" {
+		return o.Scopes, "", true
+	}
+	reqScopes, valid := upstreamauth.ValidateScopes(rawScope)
+	if !valid {
+		s.pageFor(w, http.StatusBadRequest, sess, u, "Invalid scope", "The requested scope could not be used.")
+		return nil, "", false
+	}
+	if len(o.Scopes) > 0 {
+		for _, sc := range reqScopes {
+			if !slices.Contains(o.Scopes, sc) {
+				s.pageFor(w, http.StatusBadRequest, sess, u, "Scope not allowed", "One or more requested scopes are not enabled for this server.")
+				return nil, "", false
+			}
+		}
+	}
+	g, err := s.o.Store.Grant(r.Context(), s.o.Org, srv.ID, u.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		s.log.Error("web: look up grant", "server", srv.Alias, "err", err)
+		s.connectFailed(w, http.StatusInternalServerError, "Something went wrong on the server.")
+		return nil, "", false
+	}
+	var union []string
+	if err == nil && g.Scopes != "" {
+		for _, sc := range strings.Fields(g.Scopes) {
+			if _, valid := upstreamauth.ValidateScopes(sc); !valid {
+				continue
+			}
+			if len(o.Scopes) > 0 && !slices.Contains(o.Scopes, sc) {
+				continue
+			}
+			if !slices.Contains(union, sc) {
+				union = append(union, sc)
+			}
+		}
+	}
+	for _, sc := range reqScopes {
+		if !slices.Contains(union, sc) {
+			union = append(union, sc)
+		}
+	}
+	if len(union) > maxUnionScopes {
+		s.pageFor(w, http.StatusBadRequest, sess, u, "Invalid scope", "Too many scopes were requested together.")
+		return nil, "", false
+	}
+	return union, strings.Join(reqScopes, " "), true
+}
+
 // connectPage explains what connecting does. Its form posts to Privo, which
 // then redirects to the authorization server, so this page's CSP names that
 // server's origin in form-action (Chrome checks the redirect after a post).
 func (s *Server) connectPage(w http.ResponseWriter, r *http.Request) {
 	sess, u, ok := s.session(r)
 	if !ok {
-		redirect(w, "/admin/signin?next="+url.QueryEscape("/connect/"+r.PathValue("alias")))
+		alias := r.PathValue("alias")
+		next := "/connect/" + alias
+		if aliasRe.MatchString(alias) {
+			if raw := r.URL.Query().Get("scope"); raw != "" {
+				if scopes, valid := upstreamauth.ValidateScopes(raw); valid {
+					next += "?scope=" + encodeScopeQuery(scopes)
+				}
+			}
+		}
+		redirect(w, "/admin/signin?next="+url.QueryEscape(next))
 		return
 	}
 	srv, ok := s.connectTarget(w, r, sess, u)
@@ -240,12 +307,16 @@ func (s *Server) connectPage(w http.ResponseWriter, r *http.Request) {
 			Server: srv.Alias, AuthHost: hostOf(srv.Config.URL), KeyHelp: k.Help, KeyHelpURL: k.HelpURL, Connected: err == nil})
 		return
 	}
+	scopes, requested, ok := s.resolveConnectScopes(w, r, sess, u, srv, r.URL.Query().Get("scope"))
+	if !ok {
+		return
+	}
 	o := srv.Config.OAuth
 	if au, err := url.Parse(o.AuthorizationEndpoint); err == nil && au.Host != "" {
 		w.Header().Set("Content-Security-Policy", formActionRe.ReplaceAllString(s.csp, "form-action 'self' "+originOf(au)+";"))
 	}
 	s.render(w, http.StatusOK, "connect", pageData{Title: "Connect " + srv.Alias, User: view(u), CSRF: sess.CSRF,
-		Server: srv.Alias, AuthHost: hostOf(o.AuthorizationEndpoint), Scopes: strings.Join(o.Scopes, " ")})
+		Server: srv.Alias, AuthHost: hostOf(o.AuthorizationEndpoint), Scopes: strings.Join(scopes, " "), RequestedScope: requested})
 }
 
 // connectKey saves a person's own API key for a server that takes one (ADR
@@ -299,6 +370,10 @@ func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
 		s.pageFor(w, http.StatusNotFound, sess, u, "No such server", "There is no server with that name that uses sign-in with your own account.")
 		return
 	}
+	scopes, _, ok := s.resolveConnectScopes(w, r, sess, u, srv, r.PostForm.Get("scope"))
+	if !ok {
+		return
+	}
 	e, err := s.o.Grants.Endpoint(r.Context(), s.o.Org, srv)
 	state, err1 := randomSecret()
 	nonce, err2 := randomSecret()
@@ -308,7 +383,7 @@ func (s *Server) connectStart(w http.ResponseWriter, r *http.Request) {
 		s.connectFailed(w, http.StatusInternalServerError, "Something went wrong on the server.")
 		return
 	}
-	authURL, err := upstreamauth.AuthorizeURL(e, s.connectCallback, state, upstreamauth.Challenge(verifier), srv.Config.OAuth.Scopes)
+	authURL, err := upstreamauth.AuthorizeURL(e, s.connectCallback, state, upstreamauth.Challenge(verifier), scopes)
 	if err != nil {
 		s.log.Error("web: authorization URL", "server", srv.Alias, "err", err)
 		s.connectFailed(w, http.StatusInternalServerError, "The server's sign-in address is not usable. An administrator has to add it again.")

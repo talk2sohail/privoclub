@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -545,7 +546,142 @@ func TestParseBearer(t *testing.T) {
 	if code, _ := ParseBearerError(h2); code != "" {
 		t.Errorf("invalid error code kept: %q", code)
 	}
+	h3 := http.Header{"Www-Authenticate": {`Basic realm="x", Bearer error="insufficient_scope", scope="repo"`}}
+	if code, sc := ParseBearerError(h3); code != "insufficient_scope" || !slices.Equal(sc, []string{"repo"}) {
+		t.Errorf("comma-separated challenge = %q %v", code, sc)
+	}
 	_ = io.Discard
+}
+
+func TestParseInsufficientScopeChallenge(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers []string
+		want    []string
+	}{
+		{
+			name:    "single bearer challenge",
+			headers: []string{`Bearer error="insufficient_scope", scope="repo read:org"`},
+			want:    []string{"repo", "read:org"},
+		},
+		{
+			name:    "comma-separated after basic",
+			headers: []string{`Basic realm="x", Bearer error="insufficient_scope", scope="repo write:repo"`},
+			want:    []string{"repo", "write:repo"},
+		},
+		{
+			name:    "multiple headers",
+			headers: []string{`Bearer realm="mcp"`, `Bearer error="insufficient_scope", scope="write"`},
+			want:    []string{"write"},
+		},
+		{
+			name:    "comma-separated multiple bearer challenges",
+			headers: []string{`Bearer realm="mcp", Bearer error="insufficient_scope", scope="read write"`},
+			want:    []string{"read", "write"},
+		},
+		{
+			name:    "unquoted error and deduplicated scopes",
+			headers: []string{`Bearer error=insufficient_scope, scope="write read write admin"`},
+			want:    []string{"write", "read", "admin"},
+		},
+		{
+			name:    "quoted param containing fake bearer ignored",
+			headers: []string{`Bearer realm="a, Bearer error=\"invalid_token\"", error="insufficient_scope", scope="gist"`},
+			want:    []string{"gist"},
+		},
+		{
+			name: "exactly 32 scopes",
+			headers: []string{fmt.Sprintf(`Bearer error="insufficient_scope", scope="%s"`, strings.Join(func() []string {
+				s := make([]string, 32)
+				for i := range s {
+					s[i] = fmt.Sprintf("s%d", i)
+				}
+				return s
+			}(), " "))},
+			want: func() []string {
+				s := make([]string, 32)
+				for i := range s {
+					s[i] = fmt.Sprintf("s%d", i)
+				}
+				return s
+			}(),
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := http.Header{}
+			for _, v := range tc.headers {
+				h.Add("WWW-Authenticate", v)
+			}
+			got, ok := ParseInsufficientScope(h)
+			if !ok || !slices.Equal(got, tc.want) {
+				t.Fatalf("ParseInsufficientScope(%v) = %v, %v; want %v, true", tc.headers, got, ok, tc.want)
+			}
+		})
+	}
+
+	if err := (&InsufficientScopeError{Scopes: []string{"repo"}}).Error(); err != "upstream: insufficient scope" {
+		t.Fatalf("InsufficientScopeError.Error() = %q", err)
+	}
+}
+
+func TestMalformedScopeChallengeIsNotReflected(t *testing.T) {
+	tooMany := make([]string, 33)
+	for i := range tooMany {
+		tooMany[i] = fmt.Sprintf("s%d", i)
+	}
+	badHeaders := []struct {
+		name    string
+		headers []string
+	}{
+		{"empty", nil},
+		{"not insufficient_scope", []string{`Bearer error="invalid_token", scope="repo"`}},
+		{"no error", []string{`Bearer scope="repo"`}},
+		{"missing scope", []string{`Bearer error="insufficient_scope"`}},
+		{"empty scope", []string{`Bearer error="insufficient_scope", scope=""`}},
+		{"spaces only", []string{`Bearer error="insufficient_scope", scope="   "`}},
+		{"tab whitespace", []string{"Bearer error=\"insufficient_scope\", scope=\"repo\tgist\""}},
+		{"newline", []string{"Bearer error=\"insufficient_scope\", scope=\"repo\ngist\""}},
+		{"carriage return", []string{"Bearer error=\"insufficient_scope\", scope=\"repo\rgist\""}},
+		{"control char", []string{"Bearer error=\"insufficient_scope\", scope=\"repo\x00gist\""}},
+		{"escaped quote inside scope", []string{`Bearer error="insufficient_scope", scope="repo\"evil"`}},
+		{"escaped backslash inside scope", []string{`Bearer error="insufficient_scope", scope="repo\\evil"`}},
+		{"non-ascii", []string{"Bearer error=\"insufficient_scope\", scope=\"repo\u00e9\""}},
+		{"unclosed quote", []string{`Bearer error="insufficient_scope", scope="repo`}},
+		{"missing comma", []string{`Bearer error="insufficient_scope" scope="repo"`}},
+		{"unquoted multi-scope", []string{`Bearer error=insufficient_scope, scope=repo gist`}},
+		{"duplicate scope param", []string{`Bearer error="insufficient_scope", scope="repo", scope="admin"`}},
+		{"duplicate error param", []string{`Bearer error="insufficient_scope", error="invalid_token", scope="repo"`}},
+		{"ambiguous two insufficient_scope challenges", []string{`Bearer error="insufficient_scope", scope="repo"`, `Bearer error="insufficient_scope", scope="admin"`}},
+		{"over 32 scopes", []string{fmt.Sprintf(`Bearer error="insufficient_scope", scope="%s"`, strings.Join(tooMany, " "))}},
+		{"over 1024 bytes", []string{fmt.Sprintf(`Bearer error="insufficient_scope", scope="%s"`, strings.Repeat("a", 1025))}},
+		{"oversized header", []string{`Bearer error="insufficient_scope", scope="repo", extra="` + strings.Repeat("x", maxAuthHeaderBytes) + `"`}},
+	}
+	for _, tc := range badHeaders {
+		t.Run(tc.name, func(t *testing.T) {
+			h := http.Header{}
+			for _, v := range tc.headers {
+				h.Add("WWW-Authenticate", v)
+			}
+			if got, ok := ParseInsufficientScope(h); ok || got != nil {
+				t.Fatalf("ParseInsufficientScope(%v) = %v, %v; want nil, false", tc.headers, got, ok)
+			}
+		})
+	}
+	// InsufficientScopeError.Error() is fixed and never repeats header content.
+	e := &InsufficientScopeError{Scopes: []string{"secret_scope_value"}}
+	if strings.Contains(e.Error(), "secret_scope_value") {
+		t.Fatalf("Error() leaked scope: %q", e.Error())
+	}
+	// ValidateScopes directly rejects invalid characters and limits.
+	for _, raw := range []string{"", " ", "a\tb", "a\nb", "a\"b", "a\\b", "a\x7fb", strings.Repeat("a", 1025), strings.Join(tooMany, " ")} {
+		if got, ok := ValidateScopes(raw); ok || got != nil {
+			t.Errorf("ValidateScopes(%q) = %v, %v; want nil, false", raw, got, ok)
+		}
+	}
+	if got, ok := ValidateScopes("read write read"); !ok || !slices.Equal(got, []string{"read", "write"}) {
+		t.Errorf("ValidateScopes dedup = %v, %v", got, ok)
+	}
 }
 
 // ADR 0023: a server that publishes no protected resource metadata is told

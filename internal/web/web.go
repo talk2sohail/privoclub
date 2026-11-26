@@ -333,6 +333,7 @@ type pageData struct {
 	Person, Role     string
 	Server, AuthHost string
 	Scopes           string
+	RequestedScope   string
 }
 
 type userView struct {
@@ -394,8 +395,8 @@ func (s *Server) home(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) signInPage(w http.ResponseWriter, r *http.Request) {
-	next := r.URL.Query().Get("next")
-	if !s.returnOK(next) {
+	next, ok := s.safeReturnTo(r.URL.Query().Get("next"))
+	if !ok {
 		next = ""
 	}
 	if _, u, ok := s.session(r); ok {

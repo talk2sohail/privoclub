@@ -19,6 +19,7 @@ import (
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstream"
+	"privo.club/privo/internal/upstreamauth"
 )
 
 // ADR 0024: every call that reaches the decision stage leaves one statistic.
@@ -152,15 +153,16 @@ func TestAuditFailureIsCountedAndLogged(t *testing.T) {
 func TestErrorClasses(t *testing.T) {
 	g := &Gateway{BaseURL: "https://privo.example"}
 	for want, err := range map[string]error{
-		"":               nil,
-		"not_connected":  g.connectFirst("github"),
-		"no_account":     g.noAccount("github"),
-		"key_refused":    g.keyRefused("github"),
-		"timeout":        fmt.Errorf("%w (limit)", errCallTimeout),
-		"unavailable":    upstream.ErrUnavailable,
-		"malformed":      fmt.Errorf("%w: content 2", errMalformedReply),
-		"upstream_error": &jsonrpc.Error{Code: -32602, Message: "bad"},
-		"transport":      &jsonrpc.Error{Code: -32005, Message: "Post https://x?key=secret: refused"},
+		"":                   nil,
+		"not_connected":      g.connectFirst("github"),
+		"no_account":         g.noAccount("github"),
+		"key_refused":        g.keyRefused("github"),
+		"insufficient_scope": g.insufficientScope("github", []string{"repo"}),
+		"timeout":            fmt.Errorf("%w (limit)", errCallTimeout),
+		"unavailable":        upstream.ErrUnavailable,
+		"malformed":          fmt.Errorf("%w: content 2", errMalformedReply),
+		"upstream_error":     &jsonrpc.Error{Code: -32602, Message: "bad"},
+		"transport":          &jsonrpc.Error{Code: -32005, Message: "Post https://x?key=secret: refused"},
 	} {
 		if got := errorClass(err); got != want {
 			t.Errorf("errorClass(%v) = %q, want %q", err, got, want)
@@ -168,6 +170,9 @@ func TestErrorClasses(t *testing.T) {
 	}
 	if got := errorClass(fmt.Errorf("wrapped: %w", grants.ErrKeyRefused)); got != "key_refused" {
 		t.Errorf("a raw key refusal is %q", got)
+	}
+	if got := errorClass(fmt.Errorf("wrapped: %w", &upstreamauth.InsufficientScopeError{Scopes: []string{"repo"}})); got != "insufficient_scope" {
+		t.Errorf("a raw insufficient scope is %q", got)
 	}
 	// The class never carries the error's text.
 	if got := errorClass(errors.New("Post https://x?key=secret: refused")); got != "transport" {

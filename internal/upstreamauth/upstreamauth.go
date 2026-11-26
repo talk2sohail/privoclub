@@ -32,10 +32,15 @@ import (
 
 // Limits on what an upstream can make this process read or wait for.
 const (
-	MaxBody        = 256 << 10
-	DefaultTimeout = 10 * time.Second
-	maxScopes      = 50
-	maxScopeLen    = 200
+	MaxBody                   = 256 << 10
+	DefaultTimeout            = 10 * time.Second
+	maxScopes                 = 50
+	maxScopeLen               = 200
+	maxInsufficientScopes     = 32
+	maxInsufficientScopeBytes = 1024
+	maxAuthHeaderBytes        = 16 << 10
+	maxAuthChallenges         = 16
+	maxAuthParams             = 20
 )
 
 // Errors callers act on.
@@ -51,6 +56,15 @@ var (
 	// ErrInvalidClient: the client registration is no longer accepted.
 	ErrInvalidClient = errors.New("upstreamauth: the authorization server refused the client")
 )
+
+// InsufficientScopeError is returned when an upstream server answers 403 with a
+// Bearer insufficient_scope challenge carrying validated scopes.
+type InsufficientScopeError struct {
+	Scopes []string
+}
+
+// Error returns a fixed message and never echoes raw header content.
+func (e *InsufficientScopeError) Error() string { return "upstream: insufficient scope" }
 
 // Client makes the requests. HTTP should be the egress client.
 type Client struct {
@@ -185,40 +199,164 @@ func ParseBearerError(h http.Header) (code string, scopes []string) {
 	return ch.err, ch.scopes
 }
 
-func parseBearer(values []string) bearerChallenge {
-	var ch bearerChallenge
-	for _, v := range values {
-		scheme, rest, _ := strings.Cut(strings.TrimSpace(v), " ")
-		if !strings.EqualFold(scheme, "Bearer") {
+// ParseInsufficientScope scans WWW-Authenticate headers for a Bearer challenge
+// with error="insufficient_scope" and a valid non-empty scope parameter.
+// Malformed, empty, ambiguous, or oversized challenges return nil, false.
+func ParseInsufficientScope(h http.Header) ([]string, bool) {
+	challenges, tooBig := parseChallenges(h.Values("WWW-Authenticate"))
+	if tooBig {
+		return nil, false
+	}
+	var (
+		found []string
+		saw   bool
+	)
+	for _, c := range challenges {
+		if !strings.EqualFold(c.scheme, "Bearer") {
 			continue
 		}
-		params := parseAuthParams(rest)
-		ch.resourceMetadata = params["resource_metadata"]
-		ch.scopes = cleanScopes(strings.Fields(params["scope"]))
-		if e := params["error"]; oauthErrRe.MatchString(e) {
-			ch.err = e
+		if c.malformed {
+			return nil, false
 		}
-		break
+		if c.params["error"] != "insufficient_scope" {
+			continue
+		}
+		if c.dupKeys["error"] || c.dupKeys["scope"] {
+			return nil, false
+		}
+		scopes, ok := ValidateScopes(c.params["scope"])
+		if !ok || saw {
+			return nil, false
+		}
+		found, saw = scopes, true
+	}
+	if !saw {
+		return nil, false
+	}
+	return found, true
+}
+
+func parseBearer(values []string) bearerChallenge {
+	challenges, _ := parseChallenges(values)
+	var ch bearerChallenge
+	sawBearer := false
+	for _, c := range challenges {
+		if !strings.EqualFold(c.scheme, "Bearer") {
+			continue
+		}
+		rm := c.params["resource_metadata"]
+		sc := cleanScopes(strings.Fields(c.params["scope"]))
+		var errCode string
+		if e := c.params["error"]; oauthErrRe.MatchString(e) {
+			errCode = e
+		}
+		if !sawBearer {
+			ch = bearerChallenge{resourceMetadata: rm, scopes: sc, err: errCode}
+			sawBearer = true
+			continue
+		}
+		if ch.resourceMetadata == "" && rm != "" {
+			ch.resourceMetadata = rm
+		}
+		if ch.err == "" && errCode != "" {
+			ch.err = errCode
+			if len(sc) > 0 {
+				ch.scopes = sc
+			}
+		} else if len(ch.scopes) == 0 && len(sc) > 0 {
+			ch.scopes = sc
+		}
 	}
 	return ch
 }
 
-// parseAuthParams reads comma-separated name=value pairs where values may be
-// quoted strings with backslash escapes (RFC 9110 section 11.2).
-func parseAuthParams(s string) map[string]string {
-	out := map[string]string{}
-	for len(s) > 0 && len(out) < 20 {
-		s = strings.TrimLeft(s, " \t,")
-		eq := strings.IndexByte(s, '=')
-		if eq <= 0 {
+type rawChallenge struct {
+	scheme    string
+	params    map[string]string
+	dupKeys   map[string]bool
+	malformed bool
+}
+
+// parseChallenges splits WWW-Authenticate header values into HTTP challenges
+// (RFC 9110 §11.6.1), handling multiple headers and comma-separated
+// challenges while bounding total bytes and challenge count.
+func parseChallenges(values []string) (out []rawChallenge, tooBig bool) {
+	total := 0
+	for _, v := range values {
+		total += len(v)
+		if total > maxAuthHeaderBytes {
+			return nil, true
+		}
+		s := v
+		for len(s) > 0 {
+			s = strings.TrimLeft(s, " \t,")
+			if s == "" {
+				break
+			}
+			if len(out) >= maxAuthChallenges {
+				return nil, true
+			}
+			i := 0
+			for i < len(s) && isTokenChar(s[i]) {
+				i++
+			}
+			if i == 0 || (i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != ',') {
+				// Not a challenge scheme (for example an orphaned key=value): skip to next comma.
+				if strings.EqualFold(s[:i], "Bearer") {
+					out = append(out, rawChallenge{scheme: "Bearer", malformed: true})
+				}
+				next := skipUnquotedComma(s)
+				if next < 0 {
+					break
+				}
+				s = s[next+1:]
+				continue
+			}
+			ch := rawChallenge{scheme: s[:i], params: map[string]string{}}
+			s = strings.TrimLeft(s[i:], " \t")
+			if s != "" && !strings.HasPrefix(s, ",") {
+				if looksLikeParam(s) {
+					s, ch.malformed = parseChallengeParams(s, &ch)
+				} else {
+					// token68 or non-auth-param argument: skip until next unquoted comma.
+					next := skipUnquotedComma(s)
+					if next < 0 {
+						s = ""
+					} else {
+						s = s[next+1:]
+					}
+				}
+			}
+			out = append(out, ch)
+		}
+	}
+	return out, false
+}
+
+func parseChallengeParams(s string, ch *rawChallenge) (rest string, malformed bool) {
+	for steps := 0; len(s) > 0; steps++ {
+		if steps >= maxAuthParams {
+			return "", true
+		}
+		s = strings.TrimLeft(s, " \t")
+		if s == "" || !looksLikeParam(s) {
 			break
 		}
-		name := strings.ToLower(strings.TrimSpace(s[:eq]))
-		s = strings.TrimLeft(s[eq+1:], " \t")
+		tlen := 0
+		for tlen < len(s) && isTokenChar(s[tlen]) {
+			tlen++
+		}
+		eqPos := tlen
+		for eqPos < len(s) && (s[eqPos] == ' ' || s[eqPos] == '\t') {
+			eqPos++
+		}
+		name := strings.ToLower(s[:tlen])
+		s = strings.TrimLeft(s[eqPos+1:], " \t")
 		var val string
 		if strings.HasPrefix(s, `"`) {
 			var b strings.Builder
 			i := 1
+			closed := false
 			for ; i < len(s); i++ {
 				if s[i] == '\\' && i+1 < len(s) {
 					i++
@@ -226,28 +364,97 @@ func parseAuthParams(s string) map[string]string {
 					continue
 				}
 				if s[i] == '"' {
+					closed = true
 					break
 				}
 				b.WriteByte(s[i])
 			}
-			val = b.String()
-			if i < len(s) {
-				i++
+			if !closed {
+				return "", true
 			}
-			s = s[i:]
+			val = b.String()
+			s = strings.TrimLeft(s[i+1:], " \t")
+			if s != "" && !strings.HasPrefix(s, ",") {
+				return "", true
+			}
 		} else {
 			end := strings.IndexByte(s, ',')
 			if end < 0 {
 				end = len(s)
 			}
-			val = strings.TrimSpace(s[:end])
+			val = strings.TrimRight(s[:end], " \t")
+			if strings.ContainsAny(val, " \t\r\n\"") {
+				return "", true
+			}
 			s = s[end:]
 		}
-		if _, dup := out[name]; !dup {
-			out[name] = val
+		if _, dup := ch.params[name]; dup {
+			if ch.dupKeys == nil {
+				ch.dupKeys = map[string]bool{}
+			}
+			ch.dupKeys[name] = true
+		} else {
+			ch.params[name] = val
+		}
+		if !strings.HasPrefix(s, ",") {
+			break
+		}
+		s = strings.TrimLeft(s[1:], " \t")
+		if s == "" || !looksLikeParam(s) {
+			break
 		}
 	}
-	return out
+	return s, false
+}
+
+func looksLikeParam(s string) bool {
+	i := 0
+	for i < len(s) && isTokenChar(s[i]) {
+		i++
+	}
+	if i == 0 {
+		return false
+	}
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
+	}
+	return i < len(s) && s[i] == '='
+}
+
+func skipUnquotedComma(s string) int {
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		if inQuote {
+			if s[i] == '\\' && i+1 < len(s) {
+				i++
+				continue
+			}
+			if s[i] == '"' {
+				inQuote = false
+			}
+			continue
+		}
+		if s[i] == '"' {
+			inQuote = true
+			continue
+		}
+		if s[i] == ',' {
+			return i
+		}
+	}
+	return -1
+}
+
+// isTokenChar reports whether b is an HTTP token character (RFC 9110 §5.6.2).
+func isTokenChar(b byte) bool {
+	if (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9') {
+		return true
+	}
+	switch b {
+	case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
+		return true
+	}
+	return false
 }
 
 // resourceMetadata fetches the document named by the challenge, or tries the
@@ -705,6 +912,49 @@ func cleanScopes(in []string) []string {
 
 // CleanScopes keeps the valid, distinct scope tokens of in (at most 50).
 func CleanScopes(in []string) []string { return cleanScopes(in) }
+
+// ValidateScopes parses a space-delimited OAuth scope string using RFC 6749
+// §3.3 scope-token grammar (%x21 / %x23-5B / %x5D-7E), deduplicating while
+// preserving order and capping at 32 scopes and 1024 total bytes. It returns
+// nil, false if empty, oversized, or containing any invalid character,
+// non-space whitespace, or control character.
+func ValidateScopes(raw string) ([]string, bool) {
+	if raw == "" || len(raw) > maxInsufficientScopeBytes {
+		return nil, false
+	}
+	var out []string
+	for _, tok := range strings.Split(raw, " ") {
+		if tok == "" {
+			continue
+		}
+		if !isScopeToken(tok) {
+			return nil, false
+		}
+		if !slices.Contains(out, tok) {
+			if len(out) >= maxInsufficientScopes {
+				return nil, false
+			}
+			out = append(out, tok)
+		}
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}
+
+func isScopeToken(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+		if b != 0x21 && (b < 0x23 || b > 0x5b) && (b < 0x5d || b > 0x7e) {
+			return false
+		}
+	}
+	return true
+}
 
 // parseHTTPS accepts an https URL, or http on a loopback host (development and
 // tests; the egress policy still decides whether loopback may be dialled).

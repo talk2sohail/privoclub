@@ -371,13 +371,24 @@ func (b bearerRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err == nil && b.auth.key && resp.StatusCode == http.StatusForbidden {
 		resp.StatusCode = http.StatusUnauthorized // a key is refused the same way either answer
 	}
+	if err == nil && !b.auth.key && resp.StatusCode == http.StatusForbidden {
+		if scopes, ok := upstreamauth.ParseInsufficientScope(resp.Header); ok {
+			if resp.Body != nil {
+				_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+				_ = resp.Body.Close()
+			}
+			return nil, &upstreamauth.InsufficientScopeError{Scopes: scopes}
+		}
+	}
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}
 	// The 401 goes back to the caller unless one refresh gives a new token and
 	// the request can be sent again.
-	if code, _ := upstreamauth.ParseBearerError(resp.Header); code != "" && code != "invalid_token" {
-		return resp, nil
+	if !b.auth.key {
+		if code, _ := upstreamauth.ParseBearerError(resp.Header); code != "" && code != "invalid_token" {
+			return resp, nil
+		}
 	}
 	retry, fresh, rerr := b.retryable(r, tok)
 	if rerr != nil {

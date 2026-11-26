@@ -1,10 +1,13 @@
 package upstream
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,7 +16,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/store"
+	"privo.club/privo/internal/upstreamauth"
 )
 
 var errNoGrant = errors.New("no connected account")
@@ -443,3 +448,157 @@ func TestPooledSessionOfAnOlderVersionIsNotReused(t *testing.T) {
 		t.Fatal("the new session does not work")
 	}
 }
+
+type handlerRT struct{ h http.Handler }
+
+func (rt handlerRT) RoundTrip(r *http.Request) (*http.Response, error) {
+	rec := httptest.NewRecorder()
+	rt.h.ServeHTTP(rec, r)
+	return rec.Result(), nil
+}
+
+type trackedBody struct {
+	io.Reader
+	closed bool
+}
+
+func (b *trackedBody) Close() error {
+	b.closed = true
+	return nil
+}
+
+func TestInsufficientScopeKeepsExistingGrant(t *testing.T) {
+	srv := mcp.NewServer(&mcp.Implementation{Name: "linear", Version: "0"}, nil)
+	mcp.AddTool(srv, &mcp.Tool{Name: "whoami", Description: "Who is calling."},
+		func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "ada"}}}, nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: "write", Description: "Needs write scope."},
+		func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "wrote"}}}, nil, nil
+		})
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return srv }, nil)
+
+	var rejectChallenge atomic.Value
+	rejectChallenge.Store(`Bearer error="insufficient_scope", scope="write repo"`)
+	httpHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer ada-tok" && r.Header.Get("Authorization") != "Bearer boss-tok" {
+			w.Header().Set("WWW-Authenticate", `Bearer error="invalid_token"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		if bytes.Contains(body, []byte(`"name":"write"`)) {
+			if ch, _ := rejectChallenge.Load().(string); ch != "" {
+				w.Header().Set("WWW-Authenticate", ch)
+			}
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, "RAW_UPSTREAM_BODY_NEVER_LEAK")
+			return
+		}
+		mcpHandler.ServeHTTP(w, r)
+	})
+
+	g := &fakeGrants{tokens: map[string]string{"boss": "boss-tok", "ada": "ada-tok"}, catalog: "boss"}
+	fs := &fakeStore{servers: []store.Server{{OrgID: "o", ID: "s1", Alias: "linear", Transport: "http", Enabled: true,
+		Config: store.ServerConfig{URL: "https://linear.example/mcp", Auth: store.AuthOAuth, OAuth: &store.ServerOAuth{Resource: "https://linear.example/mcp"}}}}}
+	m := New(Options{Store: fs, HTTPClient: &http.Client{Transport: handlerRT{h: httpHandler}}, Grants: g, RetryBase: time.Hour, RetryMax: time.Hour, ConnectTimeout: 5 * time.Second})
+	defer m.Close()
+	if err := m.Sync(context.Background(), "o"); err != nil {
+		t.Fatal(err)
+	}
+	m.WaitSettled(context.Background(), "s1", 5*time.Second)
+
+	ctx := context.Background()
+	sa, err := m.PersonSession(ctx, "o", "s1", "ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if who := whoami(t, sa); who != "ada" {
+		t.Fatalf("whoami before 403 = %q", who)
+	}
+	_, err = sa.CallTool(ctx, &mcp.CallToolParams{Name: "write"})
+	var scopeErr *upstreamauth.InsufficientScopeError
+	if !errors.As(err, &scopeErr) {
+		t.Fatalf("CallTool(write) err = %v, want InsufficientScopeError", err)
+	}
+	if !slices.Equal(scopeErr.Scopes, []string{"write", "repo"}) {
+		t.Fatalf("InsufficientScopeError.Scopes = %v, want [write repo]", scopeErr.Scopes)
+	}
+	if strings.Contains(err.Error(), "RAW_UPSTREAM_BODY_NEVER_LEAK") {
+		t.Fatalf("body leaked into error: %v", err)
+	}
+	// Existing grant was kept and never refreshed or deleted.
+	if g.refreshes.Load() != 0 {
+		t.Fatalf("refreshes = %d, want 0 on insufficient_scope", g.refreshes.Load())
+	}
+	if tok, gerr := g.AccessToken(ctx, "o", store.Server{}, "ada"); gerr != nil || tok != "ada-tok" {
+		t.Fatalf("existing grant altered: %q, %v", tok, gerr)
+	}
+	if who := whoami(t, sa); who != "ada" {
+		t.Fatalf("whoami after 403 = %q, want existing grant and session to keep working", who)
+	}
+
+	// Malformed 403 header does not produce InsufficientScopeError or reflect content.
+	for _, bad := range []string{
+		"Bearer error=\"insufficient_scope\", scope=\"bad\tMALFORMED\"",
+		`Bearer error="insufficient_scope", scope="bad\\MALFORMED"`,
+		`Bearer error="insufficient_scope", scope="MALFORMED`,
+	} {
+		rejectChallenge.Store(bad)
+		_, err = sa.CallTool(ctx, &mcp.CallToolParams{Name: "write"})
+		if errors.As(err, &scopeErr) {
+			t.Fatalf("malformed scope challenge %q produced InsufficientScopeError: %+v", bad, scopeErr)
+		}
+		if err != nil && strings.Contains(err.Error(), "MALFORMED") {
+			t.Fatalf("malformed header %q reflected in error: %v", bad, err)
+		}
+	}
+
+	// Response body is drained and closed on 403 insufficient_scope.
+	tb := &trackedBody{Reader: strings.NewReader("ignored body")}
+	rt := bearerRT{
+		next: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     http.Header{"Www-Authenticate": {`Bearer error="insufficient_scope", scope="gist"`}},
+				Body:       tb,
+			}, nil
+		}),
+		auth: &bearer{header: header{name: "Authorization", prefix: "Bearer "}, token: func(context.Context) (string, error) { return "tok", nil }},
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://linear.example/mcp", nil)
+	_, err = rt.RoundTrip(req)
+	if !errors.As(err, &scopeErr) || !slices.Equal(scopeErr.Scopes, []string{"gist"}) || !tb.closed {
+		t.Fatalf("bearerRT body close/err = %v (closed=%v)", err, tb.closed)
+	}
+
+	// Personal API keys keep 403 -> 401 -> ErrKeyRefused untouched, even if the header looks like insufficient_scope.
+	keyRT := bearerRT{
+		next: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     http.Header{"Www-Authenticate": {`Bearer error="insufficient_scope", scope="gist"`}},
+				Body:       io.NopCloser(strings.NewReader("refused")),
+			}, nil
+		}),
+		auth: &bearer{
+			header:  header{name: "X-Api-Key"},
+			key:     true,
+			token:   func(context.Context) (string, error) { return "k", nil },
+			refresh: func(context.Context, string) (string, error) { return "", grants.ErrKeyRefused },
+		},
+	}
+	_, err = keyRT.RoundTrip(req)
+	if !errors.Is(err, grants.ErrKeyRefused) {
+		t.Fatalf("key 403 err = %v, want ErrKeyRefused", err)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
