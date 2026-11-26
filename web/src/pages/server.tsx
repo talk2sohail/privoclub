@@ -62,7 +62,7 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
       </h1>
       <p class="meta">
         {current.target} · {current.transport} · {authLabel(current.auth)} sign-in · {items.tool ?? 0} tools, {items.prompt ?? 0} prompts,{" "}
-        {items.resource ?? 0} resources
+        {items.resource ?? 0} resources, {items.resource_template ?? 0} templates
       </p>
       {current.error && <p class="flash warn">{current.error}</p>}
       {current.auth === "oauth" && current.connect_url && (
@@ -127,7 +127,7 @@ export function Server({ alias, session }: PageProps & { alias: string }) {
         </details>
       )}
       {session.can.teams && <Access srv={current} />}
-      {session.can.servers && (current.teams ?? []).length > 0 && <Toolsets srv={current} tools={toolNames(accepted)} />}
+      {session.can.servers && (current.teams ?? []).length > 0 && <Toolsets srv={current} accepted={accepted} />}
       {(current.auth === "oauth" || current.auth === "key") && <Connected alias={alias} />}
       {current.transport !== "stdio" && <Edit key={current.alias + current.target} srv={current} />}
       <Settings srv={current} />
@@ -272,73 +272,128 @@ function Access({ srv }: { srv: ServerView }) {
   );
 }
 
-/** toolNames are the distinct names of the accepted tools, sorted. */
-function toolNames(accepted: Pin[]): string[] {
-  return [...new Set(accepted.filter((p) => p.kind === "tool").map((p) => p.name))].sort();
+type ToolsetKind = {
+  pinKind: string;
+  apiKey: "tools" | "prompts" | "resources" | "resource_templates";
+  viewKey: "team_tools" | "team_prompts" | "team_resources" | "team_templates";
+  heading: string;
+  plural: string;
+};
+
+const TOOLSET_KINDS: readonly ToolsetKind[] = [
+  { pinKind: "tool", apiKey: "tools", viewKey: "team_tools", heading: "Tools", plural: "tools" },
+  { pinKind: "prompt", apiKey: "prompts", viewKey: "team_prompts", heading: "Prompts", plural: "prompts" },
+  { pinKind: "resource", apiKey: "resources", viewKey: "team_resources", heading: "Resources", plural: "resources" },
+  { pinKind: "resource_template", apiKey: "resource_templates", viewKey: "team_templates", heading: "Resource templates", plural: "resource templates" },
+];
+
+/** namesOfKind are the distinct names of accepted pins of kind, sorted. */
+function namesOfKind(accepted: Pin[], kind: string): string[] {
+  return [...new Set(accepted.filter((p) => p.kind === kind).map((p) => p.name))].sort();
 }
 
-// Toolsets (ADR 0026): per team, all of this server's tools or only some.
-function Toolsets({ srv, tools }: { srv: ServerView; tools: string[] }) {
+// Toolsets (ADR 0026): per team and item kind, all items or only chosen ones.
+function Toolsets({ srv, accepted }: { srv: ServerView; accepted: Pin[] }) {
   const teams = useData<{ teams: Team[] }>("/v1/teams");
   const names = new Map((teams.data?.teams ?? []).map((t) => [t.slug, t.name]));
+  const byKind: Record<string, string[]> = {};
+  for (const k of TOOLSET_KINDS) {
+    byKind[k.pinKind] = namesOfKind(accepted, k.pinKind);
+  }
   return (
     <section class="card">
-      <h2>Which tools each team sees</h2>
+      <h2>What each team sees</h2>
       <p class="meta">
-        A team sees all of this server's tools unless you choose some. A person in several teams sees what any of them sees. New tools stay hidden from a
-        team that sees only some, until you choose them. Prompts and resources are not narrowed: every team on the server sees them.
+        A team sees all of this server's tools, prompts, resources and resource templates unless you choose some. A person in several teams sees what any of
+        them sees. New items stay hidden from a narrowed team until you choose them.
       </p>
       {(srv.teams ?? []).map((slug) => (
-        <TeamToolset key={slug} alias={srv.alias} slug={slug} name={names.get(slug) ?? slug} saved={srv.team_tools?.[slug] ?? null} tools={tools} />
+        <TeamToolset key={slug} srv={srv} slug={slug} name={names.get(slug) ?? slug} byKind={byKind} />
       ))}
     </section>
   );
 }
 
-function TeamToolset({ alias, slug, name, saved, tools }: { alias: string; slug: string; name: string; saved: string[] | null; tools: string[] }) {
-  // null: all tools; a list: only those.
-  const [draft, setDraft] = useState<string[] | null | undefined>(undefined);
+function sameToolset(a: string[] | null, b: string[] | null): boolean {
+  const norm = (x: string[] | null) => (x === null ? null : [...x].sort());
+  return JSON.stringify(norm(a)) === JSON.stringify(norm(b));
+}
+
+function TeamToolset({ srv, slug, name, byKind }: { srv: ServerView; slug: string; name: string; byKind: Record<string, string[]> }) {
+  const [drafts, setDrafts] = useState<Partial<Record<ToolsetKind["apiKey"], string[] | null>>>({});
   const [busy, run] = useAction();
-  const current = draft === undefined ? saved : draft;
-  const changed = draft !== undefined && JSON.stringify(draft === null ? null : [...draft].sort()) !== JSON.stringify(saved === null ? null : [...saved].sort());
-  const offered = [...new Set([...tools, ...(current ?? [])])].sort();
+
+  const changedKinds = TOOLSET_KINDS.filter((k) => {
+    const draft = drafts[k.apiKey];
+    if (draft === undefined) return false;
+    const saved = srv[k.viewKey]?.[slug] ?? null;
+    return !sameToolset(draft, saved);
+  });
+  const changed = changedKinds.length > 0;
+
   const save = () =>
     void run(async () => {
-      await api("PATCH", "/v1/servers/" + seg(alias) + "/teams/" + seg(slug), { tools: current === null ? null : [...current].sort() });
+      const body: Record<string, string[] | null> = {};
+      for (const k of changedKinds) {
+        const cur = drafts[k.apiKey];
+        if (cur !== undefined) {
+          body[k.apiKey] = cur === null ? null : [...cur].sort();
+        }
+      }
+      await api("PATCH", "/v1/servers/" + seg(srv.alias) + "/teams/" + seg(slug), body);
       invalidate("/v1/servers");
-      setDraft(undefined);
+      setDrafts({});
     }, "Saved. " + name + " sees the change at its next request.");
+
   return (
     <fieldset>
       <legend>{name}</legend>
-      <label class="inline">
-        <input type="radio" name={"toolset-" + slug} checked={current === null} onChange={() => setDraft(null)} /> All tools
-      </label>
-      <label class="inline">
-        <input type="radio" name={"toolset-" + slug} checked={current !== null} onChange={() => setDraft(current ?? [])} /> Only these
-      </label>
-      {current !== null && (
-        <div class="stack">
-          {offered.length === 0 && <p class="meta">This server has no reviewed tools yet.</p>}
-          {offered.map((tool) => (
-            <label class="inline" key={tool}>
-              <input
-                type="checkbox"
-                checked={current.includes(tool)}
-                aria-label={name + ": " + tool}
-                onChange={(e) =>
-                  setDraft((e.currentTarget as HTMLInputElement).checked ? [...current, tool] : current.filter((t) => t !== tool))
-                }
-              />{" "}
-              <code>{tool}</code>
-              {!tools.includes(tool) && <small class="meta"> not offered now</small>}
+      {TOOLSET_KINDS.map((k) => {
+        const saved = srv[k.viewKey]?.[slug] ?? null;
+        const draft = drafts[k.apiKey];
+        const current = draft !== undefined ? draft : saved;
+        const available = byKind[k.pinKind] ?? [];
+        const offered = [...new Set([...available, ...(current ?? [])])].sort();
+        const radioName = "toolset-" + slug + "-" + k.apiKey;
+        const setKind = (next: string[] | null) => setDrafts((prev) => ({ ...prev, [k.apiKey]: next }));
+        return (
+          <fieldset key={k.apiKey}>
+            <legend>{k.heading}</legend>
+            <label class="inline">
+              <input type="radio" name={radioName} checked={current === null} onChange={() => setKind(null)} /> All {k.plural}
             </label>
-          ))}
-          {current.length === 0 && <p class="flash warn">{name} will see none of this server's tools.</p>}
-        </div>
-      )}
+            <label class="inline">
+              <input type="radio" name={radioName} checked={current !== null} onChange={() => setKind(current ?? [])} /> Only these
+            </label>
+            {current !== null && (
+              <div class="stack">
+                {offered.length === 0 && <p class="meta">This server has no reviewed {k.plural} yet.</p>}
+                {offered.map((item) => (
+                  <label class="inline" key={item}>
+                    <input
+                      type="checkbox"
+                      checked={current.includes(item)}
+                      aria-label={name + ": " + item}
+                      onChange={(e) =>
+                        setKind((e.currentTarget as HTMLInputElement).checked ? [...current, item] : current.filter((x) => x !== item))
+                      }
+                    />{" "}
+                    <code>{item}</code>
+                    {!available.includes(item) && <small class="meta"> not offered now</small>}
+                  </label>
+                ))}
+                {current.length === 0 && (
+                  <p class="flash warn">
+                    {name} will see none of this server's {k.plural}.
+                  </p>
+                )}
+              </div>
+            )}
+          </fieldset>
+        );
+      })}
       <div class="actions">
-        <button type="button" class="primary small" aria-label={"Save the tools " + name + " sees"} disabled={busy || !changed} onClick={save}>
+        <button type="button" class="primary small" aria-label={"Save what " + name + " sees"} disabled={busy || !changed} onClick={save}>
           Save
         </button>
       </div>

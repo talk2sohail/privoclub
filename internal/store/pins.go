@@ -14,10 +14,10 @@ const (
 	PinBlocked  = "blocked"
 )
 
-// Pin is the reviewed state of one tool, prompt or resource definition.
+// Pin is the reviewed state of one tool, prompt, resource or resource template definition.
 type Pin struct {
 	ServerID   string
-	Kind       string // tool | prompt | resource
+	Kind       string // tool | prompt | resource | resource_template
 	Name       string
 	Hash       string
 	Definition string

@@ -16,6 +16,9 @@ export type ServerView = {
   key_header?: string;
   teams?: string[];
   team_tools?: Record<string, string[]>; // narrowed teams' tools (ADR 0026); admins only
+  team_prompts?: Record<string, string[]>;
+  team_resources?: Record<string, string[]>;
+  team_templates?: Record<string, string[]>;
   // For editing (ADR 0029), admins only: never a value or a secret.
   header_names?: string[];
   client_id?: string;

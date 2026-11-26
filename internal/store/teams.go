@@ -312,13 +312,25 @@ func (s *Store) ServerTeams(ctx context.Context, org OrgID) (map[string][]string
 	return out, rows.Err()
 }
 
+// Item kinds for per-kind toolsets (F08).
+const (
+	ItemKindTool             = "tool"
+	ItemKindPrompt           = "prompt"
+	ItemKindResource         = "resource"
+	ItemKindResourceTemplate = "resource_template"
+)
+
 // Access is what one caller reaches: the ids of the servers and the teams
 // they are in ("everyone" included when they are in it).
 type Access struct {
 	Servers map[string]bool
-	// Tools holds, for a server whose every reaching team is narrowed, the
-	// tool names the caller sees (ADR 0026). A server not in it shows all.
+	// Tools holds, for a server whose every reaching team is narrowed on tools,
+	// the tool names the caller sees (ADR 0026). A server not in it shows all.
 	Tools map[string]map[string]bool
+	// Items holds, per server and item kind, the names the caller sees when
+	// every reaching team is narrowed on that kind. A missing (serverID, kind)
+	// pair shows all accepted items of that kind.
+	Items map[string]map[string]map[string]bool
 	Teams []string
 	// Roles are the member's current roles, read with their access (ADR
 	// 0021); nil for a caller who is no member or a removed one.
@@ -330,11 +342,25 @@ func (a Access) Reaches(serverID string) bool { return a.Servers[serverID] }
 
 // SeesTool reports whether the caller sees a tool of a server they reach.
 func (a Access) SeesTool(serverID, name string) bool {
+	return a.SeesItem(serverID, ItemKindTool, name)
+}
+
+// SeesItem reports whether the caller sees an item of kind on a server they reach.
+func (a Access) SeesItem(serverID, kind, name string) bool {
 	if !a.Reaches(serverID) {
 		return false
 	}
-	set, narrowed := a.Tools[serverID]
-	return !narrowed || set[name]
+	if byKind, ok := a.Items[serverID]; ok {
+		if set, narrowed := byKind[kind]; narrowed {
+			return set[name]
+		}
+	}
+	if kind == ItemKindTool {
+		if set, narrowed := a.Tools[serverID]; narrowed {
+			return set[name]
+		}
+	}
+	return true
 }
 
 // AccessFor returns what a caller reaches. userID is the caller's member, or
@@ -372,45 +398,73 @@ func (s *Store) AccessFor(ctx context.Context, org OrgID, userID string) (Access
 			return Access{}, err
 		}
 	}
-	// A server shows all its tools when any reaching team is not narrowed;
-	// otherwise the union of the reaching teams' lists (ADR 0026).
+	// A server shows all items of a kind when any reaching team is not narrowed
+	// on that kind; otherwise the union of the reaching teams' lists (ADR 0026).
 	const reaching = `org_id = ? AND (team = 'everyone' OR team IN (SELECT team FROM team_members WHERE org_id = ? AND user_id = ?))`
-	rows, err := s.r.QueryContext(ctx, `SELECT server_id, MIN(narrowed) FROM server_teams WHERE `+reaching+` GROUP BY server_id`, org, org, userID)
+	rows, err := s.r.QueryContext(ctx, `
+		SELECT server_id, MIN(narrowed), MIN(narrowed_prompts), MIN(narrowed_resources), MIN(narrowed_templates)
+		FROM server_teams WHERE `+reaching+` GROUP BY server_id`, org, org, userID)
 	if err != nil {
 		return Access{}, err
 	}
 	for rows.Next() {
 		var id string
-		var narrowed bool
-		if err := rows.Scan(&id, &narrowed); err != nil {
+		var nTools, nPrompts, nResources, nTemplates bool
+		if err := rows.Scan(&id, &nTools, &nPrompts, &nResources, &nTemplates); err != nil {
 			_ = rows.Close()
 			return Access{}, err
 		}
 		a.Servers[id] = true
-		if narrowed {
+		mark := func(kind string) {
+			if a.Items == nil {
+				a.Items = map[string]map[string]map[string]bool{}
+			}
+			if a.Items[id] == nil {
+				a.Items[id] = map[string]map[string]bool{}
+			}
+			a.Items[id][kind] = map[string]bool{}
+		}
+		if nTools {
+			mark(ItemKindTool)
 			if a.Tools == nil {
 				a.Tools = map[string]map[string]bool{}
 			}
 			a.Tools[id] = map[string]bool{}
+		}
+		if nPrompts {
+			mark(ItemKindPrompt)
+		}
+		if nResources {
+			mark(ItemKindResource)
+		}
+		if nTemplates {
+			mark(ItemKindResourceTemplate)
 		}
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return Access{}, err
 	}
-	if len(a.Tools) > 0 {
-		trows, err := s.r.QueryContext(ctx, `SELECT server_id, name FROM server_team_tools WHERE `+reaching, org, org, userID)
+	if len(a.Items) > 0 {
+		trows, err := s.r.QueryContext(ctx, `SELECT server_id, kind, name FROM server_team_tools WHERE `+reaching, org, org, userID)
 		if err != nil {
 			return Access{}, err
 		}
 		defer func() { _ = trows.Close() }()
 		for trows.Next() {
-			var id, name string
-			if err := trows.Scan(&id, &name); err != nil {
+			var id, kind, name string
+			if err := trows.Scan(&id, &kind, &name); err != nil {
 				return Access{}, err
 			}
-			if set, ok := a.Tools[id]; ok {
-				set[name] = true
+			if byKind, ok := a.Items[id]; ok {
+				if set, narrowed := byKind[kind]; narrowed {
+					set[name] = true
+				}
+			}
+			if kind == ItemKindTool {
+				if set, ok := a.Tools[id]; ok {
+					set[name] = true
+				}
 			}
 		}
 		if err := trows.Err(); err != nil {
@@ -421,39 +475,99 @@ func (s *Store) AccessFor(ctx context.Context, org OrgID, userID string) (Access
 	return a, nil
 }
 
-// MaxTeamTools bounds one team's list of tools on a server.
+// MaxTeamTools bounds one team's list of items of one kind on a server.
 const MaxTeamTools = 1000
+
+// TeamToolset holds the narrowed item lists of one team on one server, by kind.
+// A nil slice means all items of that kind are visible; a non-nil empty slice
+// means none.
+type TeamToolset struct {
+	Tools     []string
+	Prompts   []string
+	Resources []string
+	Templates []string
+}
+
+func setNarrowedQuery(kind string) (string, error) {
+	switch kind {
+	case ItemKindTool:
+		return `UPDATE server_teams SET narrowed = ? WHERE org_id = ? AND server_id = ? AND team = ?`, nil
+	case ItemKindPrompt:
+		return `UPDATE server_teams SET narrowed_prompts = ? WHERE org_id = ? AND server_id = ? AND team = ?`, nil
+	case ItemKindResource:
+		return `UPDATE server_teams SET narrowed_resources = ? WHERE org_id = ? AND server_id = ? AND team = ?`, nil
+	case ItemKindResourceTemplate:
+		return `UPDATE server_teams SET narrowed_templates = ? WHERE org_id = ? AND server_id = ? AND team = ?`, nil
+	default:
+		return "", errors.New("store: invalid toolset item kind")
+	}
+}
 
 // SetTeamTools sets which tools of a server a team sees (ADR 0026): nil for
 // all of them, otherwise exactly the names given (none when empty). The team
 // must be on the server (ErrNotFound otherwise). It writes ev with the change.
 func (s *Store) SetTeamTools(ctx context.Context, org OrgID, serverID, team string, tools []string, ev AuditEvent) error {
-	if len(tools) > MaxTeamTools {
-		return errors.New("store: too many tools")
+	return s.SetTeamItemTools(ctx, org, serverID, team, ItemKindTool, tools, ev)
+}
+
+// SetTeamItemTools sets which items of kind on a server a team sees: nil for
+// all of them, otherwise exactly the names given (none when empty). The team
+// must be on the server (ErrNotFound otherwise). It writes ev with the change.
+func (s *Store) SetTeamItemTools(ctx context.Context, org OrgID, serverID, team, kind string, names []string, ev AuditEvent) error {
+	return s.SetTeamToolsets(ctx, org, serverID, team, map[string][]string{kind: names}, ev)
+}
+
+// SetTeamToolsets updates one or more item-kind toolsets for a team on a server
+// in one transaction and writes evs with the change.
+func (s *Store) SetTeamToolsets(ctx context.Context, org OrgID, serverID, team string, updates map[string][]string, evs ...AuditEvent) error {
+	if len(updates) == 0 {
+		return nil
 	}
-	ev.Phase = "admin"
+	for kind, names := range updates {
+		if _, err := setNarrowedQuery(kind); err != nil {
+			return err
+		}
+		if len(names) > MaxTeamTools {
+			return errors.New("store: too many tools")
+		}
+	}
+	for i := range evs {
+		evs[i].Phase = "admin"
+	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		narrowed := 0
-		if tools != nil {
-			narrowed = 1
-		}
-		res, err := tx.ExecContext(ctx, `UPDATE server_teams SET narrowed = ? WHERE org_id = ? AND server_id = ? AND team = ?`, narrowed, org, serverID, team)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n != 1 {
+		var one int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM server_teams WHERE org_id = ? AND server_id = ? AND team = ?`, org, serverID, team).Scan(&one); errors.Is(err, sql.ErrNoRows) {
 			return ErrNotFound
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM server_team_tools WHERE org_id = ? AND server_id = ? AND team = ?`, org, serverID, team); err != nil {
+		} else if err != nil {
 			return err
 		}
-		for _, name := range tools {
-			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO server_team_tools (org_id, server_id, team, name) VALUES (?, ?, ?, ?)`,
-				org, serverID, team, name); err != nil {
+		for _, kind := range []string{ItemKindTool, ItemKindPrompt, ItemKindResource, ItemKindResourceTemplate} {
+			names, ok := updates[kind]
+			if !ok {
+				continue
+			}
+			q, _ := setNarrowedQuery(kind)
+			narrowed := 0
+			if names != nil {
+				narrowed = 1
+			}
+			if _, err := tx.ExecContext(ctx, q, narrowed, org, serverID, team); err != nil {
 				return err
 			}
+			if _, err := tx.ExecContext(ctx, `DELETE FROM server_team_tools WHERE org_id = ? AND server_id = ? AND team = ? AND kind = ?`, org, serverID, team, kind); err != nil {
+				return err
+			}
+			for _, name := range names {
+				if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO server_team_tools (org_id, server_id, team, kind, name) VALUES (?, ?, ?, ?, ?)`,
+					org, serverID, team, kind, name); err != nil {
+					return err
+				}
+			}
 		}
-		return insertAudit(ctx, tx, org, []AuditEvent{ev})
+		if len(evs) == 0 {
+			return nil
+		}
+		return insertAudit(ctx, tx, org, evs)
 	})
 }
 
@@ -461,39 +575,98 @@ func (s *Store) SetTeamTools(ctx context.Context, org OrgID, serverID, team stri
 // then the sorted tool names (an empty, non-nil list means none). Teams that
 // see all of a server's tools are not in it.
 func (s *Store) TeamTools(ctx context.Context, org OrgID) (map[string]map[string][]string, error) {
+	all, err := s.TeamToolsets(ctx, org)
+	if err != nil {
+		return nil, err
+	}
 	out := map[string]map[string][]string{}
-	rows, err := s.r.QueryContext(ctx, `SELECT server_id, team FROM server_teams WHERE org_id = ? AND narrowed = 1`, org)
+	for id, byTeam := range all {
+		for team, ts := range byTeam {
+			if ts.Tools == nil {
+				continue
+			}
+			if out[id] == nil {
+				out[id] = map[string][]string{}
+			}
+			out[id][team] = ts.Tools
+		}
+	}
+	return out, nil
+}
+
+// TeamToolsets returns the narrowed per-kind toolsets of an org, keyed by
+// server id then team. Teams that see all items of every kind are omitted.
+func (s *Store) TeamToolsets(ctx context.Context, org OrgID) (map[string]map[string]TeamToolset, error) {
+	out := map[string]map[string]TeamToolset{}
+	rows, err := s.r.QueryContext(ctx, `
+		SELECT server_id, team, narrowed, narrowed_prompts, narrowed_resources, narrowed_templates
+		FROM server_teams
+		WHERE org_id = ? AND (narrowed = 1 OR narrowed_prompts = 1 OR narrowed_resources = 1 OR narrowed_templates = 1)`, org)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var id, team string
-		if err := rows.Scan(&id, &team); err != nil {
+		var nTools, nPrompts, nResources, nTemplates bool
+		if err := rows.Scan(&id, &team, &nTools, &nPrompts, &nResources, &nTemplates); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
-		if out[id] == nil {
-			out[id] = map[string][]string{}
+		var ts TeamToolset
+		if nTools {
+			ts.Tools = []string{}
 		}
-		out[id][team] = []string{}
+		if nPrompts {
+			ts.Prompts = []string{}
+		}
+		if nResources {
+			ts.Resources = []string{}
+		}
+		if nTemplates {
+			ts.Templates = []string{}
+		}
+		if out[id] == nil {
+			out[id] = map[string]TeamToolset{}
+		}
+		out[id][team] = ts
 	}
 	_ = rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	trows, err := s.r.QueryContext(ctx, `SELECT server_id, team, name FROM server_team_tools WHERE org_id = ? ORDER BY server_id, team, name`, org)
+	trows, err := s.r.QueryContext(ctx, `SELECT server_id, team, kind, name FROM server_team_tools WHERE org_id = ? ORDER BY server_id, team, kind, name`, org)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = trows.Close() }()
 	for trows.Next() {
-		var id, team, name string
-		if err := trows.Scan(&id, &team, &name); err != nil {
+		var id, team, kind, name string
+		if err := trows.Scan(&id, &team, &kind, &name); err != nil {
 			return nil, err
 		}
-		if l, ok := out[id][team]; ok {
-			out[id][team] = append(l, name)
+		ts, ok := out[id][team]
+		if !ok {
+			continue
 		}
+		switch kind {
+		case ItemKindTool:
+			if ts.Tools != nil {
+				ts.Tools = append(ts.Tools, name)
+			}
+		case ItemKindPrompt:
+			if ts.Prompts != nil {
+				ts.Prompts = append(ts.Prompts, name)
+			}
+		case ItemKindResource:
+			if ts.Resources != nil {
+				ts.Resources = append(ts.Resources, name)
+			}
+		case ItemKindResourceTemplate:
+			if ts.Templates != nil {
+				ts.Templates = append(ts.Templates, name)
+			}
+		}
+		out[id][team] = ts
 	}
 	return out, trows.Err()
 }

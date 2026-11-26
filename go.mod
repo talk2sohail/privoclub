@@ -8,6 +8,7 @@ require (
 	authelia.com/provider/oauth2 v0.3.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/pressly/goose/v3 v3.29.0
+	github.com/yosida95/uritemplate/v3 v3.0.2
 	go.yaml.in/yaml/v3 v3.0.5
 	modernc.org/sqlite v1.61.0
 )
@@ -29,7 +30,6 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/sethvargo/go-retry v0.5.0 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
-	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/net v0.61.0 // indirect

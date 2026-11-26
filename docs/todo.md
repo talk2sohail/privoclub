@@ -60,7 +60,8 @@ ADRs: 0001, 0004
 - [ ] Production stdio runner (F13); local runner is development only and now needs PRIVO_INSECURE_LOCAL_RUNNER=i-understand
 - [x] Public names `<alias>__<name>` within 46 characters, normalised with hash suffix; aliases `^[a-z][a-z0-9-]{1,15}$`
 - [ ] Persist the alias table (names are computed deterministically today)
-- [ ] Resource URI rewriting with templates intact; subscriptions fan-out
+- [x] Resource URI rewriting with templates intact (`resources/templates/list`, template-backed `resources/read`, pinned as `resource_template`, `MethodNotFound` fallback, traversal/alias isolation); tests: `TestLoadResourceTemplates*`, `TestResourceTemplateURI`, `TestResourceTemplatesRewrittenWithExpressionsIntact`, `TestReadResourceMatchesAcceptedTemplateOnly`, acceptance `TestResourceTemplatesEndToEnd`
+- [ ] Resource subscriptions fan-out
 - [ ] Pipeline as pluggable hooks (stages exist inline today: resolve, pin check, args digest, decide=allow, intent, call, completion); List, Transform, Decision, After hooks and observers
 - [x] Validate arguments against the pinned input schema (spec below, 2026-11-22; 0.20.0)
 - [ ] Server-to-client requests: elicitation forwarding, sampling refused, roots from config
@@ -773,27 +774,27 @@ Tasks and the tests that name them:
 - [x] Acceptance: `TestToolsetsLimitWhatATeamSees` (a designer lists the one chosen tool while a developer lists both; a call on the hidden one answers like an unknown name; Start counts what the designer sees; a new choice applies once the client's short-lived list is refreshed; members cannot change it)
 - [x] Docs: README, `docs/manual-test.md` section 16, version 0.14.0
 - [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f08-toolsets-security-review.md`): no findings at 0.8 or above. Acted on: the server list counts for members only the tools they see; a grant needs the requester to still see the tool; the server page says prompts and resources are not narrowed
-- [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
+- [ ] Scope keys on pins (F11)
 
-### Next slice (spec 2026-11-21): prompts and resources
+### Next slice (spec 2026-11-21): prompts, resources and templates
 
-Goal: a toolset can leave out a server's prompts and resources too, not
-only its tools.
+Goal: a toolset can leave out a server's prompts, resources and resource
+templates too, not only its tools.
 
 Acceptance:
-1. `server_team_tools` gains `kind` (tool, prompt, resource). A narrowed
-   team sees only what is listed, kind by kind. A kind with no entries
-   means all of it, as today for tools, so existing lists keep their
-   meaning.
-2. A hidden prompt or resource is answered like an unknown name and
-   audited `denied:not_in_toolset` (F26 R-03).
+1. `server_team_tools` gains `kind` (`tool`, `prompt`, `resource`,
+   `resource_template`). A narrowed team sees only what is listed, kind by
+   kind. A kind with `narrowed_* == 0` means all of it, as today for tools,
+   so existing lists keep their meaning.
+2. A hidden prompt, resource or template is answered like an unknown name
+   and audited `denied:not_in_toolset` (F26 R-03).
 3. The server page's "Which tools each team sees" becomes "What each team
    sees", grouped by kind.
 
 Tasks and tests:
-- [ ] Migration; `SetTeamTools` takes a kind (`TestToolsetsPerKind`, `TestExistingListsKeepMeaningAll`)
-- [ ] Gateway lists and reads (`TestHiddenPromptIsUnknown`, `TestHiddenResourceIsUnknown`)
-- [ ] App; Vitest; acceptance `TestToolsetsForPromptsAndResources`
+- [x] Migration `00018_toolsets_per_kind.sql`; `SetTeamItemTools` / `SetTeamToolsets` / `TeamToolsets` (`TestToolsetsPerKind`, `TestExistingListsKeepMeaningAll`, `TestToolsetsPerKindOrgIsolation`)
+- [x] Gateway lists and reads (`TestHiddenPromptIsUnknown`, `TestHiddenResourceIsUnknown`)
+- [x] Control API `PATCH /api/v1/servers/{alias}/teams/{slug}` (`TestTeamToolsetsPerKindAPI`); App ("What each team sees", Vitest in `pages.test.tsx`); acceptance `TestToolsetsForPromptsAndResources`
 
 ## F09. Policies
 Status: In progress (core done, reviewed; second slice built 2026-11-20, ported onto main as 0.15.0 on 2026-11-21, ADR 0027 accepted 2026-11-21)
