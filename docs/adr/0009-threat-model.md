@@ -41,3 +41,18 @@
   management, admin-action logging, access reviews.
 - Privo acts as a data processor for Cloud customers: DPA, subprocessor list
   (including Slack for approval messages).
+
+## As built (0.20.0, 2026-11-26)
+
+For operators and reviewers: [Threat model](https://docs.privo.club/security/threat-model/),
+which marks each protection as built, with its version, or planned.
+
+- Not built yet: the cross-server flow rule (#50); runner isolation and
+  pinned packages (ADR 0007, F13); forced row-level security (the Postgres
+  store); rate limits on every endpoint (F02, #66); signed releases with
+  SBOMs, and container scanning. CI runs `govulncheck` and builds the image
+  with an SBOM and provenance, but publishes neither.
+- Built beyond the table: arguments checked against the accepted schema
+  (0.20.0), and a scan of tool definitions for the reviewer (0.12.0).
+- The disclosure policy is published:
+  [Reporting a vulnerability](https://docs.privo.club/security/disclosure/).

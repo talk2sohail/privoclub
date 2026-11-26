@@ -63,6 +63,9 @@ For admins who need more control:
 
 ## Security and development
 
+How Privo is secured: [the threat model](security/threat-model.md),
+[secrets and keys](security/secrets.md) and
+[outbound requests](security/egress.md).
 [Report a vulnerability](security/disclosure.md) privately. To work on Privo:
 [building Privo](development/building.md), [tests](development/tests.md),
 [how a feature is made](development/workflow.md),

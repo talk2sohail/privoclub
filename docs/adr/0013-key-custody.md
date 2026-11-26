@@ -70,3 +70,13 @@ resolved **per organisation through a key reference**, not one global key.
 - Live-gateway compromise is limited, not prevented, by every option except
   G. Short DEK cache lifetimes, per-process isolation of the runner (0007) and
   audited unwraps keep exposure small and visible.
+
+## As built (0.20.0, 2026-11-26)
+
+For operators: [Secrets and keys](https://docs.privo.club/security/secrets/#who-holds-the-keys).
+
+Point 1 is built, except the recovery kit: `org_keys` records each data
+key's provider and key reference, and the local master key is the only
+provider. Not built: the Shamir recovery kit, a cloud KMS, customer-managed
+keys, token-bound user keys, and the KEK rotation command (see ADR 0003, "As
+built").

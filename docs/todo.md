@@ -1961,9 +1961,17 @@ task 4.
   hub for Coolify now, with room for the deployment model of ADR 0030),
   First setup and sign-in, Your first server and AI client; the welcome page
   leads through it, then to the basic and advanced pages
-- [ ] Write what is missing: the Security section's threat model, secrets
-  and keys, and egress (#63; Reporting a vulnerability shipped with F31;
-  Arguments checked against the schema shipped with #35)
+- [x] Security section (#63, phase 4): Threat model, Secrets and keys,
+  Outbound requests (egress), beside Reporting a vulnerability (F31). Each
+  page says what is built, with its version, and what is planned; ADRs 0003,
+  0008, 0009 and 0013 gained an "As built" section that links back.
+  Arguments checked against the schema shipped with #35
+- [ ] Keep the Security pages current as the data-plane work lands, each
+  replacing a "planned" or "not built": #66 (rate limits; "Floods" in the
+  threat model), #48 (result scanning and secret redaction; the threat model
+  and Secrets and keys), #50 (the cross-server flow rule; the threat model),
+  #51 (annotation overrides; the defaults that fail closed) and #52 (blocked
+  egress attempts audited; Outbound requests and ADR 0008's "As built")
 - [x] Hosting on Coolify (guideline 2.6 B, chosen 2026-11-24): `docs/Dockerfile`
   builds the site and serves it with Caddy (pinned by digest, user `nobody`,
   port 8080) with CSP `script-src 'self'` and no `unsafe-inline`: the theme's

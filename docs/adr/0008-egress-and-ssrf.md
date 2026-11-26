@@ -30,3 +30,20 @@ endpoints, the database, the runner, the Coolify host).
 
 - In-house servers on private networks need an explicit allow entry on
   self-hosted installs; the error message says how.
+
+## As built (0.20.0, 2026-11-26)
+
+For operators: [Outbound requests (egress)](https://docs.privo.club/security/egress/).
+
+- Built as decided (`internal/egress`). It also refuses carrier-grade NAT,
+  documentation and benchmarking ranges, NAT64, 6to4 and Teredo, and ignores
+  environment proxies. Redirects stay on the same host, at most three, one
+  for sign-in requests.
+- AI clients' metadata documents use no allowed range, whatever
+  `PRIVO_EGRESS_ALLOW_CIDRS` says (review of 2026-11-15, S-05), and follow
+  no redirect.
+- An allowed range is checked before the refused ones, so it can open
+  loopback or link-local addresses; the page warns against that.
+- Not built: blocked attempts as audit events, and the runner's proxy (ADR
+  0007). The 422 for a refused server names the address and the reason, not
+  how to allow it; the page does.

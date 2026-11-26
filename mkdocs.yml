@@ -76,6 +76,9 @@ nav:
       - The configuration file: installation/configuration-file.md
       - Backup, restore and upgrades: installation/operations.md
   - Security:
+      - Threat model: security/threat-model.md
+      - Secrets and keys: security/secrets.md
+      - Outbound requests (egress): security/egress.md
       - Reporting a vulnerability: security/disclosure.md
   - Development:
       - Building Privo: development/building.md
