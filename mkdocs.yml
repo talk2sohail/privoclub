@@ -38,8 +38,10 @@ markdown_extensions:
   - admonition               # !!! note and !!! warning boxes
   - toc:
       permalink: true        # a link anchor on every heading
-  - tables
+  - tables:
+      use_align_attribute: true  # align="center", not a style="..." the policy refuses
   - fenced_code
+  - md_in_html               # Markdown inside <div class="..." markdown>: the welcome page's cards
 
 nav:
   - Getting Started:

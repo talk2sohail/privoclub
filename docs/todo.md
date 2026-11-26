@@ -1972,6 +1972,14 @@ task 4.
   and Secrets and keys), #50 (the cross-server flow rule; the threat model),
   #51 (annotation overrides; the defaults that fail closed) and #52 (blocked
   egress attempts audited; Outbound requests and ADR 0008's "As built")
+- [x] Visual polish (#64, phase 5): `docs/site/theme/privo.css` gives the
+  readthedocs theme Privo's colours, a menu that scans (coral section names,
+  the current page marked), a readable measure, dark code blocks, note and
+  warning boxes, tables that wrap, focus rings, and the welcome page's six
+  cards (`md_in_html`). Five theme defaults that failed WCAG AA contrast now
+  pass. The theme's inline styles, which the Content-Security-Policy refused,
+  are gone: tables align with `align`, and the post-build step removes the
+  theme's one style attribute and fails on any other
 - [x] Hosting on Coolify (guideline 2.6 B, chosen 2026-11-24): `docs/Dockerfile`
   builds the site and serves it with Caddy (pinned by digest, user `nobody`,
   port 8080) with CSP `script-src 'self'` and no `unsafe-inline`: the theme's

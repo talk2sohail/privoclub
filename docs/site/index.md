@@ -11,6 +11,34 @@ use, runs every call with the right credential (shared, or the caller's own
 account), applies your rules, holds a call for a person's approval when a rule
 says so, and records every call and every admin change.
 
+<div class="privo-cards" markdown>
+
+- [Getting started](getting-started/how-it-works.md)
+
+    From nothing to a first tool call that works, in five short pages.
+
+- [Basic features](basics/admin-site.md)
+
+    What a team uses day to day, all in the browser.
+
+- [Advanced features](advanced/toolsets.md)
+
+    Toolsets, conditional rules, OAuth, the audit trail and the admin API.
+
+- [Operations and reference](installation/coolify.md)
+
+    Deploying, every setting, the configuration file, backup and upgrades.
+
+- [Security](security/threat-model.md)
+
+    The threat model, secrets and keys, and outbound requests.
+
+- [Development](development/building.md)
+
+    Building Privo, the tests, and how a feature is made.
+
+</div>
+
 ## Getting started
 
 New to Privo? Read these in order. They take a team from nothing to a first
