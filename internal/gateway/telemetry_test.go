@@ -157,6 +157,7 @@ func TestErrorClasses(t *testing.T) {
 		"no_account":     g.noAccount("github"),
 		"key_refused":    g.keyRefused("github"),
 		"timeout":        fmt.Errorf("%w (limit)", errCallTimeout),
+		"cancelled":      context.Canceled,
 		"unavailable":    upstream.ErrUnavailable,
 		"malformed":      fmt.Errorf("%w: content 2", errMalformedReply),
 		"upstream_error": &jsonrpc.Error{Code: -32602, Message: "bad"},

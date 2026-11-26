@@ -9,6 +9,7 @@
 //	flaky       exits with status 1 until it has been started twice (counts in $MARKER), then default
 //	annotated   tools "read_note" (readOnlyHint) and "delete_note" (destructiveHint)
 //	outcomes    tools "fine" (succeeds), "fail" (a tool error: isError) and "boom" (a JSON-RPC error)
+//	slow        tools "echo" and "slow" (waits ms or until cancelled, recording to $FLAG)
 //	legacy      as default, but speaks only protocol versions before 2026-07-28, like most servers today
 //	raw-notify  a hand-written server (no SDK) that sends one notification, -method M with -params absent|null,
 //	            right after the handshake: what the SDK would never let a server send
@@ -26,6 +27,8 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -106,6 +109,52 @@ func main() {
 		mcp.AddTool(s, &mcp.Tool{Name: "ping", Description: "Answer pong."},
 			func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil, nil
+			})
+	} else if *mode == "slow" {
+		type slowInput struct {
+			Ms int `json:"ms"`
+		}
+		var flagMu sync.Mutex
+		flagPath := os.Getenv("FLAG")
+		writeFlag := func(line string) {
+			if flagPath == "" {
+				return
+			}
+			flagMu.Lock()
+			defer flagMu.Unlock()
+			if f, err := os.OpenFile(flagPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+				_, _ = f.WriteString(line + "\n")
+				_ = f.Close()
+			}
+		}
+		s.AddReceivingMiddleware(func(next mcp.MethodHandler) mcp.MethodHandler {
+			return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+				if method == "notifications/cancelled" {
+					writeFlag("notify:cancelled")
+				}
+				return next(ctx, method, req)
+			}
+		})
+		mcp.AddTool(s, &mcp.Tool{Name: "echo", Description: "Repeat the text you were given."},
+			func(_ context.Context, _ *mcp.CallToolRequest, in echoInput) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: in.Text}}}, nil, nil
+			})
+		mcp.AddTool(s, &mcp.Tool{Name: "slow", Description: "Wait ms milliseconds or until cancelled."},
+			func(ctx context.Context, _ *mcp.CallToolRequest, in slowInput) (*mcp.CallToolResult, any, error) {
+				writeFlag("slow:started")
+				d := time.Duration(in.Ms) * time.Millisecond
+				if d <= 0 {
+					d = 10 * time.Second
+				}
+				timer := time.NewTimer(d)
+				defer timer.Stop()
+				select {
+				case <-ctx.Done():
+					writeFlag("slow:cancelled")
+					return nil, nil, ctx.Err()
+				case <-timer.C:
+					return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "done"}}}, nil, nil
+				}
 			})
 	} else {
 		mcp.AddTool(s, &mcp.Tool{Name: "echo", Description: "Repeat the text you were given."},

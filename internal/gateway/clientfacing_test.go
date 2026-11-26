@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -72,4 +73,11 @@ func TestClientFacing(t *testing.T) {
 			}
 		})
 	}
+	t.Run("cancelled error strips transport URL and secrets", func(t *testing.T) {
+		raw := fmt.Errorf(`calling "tools/call": Post "https://api.example.com/mcp?key=SECRET-3": %w`, context.Canceled)
+		got := g.clientFacing(c, raw)
+		if !errors.Is(got, context.Canceled) || strings.Contains(got.Error(), "SECRET-3") || strings.Contains(got.Error(), "api.example.com") {
+			t.Fatalf("cancelled error leaked: %v", got)
+		}
+	})
 }

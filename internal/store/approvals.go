@@ -324,3 +324,19 @@ func (s *Store) WithdrawApproval(ctx context.Context, org OrgID, id, userID, by 
 	n, _ := res.RowsAffected()
 	return n == 1, nil
 }
+
+// CancelPendingApproval atomically withdraws a pending, unexpired approval when
+// the held caller cancels, recording by and dropping its stored arguments. It
+// returns false if the approval was already decided, withdrawn, consumed or
+// expired.
+func (s *Store) CancelPendingApproval(ctx context.Context, org OrgID, id, by string, now time.Time) (bool, error) {
+	res, err := s.w.ExecContext(ctx, `
+		UPDATE approvals SET status = 'withdrawn', decided_by = ?, decided_at = ?, args = x''
+		WHERE org_id = ? AND id = ? AND status = 'pending' AND expires_at > ?`,
+		by, ts(now), org, id, ts(now))
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n == 1, nil
+}

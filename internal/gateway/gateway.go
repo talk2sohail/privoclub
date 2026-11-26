@@ -92,6 +92,27 @@ type Gateway struct {
 	args argcheck.Checker // compiled input schemas of the tools called
 }
 
+type httpReqCtxKey struct{}
+
+// withHTTPReqCancel propagates cancellation of the originating HTTP request
+// stored by Handler into ctx. This ensures stateless POST cancellations reach
+// the gateway pipeline for both 2026-07-28 and legacy protocol clients.
+func withHTTPReqCancel(ctx context.Context) (context.Context, func()) {
+	reqCtx, ok := ctx.Value(httpReqCtxKey{}).(context.Context)
+	if !ok || reqCtx == nil || reqCtx.Done() == nil {
+		return ctx, func() {}
+	}
+	cctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(reqCtx, cancel)
+	if reqCtx.Err() != nil {
+		cancel()
+	}
+	return cctx, func() {
+		stop()
+		cancel()
+	}
+}
+
 // Handler returns the authenticated MCP HTTP handler.
 func (g *Gateway) Handler() http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: "privo", Version: buildinfo.Version}, &mcp.ServerOptions{
@@ -106,11 +127,16 @@ func (g *Gateway) Handler() http.Handler {
 	// Outermost, so a panic anywhere in the gateway answers one request with an error.
 	server.AddReceivingMiddleware(safe.Recover(g.Logger, "gateway"), g.middleware)
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server },
-		&mcp.StreamableHTTPOptions{Stateless: true, Logger: g.Logger})
+		&mcp.StreamableHTTPOptions{Stateless: true, PropagateRequestCancellation: true, Logger: g.Logger})
+	withReqCtx := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqCtx := r.Context()
+		r = r.WithContext(context.WithValue(reqCtx, httpReqCtxKey{}, reqCtx))
+		h.ServeHTTP(w, r)
+	})
 	return mcpauth.RequireBearerToken(g.Auth.MCPVerifier(), &mcpauth.RequireBearerTokenOptions{
 		ResourceMetadataURL: g.ResourceMetadataURL,
 		Scopes:              g.Scopes,
-	})(h)
+	})(withReqCtx)
 }
 
 func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
@@ -122,6 +148,8 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 		if p.OrgID == "" {
 			return next(ctx, method, req) // initialize, ping and similar
 		}
+		ctx, stopCancel := withHTTPReqCancel(ctx)
+		defer stopCancel()
 		switch method {
 		case "tools/list":
 			return g.listTools(ctx, p)
@@ -384,6 +412,18 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	switch out.Result {
 	case approval.Approved:
 		return decision{label: "approved:" + out.ID, approvalID: out.ID, approvedBy: out.DecidedBy, waited: time.Since(gated)}, nil
+	case approval.Cancelled:
+		auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		g.recordRefusal(auditCtx, c, callID, store.ActionAsk, "cancelled_while_pending")
+		if out.Withdrawn {
+			ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: c.p.Name, ActorID: c.p.ActorID(), UserID: c.p.UserID,
+				Server: c.item.Alias, Action: "approval.withdraw:" + out.ID, Decision: store.ActionAllow, Outcome: "ok"}
+			if aerr := g.Audit.Admin(auditCtx, c.p.OrgID, ev); aerr != nil {
+				g.Logger.Error("audit approval withdraw", "id", out.ID, "err", aerr)
+			}
+		}
+		return decision{}, &refusal{msg: "Request cancelled by caller.", class: "cancelled"}
 	case approval.Withdrawn:
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "withdrawn_by_requester")
 		return decision{}, &refusal{msg: "This request was withdrawn in Privo. Call again to ask for approval anew."}
@@ -429,15 +469,17 @@ func (g *Gateway) checkArgs(c call) *refusal {
 
 // recordRefusal writes an intent and its completion for a call that did not run.
 func (g *Gateway) recordRefusal(ctx context.Context, c call, callID, decision, outcome string) {
+	auditCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
 	now := time.Now()
 	ev := store.AuditEvent{ID: ids.New(), CallID: callID, Time: now, Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Decision: decision}
-	if err := g.Audit.Intent(ctx, c.p.OrgID, ev); err != nil {
+	if err := g.Audit.Intent(auditCtx, c.p.OrgID, ev); err != nil {
 		g.Logger.Error("audit refusal", "err", err)
 		return
 	}
 	ev.ID, ev.Outcome, ev.Time = ids.New(), outcome, time.Now()
-	if err := g.Audit.Completion(ctx, c.p.OrgID, ev); err != nil {
+	if err := g.Audit.Completion(auditCtx, c.p.OrgID, ev); err != nil {
 		g.Logger.Error("audit refusal completion", "err", err)
 	}
 }
@@ -471,9 +513,12 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	st.DecideUS = time.Since(arrived).Microseconds() - st.WaitUS
 	if err != nil {
 		var r *refusal
-		if errors.As(err, &r) {
+		switch {
+		case errors.As(err, &r):
 			record(store.OutcomeRefused, r.class)
-		} else {
+		case errors.Is(err, context.Canceled) && ctx.Err() != nil:
+			record(store.OutcomeError, "cancelled")
+		default:
 			record(store.OutcomeError, "internal")
 		}
 		return err
@@ -481,7 +526,9 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	// If the call cannot start after an approval was consumed, put it back.
 	restore := func() {
 		if dec.approvalID != "" {
-			if rerr := g.Approval.Restore(context.WithoutCancel(ctx), c.p.OrgID, dec.approvalID); rerr != nil {
+			rctx, rcancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer rcancel()
+			if rerr := g.Approval.Restore(rctx, c.p.OrgID, dec.approvalID); rerr != nil {
 				g.Logger.Error("restoring approval", "id", dec.approvalID, "err", rerr)
 			}
 		}
@@ -490,7 +537,11 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	payload, err := g.argumentsPayload(ctx, c, callID)
 	if err != nil {
 		restore()
-		record(store.OutcomeError, "internal")
+		class := "internal"
+		if errors.Is(ctx.Err(), context.Canceled) {
+			class = "cancelled"
+		}
+		record(store.OutcomeError, class)
 		return err
 	}
 	start := time.Now()
@@ -498,8 +549,12 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 		Item: c.item.Name, Action: c.action, Decision: dec.label, ApprovedBy: dec.approvedBy, Payload: payload}
 	if err := g.Audit.Intent(ctx, c.p.OrgID, intent); err != nil {
 		restore()
-		g.Logger.Error("audit intent failed; refusing call", "err", err)
 		st.AuditUS = time.Since(start).Microseconds()
+		if errors.Is(ctx.Err(), context.Canceled) {
+			record(store.OutcomeError, "cancelled")
+			return context.Canceled
+		}
+		g.Logger.Error("audit intent failed; refusing call", "err", err)
 		record(store.OutcomeError, "audit_unavailable")
 		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelError, Category: store.CategoryAudit,
 			Message: "the audit record could not be written, so calls are refused"})
@@ -517,12 +572,21 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 		outcome, result, err = g.callUpstream(ctx, c, session, do)
 		st.UpstreamUS = time.Since(calling).Microseconds()
 	}
+	cancelled := err != nil && errors.Is(ctx.Err(), context.Canceled) && !errors.Is(err, errCallTimeout)
+	if cancelled {
+		outcome = "cancelled"
+	}
 	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Outcome: outcome, LatencyMS: time.Since(start).Milliseconds()}
-	if aerr := g.Audit.Completion(ctx, c.p.OrgID, completion); aerr != nil {
+	compCtx, compCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	if aerr := g.Audit.Completion(compCtx, c.p.OrgID, completion); aerr != nil {
 		g.Logger.Error("audit completion not queued", "err", aerr)
 	}
+	compCancel()
 	class := errorClass(err)
+	if cancelled {
+		class = "cancelled"
+	}
 	if class == "key_refused" {
 		g.Telemetry.Diagnose(c.p.OrgID, store.Diagnostic{Level: store.LevelWarn, Category: store.CategoryGrant, Server: c.item.Alias,
 			UserID: c.p.UserID, Message: "the server refused a member's own API key"})
@@ -533,6 +597,9 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 		outcome = store.OutcomeError
 	}
 	record(statOutcome(outcome), class)
+	if cancelled {
+		return context.Canceled
+	}
 	return g.clientFacing(c, err)
 }
 
@@ -562,6 +629,8 @@ func errorClass(err error) string {
 		return "not_connected"
 	case errors.Is(err, errCallTimeout):
 		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
 	case errors.Is(err, upstream.ErrUnavailable):
 		return "unavailable"
 	case errors.Is(err, errMalformedReply), errors.Is(err, errNeedsInput):
@@ -763,6 +832,9 @@ func (g *Gateway) clientFacing(c call, err error) error {
 	var acct *accountError
 	if errors.As(err, &r) || errors.As(err, &acct) || errors.Is(err, upstream.ErrUnavailable) || errors.Is(err, errCallTimeout) {
 		return err
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
 	}
 	g.Logger.Warn("upstream call failed", "server", c.item.Alias, "action", c.action, "err", upstream.RedactText(err.Error()))
 	return fmt.Errorf("the upstream server %q did not answer or failed; an administrator can see details in the server status and the log", c.item.Alias)
