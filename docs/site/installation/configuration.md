@@ -39,6 +39,14 @@ setting that is not here, or when this page names one the code does not know.
 | `PRIVO_METRICS_ADDR` | unset (off) | Serve Prometheus metrics at `/metrics` on this address, such as `127.0.0.1:9464`. No sign-in: keep it private (localhost or an internal network), never the public port |
 | `PRIVO_TOKEN_TTL` | `2160h` | Default personal token lifetime |
 | `PRIVO_UPSTREAM_RETRY_BASE` / `PRIVO_UPSTREAM_RETRY_MAX` | `2s` / `30s` | Backoff bounds when an upstream server drops and is reconnected |
+| `PRIVO_RATE_LIMIT_TOKEN_RPM` | `120` | Requests per minute allowed per bearer token on `/mcp`; `0` disables |
+| `PRIVO_RATE_LIMIT_USER_RPM` | `300` | Requests per minute allowed per member on `/mcp` (only applies to tokens bound to a member); `0` disables |
+| `PRIVO_RATE_LIMIT_ORG_RPM` | `1200` | Requests per minute allowed per organisation on `/mcp`; `0` disables |
+| `PRIVO_MAX_INFLIGHT` | `256` | Maximum concurrent `/mcp` requests across the whole gateway before shedding with `503`; `0` disables |
+| `PRIVO_ORG_MAX_INFLIGHT` | `128` | Maximum concurrent `/mcp` requests per organisation before shedding with `503`; `0` disables |
+| `PRIVO_UPSTREAM_MAX_INFLIGHT` | `32` | Maximum concurrent upstream calls per organisation and upstream server (bulkhead); `0` disables |
+| `PRIVO_CIRCUIT_BREAKER_THRESHOLD` | `5` | Consecutive upstream transport, timeout, 5xx or unavailable failures before opening a server's circuit breaker; `0` disables |
+| `PRIVO_CIRCUIT_BREAKER_COOLDOWN` | `30s` | How long an open circuit breaker stays open before allowing one half-open probe (at least `1s` when `PRIVO_CIRCUIT_BREAKER_THRESHOLD` > 0) |
 | `PRIVO_RUNNER` / `PRIVO_INSECURE_LOCAL_RUNNER` | unset | Stdio servers: empty refuses them; `local` runs them unisolated on this host and needs `PRIVO_INSECURE_LOCAL_RUNNER=i-understand` (development only, ADR 0007) |
 | `PRIVO_EGRESS_ALLOW_CIDRS` | unset | Internal networks remote servers may use (self-hosted only) |
 | `PRIVO_TRUSTED_PROXIES` | unset | Reverse proxies in front of Privo, as CIDRs (for example `10.0.0.0/8,172.16.0.0/12` for the Docker networks of Coolify's Traefik). Per-address limits then count the client named in `X-Forwarded-For` instead of the proxy. Never list an address a client can reach Privo from directly |

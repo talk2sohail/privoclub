@@ -22,6 +22,7 @@ import (
 	"net/url"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -38,11 +39,13 @@ import (
 	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/ids"
 	"privo.club/privo/internal/keyring"
+	"privo.club/privo/internal/limit"
 	"privo.club/privo/internal/policy"
 	"privo.club/privo/internal/safe"
 	"privo.club/privo/internal/store"
 	"privo.club/privo/internal/telemetry"
 	"privo.club/privo/internal/upstream"
+	"privo.club/privo/internal/upstreamauth"
 	"privo.club/privo/internal/vault"
 )
 
@@ -86,10 +89,27 @@ type Gateway struct {
 	// Telemetry records how each call went (ADR 0024); nil records nothing.
 	Telemetry *telemetry.Recorder
 
+	// Rate limits (token, user, org), in-flight limits (global, org, upstream
+	// bulkhead), and per-(org, server) circuit breaker (ADR 0001 stage 2, ADR
+	// 0010). Nil disables the corresponding check.
+	TokenLimiter *limit.RateLimiter
+	UserLimiter  *limit.RateLimiter
+	OrgLimiter   *limit.RateLimiter
+	InFlight     *limit.InFlight
+	Breaker      *limit.Breaker
+	Now          func() time.Time
+
 	hiddenMu sync.Mutex
 	hidden   map[string]time.Time // last record of a hidden call, per caller, server and reason
 
 	args argcheck.Checker // compiled input schemas of the tools called
+}
+
+func (g *Gateway) now() time.Time {
+	if g.Now != nil {
+		return g.Now()
+	}
+	return time.Now()
 }
 
 // Handler returns the authenticated MCP HTTP handler.
@@ -110,7 +130,71 @@ func (g *Gateway) Handler() http.Handler {
 	return mcpauth.RequireBearerToken(g.Auth.MCPVerifier(), &mcpauth.RequireBearerTokenOptions{
 		ResourceMetadataURL: g.ResourceMetadataURL,
 		Scopes:              g.Scopes,
-	})(h)
+	})(g.limitMiddleware(h))
+}
+
+// limitMiddleware enforces per-token/user/org GCRA rate limits and global/org
+// in-flight concurrency caps after bearer token authentication (ADR 0001 stage 2).
+func (g *Gateway) limitMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, ok := auth.FromTokenInfo(mcpauth.TokenInfoFromContext(r.Context()))
+		if !ok || p.OrgID == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		arrived := g.now()
+		recordRefusal := func(class string) {
+			g.Telemetry.Call(p.OrgID, store.CallStat{
+				ID:         ids.New(),
+				Time:       arrived,
+				UserID:     p.UserID,
+				TokenID:    p.TokenID,
+				Client:     p.Client,
+				Method:     "mcp",
+				Outcome:    store.OutcomeRefused,
+				ErrorClass: class,
+				TotalUS:    g.now().Sub(arrived).Microseconds(),
+			})
+		}
+		if allowed, wait := g.checkRateLimits(p, arrived); !allowed {
+			secs := int((wait + time.Second - 1) / time.Second)
+			if secs < 1 {
+				secs = 1
+			}
+			recordRefusal("rate_limited")
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+			http.Error(w, "rate limit exceeded; retry later", http.StatusTooManyRequests)
+			return
+		}
+		release, ok := g.InFlight.Acquire(string(p.OrgID))
+		if !ok {
+			recordRefusal("in_flight_limit")
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "server busy; retry later", http.StatusServiceUnavailable)
+			return
+		}
+		defer release()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (g *Gateway) checkRateLimits(p auth.Principal, now time.Time) (bool, time.Duration) {
+	if g.TokenLimiter != nil && p.TokenID != "" {
+		if ok, wait := g.TokenLimiter.Allow(string(p.OrgID)+"\x00"+p.TokenID, now); !ok {
+			return false, wait
+		}
+	}
+	if g.UserLimiter != nil && p.UserID != "" {
+		if ok, wait := g.UserLimiter.Allow(string(p.OrgID)+"\x00"+p.UserID, now); !ok {
+			return false, wait
+		}
+	}
+	if g.OrgLimiter != nil {
+		if ok, wait := g.OrgLimiter.Allow(string(p.OrgID), now); !ok {
+			return false, wait
+		}
+	}
+	return true, 0
 }
 
 func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
@@ -487,6 +571,35 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 		}
 	}
 
+	// Circuit breaker and per-upstream bulkhead run after policy/approval so
+	// approval holds never occupy upstream slots, and before audit intent and
+	// upstream calls so shed requests do not hit disk or downstream servers.
+	allowed, tr, finishBreaker := g.Breaker.Allow(string(c.p.OrgID), c.item.ServerID, c.item.Alias)
+	if tr != nil {
+		g.diagnoseBreaker(c.p.OrgID, c.item.Alias, *tr)
+	}
+	if !allowed {
+		restore()
+		record(store.OutcomeRefused, "circuit_open")
+		return &refusal{
+			msg:   fmt.Sprintf("Server %q is temporarily unavailable after repeated failures; try again shortly.", c.item.Alias),
+			class: "circuit_open",
+		}
+	}
+	defer finishBreaker(limit.OutcomeNeutral)
+
+	releaseBulkhead, ok := g.InFlight.AcquireUpstream(string(c.p.OrgID), c.item.ServerID)
+	if !ok {
+		finishBreaker(limit.OutcomeNeutral)
+		restore()
+		record(store.OutcomeRefused, "in_flight_limit")
+		return &refusal{
+			msg:   fmt.Sprintf("Server %q is busy with too many concurrent calls; try again shortly.", c.item.Alias),
+			class: "in_flight_limit",
+		}
+	}
+	defer releaseBulkhead()
+
 	payload, err := g.argumentsPayload(ctx, c, callID)
 	if err != nil {
 		restore()
@@ -517,6 +630,10 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 		outcome, result, err = g.callUpstream(ctx, c, session, do)
 		st.UpstreamUS = time.Since(calling).Microseconds()
 	}
+	if tr := finishBreaker(classifyBreakerOutcome(ctx, err)); tr != nil {
+		g.diagnoseBreaker(c.p.OrgID, c.item.Alias, *tr)
+	}
+	releaseBulkhead()
 	completion := store.AuditEvent{ID: ids.New(), CallID: callID, Time: time.Now(), Actor: c.p.Name, ActorID: c.p.TokenID, UserID: c.p.UserID, Client: c.p.Client, Server: c.item.Alias,
 		Item: c.item.Name, Action: c.action, Outcome: outcome, LatencyMS: time.Since(start).Milliseconds()}
 	if aerr := g.Audit.Completion(ctx, c.p.OrgID, completion); aerr != nil {
@@ -570,6 +687,88 @@ func errorClass(err error) string {
 		return "upstream_error"
 	}
 	return "transport"
+}
+
+func (g *Gateway) diagnoseBreaker(org store.OrgID, alias string, tr limit.BreakerTransition) {
+	level := store.LevelInfo
+	var msg string
+	switch tr.To {
+	case limit.Open:
+		level = store.LevelWarn
+		msg = "circuit breaker opened after consecutive upstream failures"
+	case limit.HalfOpen:
+		msg = "circuit breaker half-open; probing upstream"
+	case limit.Closed:
+		msg = "circuit breaker closed; upstream recovered"
+	default:
+		return
+	}
+	g.Telemetry.Diagnose(org, store.Diagnostic{
+		Level:    level,
+		Category: store.CategoryConnection,
+		Server:   alias,
+		Message:  msg,
+	})
+}
+
+// classifyBreakerOutcome ensures only transport failures, HTTP 5xx,
+// upstream.ErrUnavailable, and errCallTimeout count as breaker failures.
+func classifyBreakerOutcome(ctx context.Context, err error) limit.Outcome {
+	if err == nil {
+		return limit.OutcomeSuccess
+	}
+	if ctx != nil && ctx.Err() != nil && !errors.Is(err, errCallTimeout) {
+		return limit.OutcomeNeutral
+	}
+	if errors.Is(err, context.Canceled) && !errors.Is(err, errCallTimeout) {
+		return limit.OutcomeNeutral
+	}
+	var r *refusal
+	if errors.As(err, &r) {
+		return limit.OutcomeNeutral
+	}
+	var acct *accountError
+	if errors.As(err, &acct) {
+		return limit.OutcomeNeutral
+	}
+	if errors.Is(err, grants.ErrNotConnected) || errors.Is(err, grants.ErrKeyRefused) || errors.Is(err, grants.ErrServerOff) {
+		return limit.OutcomeNeutral
+	}
+	var ise *upstreamauth.InsufficientScopeError
+	if errors.As(err, &ise) {
+		return limit.OutcomeNeutral
+	}
+	if errors.Is(err, errMalformedReply) || errors.Is(err, errNeedsInput) {
+		return limit.OutcomeNeutral
+	}
+	var rpc *jsonrpc.Error
+	if errors.As(err, &rpc) && !sdkLocalCode(rpc.Code) {
+		return limit.OutcomeSuccess
+	}
+	if errors.Is(err, errCallTimeout) || errors.Is(err, upstream.ErrUnavailable) {
+		return limit.OutcomeFailure
+	}
+	if isHTTP4xxError(err) {
+		return limit.OutcomeNeutral
+	}
+	return limit.OutcomeFailure
+}
+
+func isHTTP4xxError(err error) bool {
+	if errors.Is(err, mcp.ErrSessionMissing) {
+		return true
+	}
+	var opErr interface{ Timeout() bool }
+	if errors.As(err, &opErr) {
+		return false
+	}
+	msg := err.Error()
+	for code := 400; code < 500; code++ {
+		if text := http.StatusText(code); text != "" && strings.HasSuffix(msg, ": "+text) {
+			return true
+		}
+	}
+	return false
 }
 
 // resultSize estimates what a result costs in the model's context (F17):

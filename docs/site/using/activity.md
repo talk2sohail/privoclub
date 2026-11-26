@@ -47,6 +47,7 @@ address on an internal network). `/metrics` there gives:
 - `privo_mcp_calls_total{server,method,outcome}`
 - `privo_mcp_call_duration_seconds` (a histogram by server and method)
 - `privo_upstream_up{server}`
+- `privo_upstream_breaker_state{server}` (`0` closed, `1` open, `2` half-open)
 - `privo_audit_events_lost_total`
 - `privo_telemetry_dropped_total`
 - `privo_build_info`

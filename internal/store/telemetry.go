@@ -48,11 +48,12 @@ const (
 	LevelWarn  = "warn"
 	LevelError = "error"
 
-	CategoryUpstream  = "upstream"
-	CategoryGrant     = "grant"
-	CategoryGateway   = "gateway"
-	CategoryAudit     = "audit"
-	CategoryLifecycle = "lifecycle"
+	CategoryUpstream   = "upstream"
+	CategoryConnection = CategoryUpstream
+	CategoryGrant      = "grant"
+	CategoryGateway    = "gateway"
+	CategoryAudit      = "audit"
+	CategoryLifecycle  = "lifecycle"
 )
 
 // Diagnostic is one operational event.

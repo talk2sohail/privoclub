@@ -27,6 +27,7 @@ import (
 	"privo.club/privo/internal/grants"
 	"privo.club/privo/internal/health"
 	"privo.club/privo/internal/keyring"
+	"privo.club/privo/internal/limit"
 	"privo.club/privo/internal/oauthserver"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/server"
@@ -218,8 +219,30 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 	base := publicBase(cfg, ln)
 	prm := base + "/.well-known/oauth-protected-resource/mcp"
 	approvals := &approval.Service{Store: st, Keys: kr, Hold: cfg.ApprovalHold}
-	gw := &gateway.Gateway{Store: st, Upstream: mgr, Keys: kr, Audit: aw, Auth: authn, Approval: approvals, Logger: logger,
-		ResourceMetadataURL: prm, BaseURL: base, CallTimeout: cfg.CallTimeout, Telemetry: rec}
+	tokenLim := limit.NewRateLimiter(cfg.RateLimitTokenRPM, 0, 0)
+	userLim := limit.NewRateLimiter(cfg.RateLimitUserRPM, 0, 0)
+	orgLim := limit.NewRateLimiter(cfg.RateLimitOrgRPM, 0, 0)
+	inFlight := limit.NewInFlight(limit.InFlightConfig{
+		Global:   cfg.MaxInFlight,
+		Org:      cfg.OrgMaxInFlight,
+		Upstream: cfg.UpstreamMaxInFlight,
+	})
+	breaker := limit.NewBreaker(cfg.CircuitBreakerThreshold, cfg.CircuitBreakerCooldown)
+	if breaker != nil {
+		metrics.Breakers = func() []telemetry.BreakerState {
+			raw := breaker.States()
+			out := make([]telemetry.BreakerState, len(raw))
+			for i, s := range raw {
+				out[i] = telemetry.BreakerState{Server: s.Server, State: int(s.State)}
+			}
+			return out
+		}
+	}
+	gw := &gateway.Gateway{
+		Store: st, Upstream: mgr, Keys: kr, Audit: aw, Auth: authn, Approval: approvals, Logger: logger,
+		ResourceMetadataURL: prm, BaseURL: base, CallTimeout: cfg.CallTimeout, Telemetry: rec,
+		TokenLimiter: tokenLim, UserLimiter: userLim, OrgLimiter: orgLim, InFlight: inFlight, Breaker: breaker,
+	}
 	api := &control.API{Store: st, Keys: kr, AuditKeys: keys, Auth: authn, Upstream: mgr, Audit: aw, Approval: approvals, Egress: policy, Logger: logger,
 		TokenTTL: cfg.TokenTTL, OAuth: oauthClient, Grants: grantSvc, Telemetry: rec, TelemetryRetentionDays: cfg.TelemetryRetentionDays}
 	if grantSvc != nil {

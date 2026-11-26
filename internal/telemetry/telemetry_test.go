@@ -310,3 +310,34 @@ func TestMetricsText(t *testing.T) {
 		t.Fatal("nil metrics wrote nothing")
 	}
 }
+
+func TestBreakerMetricHasNoOrgLabel(t *testing.T) {
+	m := NewMetrics()
+	m.Breakers = func() []BreakerState {
+		return []BreakerState{
+			{Server: "linear", State: 1},
+			{Server: "git\"hub", State: 0},
+			{Server: "git\"hub", State: 2},
+			{Server: "slack", State: 0},
+		}
+	}
+	var b strings.Builder
+	m.Write(&b)
+	out := b.String()
+	for _, want := range []string{
+		"# HELP privo_upstream_breaker_state",
+		"# TYPE privo_upstream_breaker_state gauge",
+		"privo_upstream_breaker_state{server=\"git\\\"hub\"} 2\n",
+		"privo_upstream_breaker_state{server=\"linear\"} 1\n",
+		"privo_upstream_breaker_state{server=\"slack\"} 0\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	for _, banned := range []string{"org", "org_id", "user", "token", "item", "tool"} {
+		if strings.Contains(out, banned+"=\"") {
+			t.Errorf("banned label %q present in:\n%s", banned, out)
+		}
+	}
+}

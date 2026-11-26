@@ -46,6 +46,16 @@
 #upstream_refresh_gap: 5s
 #upstream_retry_base: 2s
 #upstream_retry_max: 30s
+# Rate limits, in-flight concurrency caps and per-upstream circuit breakers.
+# Zero disables the corresponding limit or breaker.
+#rate_limit_token_rpm: 120
+#rate_limit_user_rpm: 300
+#rate_limit_org_rpm: 1200
+#max_inflight: 256
+#org_max_inflight: 128
+#upstream_max_inflight: 32
+#circuit_breaker_threshold: 5
+#circuit_breaker_cooldown: 30s
 # Internal networks that remote servers may use (self-hosted only).
 #egress_allow_cidrs: 10.0.0.0/8
 

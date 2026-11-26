@@ -65,7 +65,7 @@ ADRs: 0001, 0004
 - [x] Validate arguments against the pinned input schema (spec below, 2026-11-22; 0.20.0)
 - [ ] Server-to-client requests: elicitation forwarding, sampling refused, roots from config
 - [ ] Notifications: list changes, cancellation, redacted progress and logs
-- [ ] Rate limits, in-flight limits, bulkheads, circuit breakers
+- [x] Rate limits, in-flight limits, bulkheads, circuit breakers (`internal/limit`, `internal/gateway`, `internal/config`, `internal/telemetry`, `cmd/privo/serve.go`): token/user/org GCRA rate limiting with bounded 100k map (`429` + integer `Retry-After`), global/org in-flight shedding (`503` + `Retry-After: 1`), post-approval per-upstream bulkheads, 3-state per-`(org, server)` circuit breaker (`Closed=0`, `Open=1`, `HalfOpen=2`) with strict failure classification and deduplicated `CategoryConnection` diagnostics, plus `privo_upstream_breaker_state{server}` gauge (no `org_id` label). Tests: `TestGCRARateLimitPerTokenUserAndOrg`, `TestRateLimitReturns429WithRetryAfter`, `TestLimiterMapIsBounded`, `TestBulkheadIsolatesSlowServerFromHealthyServer`, `TestGlobalAndOrgInFlightShedWith503`, `TestInFlightSlotsReleasedOnCancelAndPanic`, `TestCircuitBreakerOpenHalfOpenClose`, `TestToolErrorsAndPolicyDenialsDoNotTripBreaker`, `TestBreakerMetricHasNoOrgLabel`, `TestLimitSettingsDefaultsAndBounds`, acceptance `TestRateLimitAndBulkheadUnderLoad`
 - [x] Tests: aggregation, routing, server drop and recovery, enable/disable (acceptance suite); name normalisation and collisions (unit)
 - [x] Security review of milestone 1: 4 high, 4 medium, 4 low findings, all fixed (docs/reviews/2026-10-28-milestone-1-security-review.md)
 - [ ] Tests for the admin API (token revocation ranks, header validation) and refresh coalescing
