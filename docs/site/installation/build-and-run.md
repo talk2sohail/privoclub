@@ -52,7 +52,7 @@ also live in [a configuration file](configuration-file.md).
 
 ## Your first sign-in or token
 
-With [sign-in with GitHub](../using/admin-site.md) configured, print a
+With [sign-in with GitHub](../getting-started/first-setup.md) configured, print a
 one-time owner link and do everything else in the browser:
 
 ```sh
@@ -68,7 +68,8 @@ privo token create --name ci --role member --kind gateway        # a script: ser
 
 For headless containers with neither browser sign-in nor SSH, see
 [Deploy on Coolify](coolify.md#first-run-your-first-admin-token).
-[Tokens](../using/tokens.md) explains the two kinds.
+[Admin API and script tokens](../advanced/api-and-automation.md#tokens)
+explains the two kinds.
 
 ## The command line
 

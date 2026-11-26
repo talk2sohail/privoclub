@@ -81,7 +81,7 @@ Everything else now happens in the browser at `https://app.example.com/admin`:
 add servers, rules, invite teammates, and mint AI client tokens on **Tokens**
 (no `curl` or bootstrap token needed). For per-user GitHub MCP connections,
 create a *second* OAuth App with callback
-`https://app.example.com/connect/callback` ([Each person's own account](../using/connections.md)).
+`https://app.example.com/connect/callback` ([Connecting your accounts](../basics/connections.md)).
 Authorization servers that use Privo's client ID metadata document must reach
 `https://app.example.com/oauth/client-metadata.json` from the internet.
 
@@ -98,7 +98,7 @@ effective values with `docker exec <container> /privo config show`.
 ### AI clients that sign in with OAuth
 
 To let AI clients sign in directly without pasted tokens
-([AI clients that sign in with OAuth](../using/oauth-clients.md)):
+([AI clients that sign in with OAuth](../advanced/oauth-clients.md)):
 
 1. Set `PRIVO_OAUTH_SERVER=on` (requires `PRIVO_PUBLIC_URL` with no path and
    working web sign-in) and redeploy.
