@@ -107,6 +107,31 @@ tool of a server, from the tools' own annotations:
 The server must be connected and have reviewed tools. Tools added later fall
 to the default. A preset trusts the annotations in definitions you reviewed.
 
+## Annotation overrides
+
+Upstream tool annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`)
+are untrusted claims from the server. On a server's page under
+[Servers](../basics/servers.md), an owner or administrator can override any of
+those three hints on a tool pin — either while reviewing a pending tool or on an
+accepted tool — or reset a hint back to **Upstream default**.
+
+- Overrides are bound to the exact pinned definition hash (`kind = "tool"`,
+  `name`, `hash`). If a server changes a tool's definition, the new version
+  starts without inherited overrides.
+- AI clients receive the effective (overridden) annotations from `tools/list`.
+- Policy evaluation (tightening an `allow` default when `destructiveHint` is
+  `true`), approval grants, and server presets (`read-only`,
+  `ask-before-writes`) read the effective annotations. Explicit rules and
+  `ask`/`deny` org defaults still cannot be relaxed by annotations.
+- The server's original `annotations` remain visible alongside
+  `annotation_overrides`, and every change is recorded in
+  [the audit trail](audit.md) (`pin.annotations:<alias>:<tool>`).
+
+API: `PATCH /api/v1/servers/{alias}/pins/annotations` with
+`{"name": "...", "hash": "...", "readOnlyHint": true|false|null, "destructiveHint": true|false|null, "openWorldHint": true|false|null}`
+(`null` clears that field back to the upstream server's value; omitted fields
+keep their current override).
+
 ## Rules as a file
 
 At the bottom of **Rules**, under **Rules as a file**:

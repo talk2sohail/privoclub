@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"time"
 )
@@ -14,14 +15,28 @@ const (
 	PinBlocked  = "blocked"
 )
 
+// AnnotationOverrides holds admin overrides for a tool pin's annotations.
+// A nil field leaves the upstream's value unchanged.
+type AnnotationOverrides struct {
+	ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+	DestructiveHint *bool `json:"destructiveHint,omitempty"`
+	OpenWorldHint   *bool `json:"openWorldHint,omitempty"`
+}
+
+// IsEmpty reports whether no annotation hint is overridden.
+func (o AnnotationOverrides) IsEmpty() bool {
+	return o.ReadOnlyHint == nil && o.DestructiveHint == nil && o.OpenWorldHint == nil
+}
+
 // Pin is the reviewed state of one tool, prompt or resource definition.
 type Pin struct {
-	ServerID   string
-	Kind       string // tool | prompt | resource
-	Name       string
-	Hash       string
-	Definition string
-	Status     string
+	ServerID            string
+	Kind                string // tool | prompt | resource
+	Name                string
+	Hash                string
+	Definition          string
+	Status              string
+	AnnotationOverrides AnnotationOverrides
 }
 
 // RecordSeen stores a definition seen upstream. New (server, kind, name, hash)
@@ -85,7 +100,7 @@ func (s *Store) decidePins(ctx context.Context, org OrgID, serverID string, keys
 // ListPins returns every recorded definition of a server, newest first.
 func (s *Store) ListPins(ctx context.Context, org OrgID, serverID string) ([]Pin, error) {
 	rows, err := s.r.QueryContext(ctx, `
-		SELECT kind, name, hash, definition, status FROM pins
+		SELECT kind, name, hash, definition, status, annotation_overrides FROM pins
 		WHERE org_id = ? AND server_id = ? ORDER BY updated_at DESC, kind, name`, org, serverID)
 	if err != nil {
 		return nil, err
@@ -94,7 +109,11 @@ func (s *Store) ListPins(ctx context.Context, org OrgID, serverID string) ([]Pin
 	var out []Pin
 	for rows.Next() {
 		p := Pin{ServerID: serverID}
-		if err := rows.Scan(&p.Kind, &p.Name, &p.Hash, &p.Definition, &p.Status); err != nil {
+		var rawOv string
+		if err := rows.Scan(&p.Kind, &p.Name, &p.Hash, &p.Definition, &p.Status, &rawOv); err != nil {
+			return nil, err
+		}
+		if p.AnnotationOverrides, err = decodeAnnotationOverrides(rawOv); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -106,12 +125,89 @@ func (s *Store) ListPins(ctx context.Context, org OrgID, serverID string) ([]Pin
 // ErrNotFound.
 func (s *Store) PinDefinition(ctx context.Context, org OrgID, serverID string, k PinKey) (Pin, error) {
 	p := Pin{ServerID: serverID, Kind: k.Kind, Name: k.Name, Hash: k.Hash}
-	err := s.r.QueryRowContext(ctx, `SELECT definition, status FROM pins WHERE org_id = ? AND server_id = ? AND kind = ? AND name = ? AND hash = ?`,
-		org, serverID, k.Kind, k.Name, k.Hash).Scan(&p.Definition, &p.Status)
+	var rawOv string
+	err := s.r.QueryRowContext(ctx, `
+		SELECT definition, status, annotation_overrides FROM pins
+		WHERE org_id = ? AND server_id = ? AND kind = ? AND name = ? AND hash = ?`,
+		org, serverID, k.Kind, k.Name, k.Hash).Scan(&p.Definition, &p.Status, &rawOv)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, ErrNotFound
 	}
-	return p, err
+	if err != nil {
+		return p, err
+	}
+	if p.AnnotationOverrides, err = decodeAnnotationOverrides(rawOv); err != nil {
+		return p, err
+	}
+	return p, nil
+}
+
+// SetPinAnnotations saves annotation overrides for an exact tool pin
+// (org_id, server_id, kind='tool', name, hash). Non-tool pins and unknown pins
+// return ErrNotFound, and changed definitions with a new hash never inherit
+// prior overrides.
+func (s *Store) SetPinAnnotations(ctx context.Context, org OrgID, serverID string, key PinKey, ov AnnotationOverrides) error {
+	if key.Kind != "" && key.Kind != "tool" {
+		return ErrNotFound
+	}
+	raw := ""
+	if !ov.IsEmpty() {
+		b, err := json.Marshal(ov)
+		if err != nil {
+			return err
+		}
+		raw = string(b)
+	}
+	res, err := s.w.ExecContext(ctx, `
+		UPDATE pins SET annotation_overrides = ?
+		WHERE org_id = ? AND server_id = ? AND kind = 'tool' AND name = ? AND hash = ?`,
+		raw, org, serverID, key.Name, key.Hash)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// PinAnnotationOverrides returns active tool annotation overrides by
+// (kind, name, hash) for a server in org.
+func (s *Store) PinAnnotationOverrides(ctx context.Context, org OrgID, serverID string) (map[PinKey]AnnotationOverrides, error) {
+	rows, err := s.r.QueryContext(ctx, `
+		SELECT kind, name, hash, annotation_overrides FROM pins
+		WHERE org_id = ? AND server_id = ? AND kind = 'tool' AND annotation_overrides != ''`, org, serverID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[PinKey]AnnotationOverrides{}
+	for rows.Next() {
+		var k PinKey
+		var raw string
+		if err := rows.Scan(&k.Kind, &k.Name, &k.Hash, &raw); err != nil {
+			return nil, err
+		}
+		ov, err := decodeAnnotationOverrides(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !ov.IsEmpty() {
+			out[k] = ov
+		}
+	}
+	return out, rows.Err()
+}
+
+func decodeAnnotationOverrides(raw string) (AnnotationOverrides, error) {
+	if raw == "" {
+		return AnnotationOverrides{}, nil
+	}
+	var ov AnnotationOverrides
+	if err := json.Unmarshal([]byte(raw), &ov); err != nil {
+		return AnnotationOverrides{}, err
+	}
+	return ov, nil
 }
 
 // PinStatuses returns status by (kind, name, hash) for a server.

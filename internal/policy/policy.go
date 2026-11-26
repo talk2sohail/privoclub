@@ -203,6 +203,39 @@ func declaresDestructive(a *mcp.ToolAnnotations) bool {
 	return a != nil && !a.ReadOnlyHint && a.DestructiveHint != nil && *a.DestructiveHint
 }
 
+// ApplyAnnotationOverrides returns a brand-new ToolAnnotations copy with any
+// non-nil overrides in ov applied, leaving base untouched. It returns nil when
+// base is nil and ov is empty.
+func ApplyAnnotationOverrides(base *mcp.ToolAnnotations, ov store.AnnotationOverrides) *mcp.ToolAnnotations {
+	if base == nil && ov.IsEmpty() {
+		return nil
+	}
+	var out mcp.ToolAnnotations
+	if base != nil {
+		out = *base
+		if base.DestructiveHint != nil {
+			v := *base.DestructiveHint
+			out.DestructiveHint = &v
+		}
+		if base.OpenWorldHint != nil {
+			v := *base.OpenWorldHint
+			out.OpenWorldHint = &v
+		}
+	}
+	if ov.ReadOnlyHint != nil {
+		out.ReadOnlyHint = *ov.ReadOnlyHint
+	}
+	if ov.DestructiveHint != nil {
+		v := *ov.DestructiveHint
+		out.DestructiveHint = &v
+	}
+	if ov.OpenWorldHint != nil {
+		v := *ov.OpenWorldHint
+		out.OpenWorldHint = &v
+	}
+	return &out
+}
+
 // Preset names.
 const (
 	PresetReadOnly        = "read-only"
