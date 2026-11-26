@@ -28,8 +28,9 @@ const (
 	// scanning upstream results and resource contents ("flag" default, or "block").
 	SettingResultScan = "policy.result_scan"
 
-	// Supported modes for SettingResultScan.
-	ResultScanFlag  = "flag"
+	// ResultScanFlag allows warned results through and audits their findings.
+	ResultScanFlag = "flag"
+	// ResultScanBlock withholds warned results and audits them as blocked.
 	ResultScanBlock = "block"
 )
 
