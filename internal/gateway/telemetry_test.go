@@ -194,6 +194,10 @@ func TestResultSizeFromContentLengths(t *testing.T) {
 	if got := resultSize(read); got != 10 {
 		t.Errorf("resource: %d", got)
 	}
+	comp := &mcp.CompleteResult{Completion: mcp.CompletionResultDetails{Values: []string{"abc", "defgh"}}}
+	if got := resultSize(comp); got != 8 {
+		t.Errorf("completion: %d", got)
+	}
 	if resultSize(nil) != 0 {
 		t.Error("nil")
 	}

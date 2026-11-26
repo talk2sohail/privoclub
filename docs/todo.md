@@ -50,6 +50,7 @@ ADRs: 0001, 0004
 
 - [x] Stateless Streamable HTTP endpoint `/mcp` (go-sdk, Stateless=true) behind bearer-token auth; 401 advertises protected resource metadata
 - [x] Gateway as receiving middleware: tools, prompts, resources list/call/get/read routed per principal and org (`internal/gateway`)
+- [x] `completion/complete` policing (Issue #52, ADR 0001): advertises `completions`, resolves `ref/prompt` & `ref/resource`, enforces teams/pins (anti-probing `-32602`), rules (`deny` refuses, `ask` fails closed), audit & telemetry, reply validation & reserved `_meta` stripping (`internal/gateway` `TestCompletionCompleteEnforcesTeamsPinsPolicyAndAudit`, `TestCompletionCompleteAskFailsClosed`, `TestCompletionCompleteMalformedReplyRefused`; acceptance `TestBlockedEgressAuditedAndCompletionPoliced`)
 - [x] Upstream manager: stdio (local runner with digest pin), Streamable HTTP and SSE via the egress client; only advertised capabilities are listed; list-changed refresh; capped exponential reconnect; enable/disable (`internal/upstream`)
 - [x] Registration waits for the first connection so the response shows status and items awaiting review
 - [x] Only reviewed (accepted) items are listed or callable; changed definitions return to pending
@@ -1333,13 +1334,13 @@ Status: Not started
 - [ ] Plans, seats, card checkout in USD and INR
 
 ## F19. Egress and SSRF protection
-Status: In progress
+Status: Done
 ADRs: 0008
 
 - [x] Egress client: resolved-IP check at dial time (defeats DNS rebinding), non-public ranges refused incl. IPv4-mapped IPv6 and cloud metadata, no environment proxy, redirect checks, same-host option (`internal/egress`)
 - [x] `CheckURL` for validating registered URLs; `PRIVO_EGRESS_ALLOW_CIDRS` parser
 - [x] Wired into server registration (422 with reason) and all upstream HTTP clients
-- [ ] Metadata fetches (F06, F07); audit blocked attempts
+- [x] Metadata fetches (F06, F07); audit blocked attempts (Issue #52, ADR 0008): `OnBlocked` hook on `egress.Policy` and `egress.Options` across `Check`, `CheckURL`, dial-time `ControlContext`, and `CheckRedirect` with strictly redacted `scheme://host` targets, wired via bounded 1-minute per-`(org, actor, target, reason)` recorder in `cmd/privo/egress_audit.go` emitting `egress.blocked:<reason>` (`admin` audit + `upstream` diagnostic) (`TestOnBlockedStrictlyRedactsAndNeverAltersRefusal`, `TestBlockedEgressIsAuditedWithoutQueryOrSecrets`, `TestAnonymousBlockedMetadataFetchIsRateLimitedInAudit`; acceptance `TestBlockedEgressAuditedAndCompletionPoliced`)
 - [x] Cap the size of upstream responses (tool results, resource reads, list pages): `PRIVO_UPSTREAM_MAX_RESPONSE_BYTES` and the list limits, see R-04 in F24
 
 ## F20. Enterprise identity and roles

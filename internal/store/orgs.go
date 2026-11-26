@@ -86,3 +86,22 @@ func (s *Store) InsertOrgKey(ctx context.Context, org OrgID, k OrgKey) error {
 		VALUES (?, ?, ?, ?, ?, ?)`, org, k.Version, k.Provider, k.KeyRef, k.WrappedDEK, ts(time.Now()))
 	return mapErr(err)
 }
+
+type orgCtxKey struct{}
+
+// WithOrg returns a copy of ctx carrying org when org is non-empty.
+func WithOrg(ctx context.Context, org OrgID) context.Context {
+	if org == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, orgCtxKey{}, org)
+}
+
+// OrgFromContext returns the OrgID placed by WithOrg, if any.
+func OrgFromContext(ctx context.Context) (OrgID, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	org, ok := ctx.Value(orgCtxKey{}).(OrgID)
+	return org, ok && org != ""
+}

@@ -94,6 +94,20 @@ func checkRead(res *mcp.ReadResourceResult) error {
 	return nil
 }
 
+// checkComplete refuses a completion/complete reply the gateway cannot relay.
+func checkComplete(res *mcp.CompleteResult) error {
+	if res == nil {
+		return malformed("completion/complete", "no result")
+	}
+	if res.ResultType == "input_required" {
+		return errNeedsInput
+	}
+	if res.Completion.Values == nil {
+		return malformed("completion/complete", "completion.values is missing or null")
+	}
+	return nil
+}
+
 // reservedMetaKey reports whether key is one of the _meta keys the protocol
 // keeps for itself: the part before the slash is a series of dot-separated
 // labels, and one of them is "modelcontextprotocol" or "mcp" (io.modelcontextprotocol/serverInfo,

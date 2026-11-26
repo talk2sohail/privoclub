@@ -135,12 +135,13 @@ func (s *Server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.o.GitHub.Exchange(r.Context(), code, s.callback, in.Verifier)
+	ghCtx := store.WithOrg(r.Context(), s.o.Org)
+	token, err := s.o.GitHub.Exchange(ghCtx, code, s.callback, in.Verifier)
 	if err != nil {
 		s.githubFailed(w, "exchange the code", err)
 		return
 	}
-	prof, err := s.o.GitHub.User(r.Context(), token)
+	prof, err := s.o.GitHub.User(ghCtx, token)
 	if err != nil {
 		s.githubFailed(w, "read the profile", err)
 		return
@@ -148,7 +149,7 @@ func (s *Server) callbackHandler(w http.ResponseWriter, r *http.Request) {
 	// F05 A: only members of the configured organisations sign in, also
 	// with a valid invite or setup link.
 	if len(s.o.GitHub.OrgIDs) > 0 {
-		orgs, err := s.o.GitHub.Orgs(r.Context(), token)
+		orgs, err := s.o.GitHub.Orgs(ghCtx, token)
 		if errors.Is(err, githubauth.ErrOrgsHidden) {
 			s.notInOrg(w, r, prof) // not shown is not a member, and it is audited
 			return

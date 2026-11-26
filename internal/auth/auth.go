@@ -247,3 +247,19 @@ func FromTokenInfo(ti *mcpauth.TokenInfo) (Principal, bool) {
 	p, ok := ti.Extra[principalKey].(Principal)
 	return p, ok
 }
+
+type principalCtxKey struct{}
+
+// WithPrincipal returns a copy of ctx carrying p.
+func WithPrincipal(ctx context.Context, p Principal) context.Context {
+	return context.WithValue(ctx, principalCtxKey{}, p)
+}
+
+// FromContext returns the principal placed by WithPrincipal, if any.
+func FromContext(ctx context.Context) (Principal, bool) {
+	if ctx == nil {
+		return Principal{}, false
+	}
+	p, ok := ctx.Value(principalCtxKey{}).(Principal)
+	return p, ok
+}

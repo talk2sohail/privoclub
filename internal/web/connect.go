@@ -392,12 +392,12 @@ func (s *Server) connectCallbackHandler(w http.ResponseWriter, r *http.Request) 
 		s.connectFailed(w, http.StatusInternalServerError, "Something went wrong on the server.")
 		return
 	}
-	tok, err := s.o.OAuth.Exchange(r.Context(), e, code, st.Verifier, s.connectCallback, s.now())
+	tok, err := s.o.OAuth.Exchange(auth.WithPrincipal(r.Context(), s.principal(u)), e, code, st.Verifier, s.connectCallback, s.now())
 	if err != nil {
 		if errors.Is(err, upstreamauth.ErrInvalidClient) && srv.Config.OAuth.Registration == store.RegistrationDynamic {
 			// The authorization server forgot Privo's registration: register
 			// again, so the next attempt can work.
-			if rerr := s.o.Grants.Reregister(r.Context(), s.o.Org, srv); rerr != nil {
+			if rerr := s.o.Grants.Reregister(auth.WithPrincipal(r.Context(), s.principal(u)), s.o.Org, srv); rerr != nil {
 				s.log.Warn("web: registering again failed", "server", srv.Alias, "err", rerr)
 				s.connectFailed(w, http.StatusBadGateway, "The sign-in server no longer knows Privo, and registering again failed. An administrator can add the server again.")
 				return

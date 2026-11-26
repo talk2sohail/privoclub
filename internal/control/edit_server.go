@@ -57,7 +57,7 @@ func (a *API) editServer(ctx context.Context, p auth.Principal, s store.Server, 
 		u, err := a.Egress.CheckURL(ctx, *req.URL, nil)
 		if err != nil {
 			if errors.Is(err, egress.ErrBlocked) {
-				return nil, errorf(http.StatusUnprocessableEntity, "egress policy refused %s: %v", *req.URL, err)
+				return nil, errorf(http.StatusUnprocessableEntity, "egress policy refused %s: %v", egress.RedactURL(*req.URL), err)
 			}
 			return nil, errorf(http.StatusUnprocessableEntity, "%v", err)
 		}

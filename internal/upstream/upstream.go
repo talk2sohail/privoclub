@@ -212,7 +212,7 @@ func (m *Manager) Sync(ctx context.Context, org store.OrgID) error {
 			continue
 		}
 		e.state.Status = StatusConnecting
-		runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		runCtx, cancel := context.WithCancel(store.WithOrg(context.WithoutCancel(ctx), org))
 		e.cancel = cancel // set under the lock: stop() must never see a nil cancel
 		go m.supervise(runCtx, e)
 	}
@@ -413,10 +413,14 @@ func (m *Manager) connect(ctx context.Context, e *entry) (*mcp.ClientSession, co
 		return nil, nil, err
 	}
 	var transport mcp.Transport
+	srv := e.srv
+	if srv.OrgID == "" {
+		srv.OrgID = e.org
+	}
 	if e.srv.Config.PerPerson() {
 		transport, err = m.catalogTransport(ctx, e)
 	} else {
-		transport, err = m.transport(ctx, e.srv, env, headers)
+		transport, err = m.transport(ctx, srv, env, headers)
 	}
 	if err != nil {
 		return nil, nil, err
@@ -833,6 +837,10 @@ func (m *Manager) httpTransport(srv store.Server, headers map[string]string, aut
 	if err != nil {
 		return nil, err
 	}
+	if rt, ok := client.Transport.(originRT); ok && srv.OrgID != "" {
+		rt.org = srv.OrgID
+		client.Transport = rt
+	}
 	client = limitBodies(client, m.opts.MaxResponseBytes)
 	if srv.Transport == "sse" {
 		return &mcp.SSEClientTransport{Endpoint: srv.Config.URL, HTTPClient: client}, nil
@@ -882,7 +890,10 @@ func (m *Manager) catalogTransport(ctx context.Context, e *entry) (mcp.Transport
 			return tok, err
 		},
 	}
-	return m.httpTransport(e.srv, nil, auth)
+	if srv.OrgID == "" {
+		srv.OrgID = org
+	}
+	return m.httpTransport(srv, nil, auth)
 }
 
 // originLocked returns a client that only talks to the registered server's
@@ -912,6 +923,7 @@ type originRT struct {
 	next    http.RoundTripper
 	headers map[string]string
 	origin  string
+	org     store.OrgID
 }
 
 // ErrOtherOrigin is returned for requests outside the registered origin.
@@ -920,6 +932,9 @@ var ErrOtherOrigin = errors.New("upstream: request to a different origin than th
 func (o originRT) RoundTrip(r *http.Request) (*http.Response, error) {
 	if origin(r.URL) != o.origin {
 		return nil, ErrOtherOrigin
+	}
+	if _, ok := store.OrgFromContext(r.Context()); !ok && o.org != "" {
+		r = r.Clone(store.WithOrg(r.Context(), o.org))
 	}
 	if len(o.headers) == 0 {
 		return o.next.RoundTrip(r)
