@@ -208,7 +208,7 @@ func (h *gwHarness) acceptPin(serverID, kind, name string) {
 	h.t.Fatalf("pin (%s, %s) not found on %s: %+v", kind, name, serverID, pins)
 }
 
-func (h *gwHarness) addMemberToken(userID, person string, teams ...string) (string, auth.Principal) {
+func (h *gwHarness) addMemberToken(userID, person string, teams ...string) string {
 	h.t.Helper()
 	ctx := context.Background()
 	now := time.Now()
@@ -261,16 +261,7 @@ func (h *gwHarness) addMemberToken(userID, person string, teams ...string) (stri
 	}); err != nil {
 		h.t.Fatal(err)
 	}
-	p := auth.Principal{
-		OrgID:   h.org,
-		TokenID: tok.ID,
-		Name:    person + "-gw",
-		Roles:   []string{store.RoleMember},
-		Kind:    store.KindGateway,
-		Person:  person,
-		UserID:  userID,
-	}
-	return tok.Plain, p
+	return tok.Plain
 }
 
 type bearerRT struct {
@@ -409,7 +400,7 @@ func TestResourceTemplatesRewrittenWithExpressionsIntact(t *testing.T) {
 	h.acceptPin(srvID, upstream.KindResourceTemplate, "github://../escape/{id}")
 	// Leave "github://pending/{id}" unreviewed (pending).
 
-	tok, _ := h.addMemberToken("u-ada", "ada", "designers")
+	tok := h.addMemberToken("u-ada", "ada", "designers")
 	cs := h.mcpSession(tok)
 
 	listed, err := cs.ListResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{})
@@ -495,7 +486,7 @@ func TestReadResourceMatchesAcceptedTemplateOnly(t *testing.T) {
 	h.acceptPin(srvID, upstream.KindResourceTemplate, "github://items{?page,per_page}")
 	// Leave "github://unreviewed/{id}" pending!
 
-	tok, _ := h.addMemberToken("u-ada", "ada")
+	tok := h.addMemberToken("u-ada", "ada")
 	cs := h.mcpSession(tok)
 
 	// 1. Static resource takes precedence over matching template.
@@ -603,7 +594,7 @@ func TestHiddenPromptIsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tok, _ := h.addMemberToken("u-ada", "ada", "designers")
+	tok := h.addMemberToken("u-ada", "ada", "designers")
 	cs := h.mcpSession(tok)
 
 	listed, err := cs.ListPrompts(ctx, &mcp.ListPromptsParams{})
@@ -666,8 +657,8 @@ func TestHiddenResourceIsUnknown(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tokAda, _ := h.addMemberToken("u-ada", "ada", "designers")
-	tokBob, _ := h.addMemberToken("u-bob", "bob", "designers")
+	tokAda := h.addMemberToken("u-ada", "ada", "designers")
+	tokBob := h.addMemberToken("u-bob", "bob", "designers")
 	csAda := h.mcpSession(tokAda)
 	csBob := h.mcpSession(tokBob)
 
