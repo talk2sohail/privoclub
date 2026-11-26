@@ -187,4 +187,7 @@ func TestFlowTrackerConcurrentAccess(t *testing.T) {
 		}(g)
 	}
 	wg.Wait()
+	if tainted, _, _ := tr.CheckSink("org-0", "user:0-10", "claude", 10*time.Minute, t0.Add(time.Second)); !tainted {
+		t.Fatal("expected concurrent source taint to be preserved")
+	}
 }
