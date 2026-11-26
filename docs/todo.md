@@ -1966,8 +1966,12 @@ task 4.
   page says what is built, with its version, and what is planned; ADRs 0003,
   0008, 0009 and 0013 gained an "As built" section that links back.
   Arguments checked against the schema shipped with #35
-- [ ] When #66 (rate limits) merges: say what it limits under "Floods" on the
-  threat model page, in place of "planned"
+- [ ] Keep the Security pages current as the data-plane work lands, each
+  replacing a "planned" or "not built": #66 (rate limits; "Floods" in the
+  threat model), #48 (result scanning and secret redaction; the threat model
+  and Secrets and keys), #50 (the cross-server flow rule; the threat model),
+  #51 (annotation overrides; the defaults that fail closed) and #52 (blocked
+  egress attempts audited; Outbound requests and ADR 0008's "As built")
 - [x] Hosting on Coolify (guideline 2.6 B, chosen 2026-11-24): `docs/Dockerfile`
   builds the site and serves it with Caddy (pinned by digest, user `nobody`,
   port 8080) with CSP `script-src 'self'` and no `unsafe-inline`: the theme's
