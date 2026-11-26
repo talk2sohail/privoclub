@@ -1961,9 +1961,13 @@ task 4.
   hub for Coolify now, with room for the deployment model of ADR 0030),
   First setup and sign-in, Your first server and AI client; the welcome page
   leads through it, then to the basic and advanced pages
-- [ ] Write what is missing: the Security section's threat model, secrets
-  and keys, and egress (#63; Reporting a vulnerability shipped with F31;
-  Arguments checked against the schema shipped with #35)
+- [x] Security section (#63, phase 4): Threat model, Secrets and keys,
+  Outbound requests (egress), beside Reporting a vulnerability (F31). Each
+  page says what is built, with its version, and what is planned; ADRs 0003,
+  0008, 0009 and 0013 gained an "As built" section that links back.
+  Arguments checked against the schema shipped with #35
+- [ ] When #66 (rate limits) merges: say what it limits under "Floods" on the
+  threat model page, in place of "planned"
 - [x] Hosting on Coolify (guideline 2.6 B, chosen 2026-11-24): `docs/Dockerfile`
   builds the site and serves it with Caddy (pinned by digest, user `nobody`,
   port 8080) with CSP `script-src 'self'` and no `unsafe-inline`: the theme's
@@ -1999,8 +2003,8 @@ task 4.
   in a basic or advanced page; Installation renamed Operations and Reference;
   the welcome page, Getting Started and Basic Features link only to the new
   pages; the `using/` pages leave the navigation (`not_in_nav`), unchanged
-- [ ] Retire `docs/site/using/` (#62, second step), once #42, #66 and #67
-  have merged: carry their `using/` edits over (#66, the breaker-state metric,
+- [ ] Retire `docs/site/using/` (#62, second step), once #66 and #67 have
+  merged (#42 merged on 2026-11-25): carry their `using/` edits over (#66, the breaker-state metric,
   to `advanced/observability.md`; #67, the grant token cache and the rules
   cache, to `advanced/upstream-auth.md` and `advanced/policy-engine.md`),
   point the `installation/` pages' links at the new pages, trim `installation/coolify.md`, delete `using/`,

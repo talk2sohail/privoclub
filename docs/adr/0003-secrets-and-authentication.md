@@ -117,3 +117,23 @@ data backups (see 0010).
   ChatGPT) keeps it tractable.
 - Opaque tokens cost one cached lookup per request in exchange for fast,
   honest revocation.
+
+## As built (0.20.0, 2026-11-26)
+
+For operators: [Secrets and keys](https://docs.privo.club/security/secrets/).
+
+- **Encrypting secrets** is built as decided (`internal/vault`,
+  `internal/keyring`), with the master key from a file or the environment,
+  removed from the environment once read. Personal tokens are built as
+  decided.
+- **Rotation is not.** `PRIVO_MASTER_KEY_PREVIOUS` is read, so a data key
+  wrapped with the previous key still opens. But nothing re-wraps data keys
+  under the new key, and no DEK rotation exists (F04, "KEK rotation
+  command"). A change of master key therefore cannot finish, and the old key
+  stays needed; the page says so.
+- **Section 1:** sign-in is with GitHub (ADR 0016); OpenID Connect is ADR
+  0034. Magic links and step-up re-authentication are not built.
+- **Section 2:** the OAuth authorization server is built in 0.8.0, as
+  changed by ADR 0022. **Section 3:** the per-person broker is built with
+  ADRs 0017 and 0023.
+- **Redaction** of known secrets from results and logs is not built (F04).
