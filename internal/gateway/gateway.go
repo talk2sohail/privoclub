@@ -144,7 +144,7 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 		case "resources/list":
 			return g.listResources(ctx, p)
 		case "resources/templates/list":
-			return &mcp.ListResourceTemplatesResult{Cacheable: listCache(), ResourceTemplates: []*mcp.ResourceTemplate{}}, nil
+			return g.listResourceTemplates(ctx, p)
 		case "resources/read":
 			params, _ := req.GetParams().(*mcp.ReadResourceParams)
 			if params == nil {
@@ -213,9 +213,9 @@ func (g *Gateway) visible(ctx context.Context, p auth.Principal, kind string) ([
 		if it.Kind != kind || !acc.Reaches(it.ServerID) {
 			continue
 		}
-		// A team may see only some of a server's tools (ADR 0026); a hidden
-		// tool is left out here, so a call on it is answered like an unknown name.
-		if it.Kind == upstream.KindTool && !acc.SeesTool(it.ServerID, it.Name) {
+		// A team may see only some of a server's items (ADR 0026); hidden items
+		// are left out here, so a call or read on them is answered like an unknown name.
+		if !acc.SeesItem(it.ServerID, it.Kind, it.Name) {
 			continue
 		}
 		st, ok := statuses[it.ServerID]
@@ -301,6 +301,24 @@ func (g *Gateway) listResources(ctx context.Context, p auth.Principal) (mcp.Resu
 		r.Name = PublicName(it.Alias, it.Resource.Name)
 		r.URI = ResourceURI(it.Alias, it.Name)
 		res.Resources = append(res.Resources, &r)
+	}
+	return res, nil
+}
+
+func (g *Gateway) listResourceTemplates(ctx context.Context, p auth.Principal) (mcp.Result, error) {
+	items, err := g.visible(ctx, p, upstream.KindResourceTemplate)
+	if err != nil {
+		return nil, err
+	}
+	res := &mcp.ListResourceTemplatesResult{Cacheable: listCache(), ResourceTemplates: make([]*mcp.ResourceTemplate, 0, len(items))}
+	for _, it := range items {
+		if it.Template == nil || !validResourceTemplate(it.Name) {
+			continue
+		}
+		t := *it.Template
+		t.Name = PublicName(it.Alias, it.Template.Name)
+		t.URITemplate = ResourceTemplateURI(it.Alias, it.Name)
+		res.ResourceTemplates = append(res.ResourceTemplates, &t)
 	}
 	return res, nil
 }
@@ -887,23 +905,64 @@ func rewriteRead(alias string, res *mcp.ReadResourceResult) error {
 }
 
 func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mcp.ReadResourceParams) (mcp.Result, error) {
-	alias, up, ok := ParseResourceURI(params.URI)
+	alias, raw, unescaped, ok := parseResourceURI(params.URI)
 	if !ok {
 		return nil, invalidParams("resource %q is not a Privo resource URI", params.URI)
 	}
-	items, err := g.visible(ctx, p, upstream.KindResource)
+	resources, err := g.visible(ctx, p, upstream.KindResource)
 	if err != nil {
 		return nil, err
 	}
-	idx := slices.IndexFunc(items, func(c upstream.Item) bool { return c.Alias == alias && c.Name == up })
-	if idx < 0 {
-		go g.recordHidden(context.WithoutCancel(ctx), p, upstream.KindResource, "resources/read", func(it upstream.Item) bool { return it.Alias == alias && it.Name == up })
+	var it upstream.Item
+	var upstreamURI string
+	found := false
+	if idx := slices.IndexFunc(resources, func(c upstream.Item) bool { return c.Alias == alias && c.Name == unescaped }); idx >= 0 {
+		it = resources[idx]
+		upstreamURI = it.Name
+		found = true
+	} else if raw != unescaped {
+		if idx := slices.IndexFunc(resources, func(c upstream.Item) bool { return c.Alias == alias && c.Name == raw }); idx >= 0 {
+			it = resources[idx]
+			upstreamURI = it.Name
+			found = true
+		}
+	}
+	if !found {
+		templates, err := g.visible(ctx, p, upstream.KindResourceTemplate)
+		if err != nil {
+			return nil, err
+		}
+		for _, tmplItem := range templates {
+			if tmplItem.Alias != alias {
+				continue
+			}
+			if matched, ok := matchResourceTemplate(tmplItem.Name, raw, unescaped); ok {
+				it = tmplItem
+				upstreamURI = matched
+				found = true
+				break
+			}
+		}
+	}
+	if !found {
+		go g.recordHidden(context.WithoutCancel(ctx), p, "", "resources/read", func(cand upstream.Item) bool {
+			if cand.Alias != alias {
+				return false
+			}
+			switch cand.Kind {
+			case upstream.KindResource:
+				return cand.Name == unescaped || (raw != unescaped && cand.Name == raw)
+			case upstream.KindResourceTemplate:
+				_, ok := matchResourceTemplate(cand.Name, raw, unescaped)
+				return ok
+			}
+			return false
+		})
 		return nil, resourceNotFound("resource %q is not available", params.URI)
 	}
-	it := items[idx]
 	var result *mcp.ReadResourceResult
 	err = g.run(ctx, call{p: p, item: it, action: "resources/read"}, func(ctx context.Context, s *mcp.ClientSession) (string, any, error) {
-		res, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: up})
+		res, err := s.ReadResource(ctx, &mcp.ReadResourceParams{URI: upstreamURI})
 		if err != nil {
 			return "error", nil, err
 		}
@@ -938,14 +997,14 @@ func (g *Gateway) recordHidden(ctx context.Context, p auth.Principal, kind, acti
 		return
 	}
 	for _, it := range g.Upstream.Items(p.OrgID) {
-		if it.Kind != kind || !match(it) {
+		if (kind != "" && it.Kind != kind) || !match(it) {
 			continue
 		}
 		reason := ""
 		switch {
 		case !acc.Reaches(it.ServerID):
 			reason = "denied:not_in_team"
-		case it.Kind == upstream.KindTool && !acc.SeesTool(it.ServerID, it.Name):
+		case !acc.SeesItem(it.ServerID, it.Kind, it.Name):
 			reason = "denied:not_in_toolset"
 		default:
 			continue

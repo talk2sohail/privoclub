@@ -803,7 +803,7 @@ describe("servers where each person brings their own key (ADR 0023)", () => {
 });
 
 describe("toolsets", () => {
-  // ADR 0026: per team, all tools or only some.
+  // ADR 0026: per team and kind, all items or only some.
   it("lets an admin choose the tools a team sees, and go back to all", async () => {
     at("/admin/servers/kit");
     const pins = [
@@ -817,22 +817,84 @@ describe("toolsets", () => {
       "PATCH /admin/api/v1/servers/kit/teams/designers": { team: "designers", tools: ["echo"] },
       "PATCH /admin/api/v1/servers/kit/teams/everyone": { team: "everyone", tools: null },
     });
-    await screen.findByText("Which tools each team sees");
+    await screen.findByText("What each team sees");
     // A saved list shows a name the server no longer offers.
     expect(await screen.findByLabelText("Everyone: old_tool")).toBeTruthy();
     expect(screen.getByText("not offered now")).toBeTruthy();
 
     const designers = screen.getByRole("group", { name: "Designers" });
-    fireEvent.click(within(designers).getByLabelText("Only these"));
-    expect(within(designers).getByText("Designers will see none of this server's tools.")).toBeTruthy();
-    fireEvent.click(within(designers).getByLabelText("Designers: echo"));
-    fireEvent.click(screen.getByRole("button", { name: "Save the tools Designers sees" }));
+    const desTools = within(designers).getByRole("group", { name: "Tools" });
+    fireEvent.click(within(desTools).getByLabelText("Only these"));
+    expect(within(desTools).getByText("Designers will see none of this server's tools.")).toBeTruthy();
+    fireEvent.click(within(desTools).getByLabelText("Designers: echo"));
+    fireEvent.click(screen.getByRole("button", { name: "Save what Designers sees" }));
     await waitFor(() => expect(srv.writes()[0]).toMatchObject({ method: "PATCH", url: "/admin/api/v1/servers/kit/teams/designers", body: { tools: ["echo"] } }));
 
     const everyone = screen.getByRole("group", { name: "Everyone" });
-    fireEvent.click(within(everyone).getByLabelText("All tools"));
-    fireEvent.click(screen.getByRole("button", { name: "Save the tools Everyone sees" }));
+    const evTools = within(everyone).getByRole("group", { name: "Tools" });
+    fireEvent.click(within(evTools).getByLabelText("All tools"));
+    fireEvent.click(screen.getByRole("button", { name: "Save what Everyone sees" }));
     await waitFor(() => expect(srv.writes()[1]).toMatchObject({ url: "/admin/api/v1/servers/kit/teams/everyone", body: { tools: null } }));
+  });
+
+  it("lets an admin narrow prompts, resources, and resource templates per team", async () => {
+    at("/admin/servers/kit");
+    const pins = [
+      { kind: "tool", name: "echo", hash: "h1", status: "accepted", definition: { description: "e" }, findings: [] },
+      { kind: "prompt", name: "greet", hash: "h2", status: "accepted", definition: { description: "g" }, findings: [] },
+      { kind: "prompt", name: "secret", hash: "h3", status: "accepted", definition: { description: "s" }, findings: [] },
+      { kind: "resource", name: "kit://note", hash: "h4", status: "accepted", definition: { description: "n" }, findings: [] },
+      { kind: "resource_template", name: "kit://item/{id}", hash: "h5", status: "accepted", definition: { description: "i" }, findings: [] },
+    ];
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": {
+        servers: [
+          {
+            alias: "kit",
+            status: "up",
+            target: "t",
+            items: { tool: 1, prompt: 2, resource: 1, resource_template: 1 },
+            pending_review: 0,
+            teams: ["designers", "everyone"],
+            team_prompts: { everyone: ["stale_prompt"] },
+          },
+        ],
+      },
+      "GET /admin/api/v1/servers/kit/pins": { pins },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "PATCH /admin/api/v1/servers/kit/teams/designers": { team: "designers", prompts: ["greet"], resources: [], resource_templates: ["kit://item/{id}"] },
+      "PATCH /admin/api/v1/servers/kit/teams/everyone": { team: "everyone", prompts: null },
+    });
+    await screen.findByText("What each team sees");
+    expect(await screen.findByLabelText("Everyone: stale_prompt")).toBeTruthy();
+
+    const designers = screen.getByRole("group", { name: "Designers" });
+    const prompts = within(designers).getByRole("group", { name: "Prompts" });
+    fireEvent.click(within(prompts).getByLabelText("Only these"));
+    fireEvent.click(within(prompts).getByLabelText("Designers: greet"));
+
+    const resources = within(designers).getByRole("group", { name: "Resources" });
+    fireEvent.click(within(resources).getByLabelText("Only these"));
+    expect(within(resources).getByText("Designers will see none of this server's resources.")).toBeTruthy();
+
+    const templates = within(designers).getByRole("group", { name: "Resource templates" });
+    fireEvent.click(within(templates).getByLabelText("Only these"));
+    fireEvent.click(within(templates).getByLabelText("Designers: kit://item/{id}"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Save what Designers sees" }));
+    await waitFor(() =>
+      expect(srv.writes()[0]).toMatchObject({
+        method: "PATCH",
+        url: "/admin/api/v1/servers/kit/teams/designers",
+        body: { prompts: ["greet"], resources: [], resource_templates: ["kit://item/{id}"] },
+      }),
+    );
+
+    const everyone = screen.getByRole("group", { name: "Everyone" });
+    const evPrompts = within(everyone).getByRole("group", { name: "Prompts" });
+    fireEvent.click(within(evPrompts).getByLabelText("All prompts"));
+    fireEvent.click(screen.getByRole("button", { name: "Save what Everyone sees" }));
+    await waitFor(() => expect(srv.writes()[1]).toMatchObject({ url: "/admin/api/v1/servers/kit/teams/everyone", body: { prompts: null } }));
   });
 });
 

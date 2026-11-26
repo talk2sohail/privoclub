@@ -248,9 +248,13 @@ type serverView struct {
 	// Teams that reach the server (ADR 0020); shown to admins only, and
 	// always to them, so an empty list ("nobody") is visible (F26 R-04).
 	Teams *[]string `json:"teams,omitempty"`
-	// TeamTools are the narrowed teams' tool lists (ADR 0026); admins only.
-	// A team on the server that is not in it sees all tools.
-	TeamTools map[string][]string `json:"team_tools,omitempty"`
+	// TeamTools, TeamPrompts, TeamResources, TeamTemplates hold narrowed per-kind
+	// lists per team (ADR 0026); admins only. A team on the server not present
+	// in a map sees all items of that kind.
+	TeamTools     map[string][]string `json:"team_tools,omitempty"`
+	TeamPrompts   map[string][]string `json:"team_prompts,omitempty"`
+	TeamResources map[string][]string `json:"team_resources,omitempty"`
+	TeamTemplates map[string][]string `json:"team_templates,omitempty"`
 	// For editing (ADR 0029), admins only: the static headers that are set
 	// and the OAuth client entered by hand. Never a value or a secret.
 	HeaderNames     []string `json:"header_names,omitempty"`
@@ -297,9 +301,9 @@ func (a *API) view(ctx context.Context, p auth.Principal, s store.Server, teams 
 		}
 		pins, _ := a.Store.PinStatuses(ctx, p.OrgID, s.ID)
 		for _, it := range st.Items {
-			// Others count only the tools their teams let them see (ADR 0026),
+			// Others count only the items their teams let them see (ADR 0026),
 			// so a narrowed team does not learn how many are hidden.
-			if acc != nil && it.Kind == upstream.KindTool && !acc.SeesTool(s.ID, it.Name) {
+			if acc != nil && !acc.SeesItem(s.ID, it.Kind, it.Name) {
 				continue
 			}
 			v.Items[it.Kind]++
@@ -329,9 +333,9 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request, p auth.Princip
 			return err
 		}
 	}
-	var tt map[string]map[string][]string
+	var ts map[string]map[string]store.TeamToolset
 	if admin {
-		if tt, err = a.Store.TeamTools(r.Context(), p.OrgID); err != nil {
+		if ts, err = a.Store.TeamToolsets(r.Context(), p.OrgID); err != nil {
 			return err
 		}
 	}
@@ -343,7 +347,34 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request, p auth.Princip
 				mine = &acc
 			}
 			v := a.view(r.Context(), p, s, st[s.ID], mine)
-			v.TeamTools = tt[s.ID]
+			if admin {
+				for team, set := range ts[s.ID] {
+					if set.Tools != nil {
+						if v.TeamTools == nil {
+							v.TeamTools = map[string][]string{}
+						}
+						v.TeamTools[team] = set.Tools
+					}
+					if set.Prompts != nil {
+						if v.TeamPrompts == nil {
+							v.TeamPrompts = map[string][]string{}
+						}
+						v.TeamPrompts[team] = set.Prompts
+					}
+					if set.Resources != nil {
+						if v.TeamResources == nil {
+							v.TeamResources = map[string][]string{}
+						}
+						v.TeamResources[team] = set.Resources
+					}
+					if set.Templates != nil {
+						if v.TeamTemplates == nil {
+							v.TeamTemplates = map[string][]string{}
+						}
+						v.TeamTemplates[team] = set.Templates
+					}
+				}
+			}
 			out = append(out, v)
 		}
 	}
@@ -351,8 +382,44 @@ func (a *API) listServers(w http.ResponseWriter, r *http.Request, p auth.Princip
 	return nil
 }
 
-// patchTeamTools sets which of a server's tools a team sees (ADR 0026):
-// {"tools": null} for all, {"tools": [names]} for exactly those.
+type toolsetFieldSpec struct {
+	jsonKey   string
+	kind      string
+	auditKind string
+	maxLen    int
+	raw       json.RawMessage
+}
+
+func parseToolsetField(raw json.RawMessage, field string, maxLen int) (present bool, out []string, err error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false, nil, nil
+	}
+	if string(trimmed) == "null" {
+		return true, nil, nil
+	}
+	var list []string
+	if err := json.Unmarshal(trimmed, &list); err != nil {
+		return false, nil, errorf(http.StatusUnprocessableEntity, "%s must be null (all) or a list of names", field)
+	}
+	out = []string{}
+	for _, name := range list {
+		if name == "" || len(name) > maxLen || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return false, nil, errorf(http.StatusUnprocessableEntity, "each %s entry must be 1 to %d characters without control characters", field, maxLen)
+		}
+		if !slices.Contains(out, name) {
+			out = append(out, name)
+		}
+	}
+	if len(out) > store.MaxTeamTools {
+		return false, nil, errorf(http.StatusUnprocessableEntity, "at most %d entries per team in %s", store.MaxTeamTools, field)
+	}
+	sort.Strings(out)
+	return true, out, nil
+}
+
+// patchTeamTools sets which of a server's tools, prompts, resources, and
+// resource templates a team sees (ADR 0026): null for all, [names] for only those.
 func (a *API) patchTeamTools(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	s, err := a.server(r, p)
 	if err != nil {
@@ -360,48 +427,53 @@ func (a *API) patchTeamTools(w http.ResponseWriter, r *http.Request, p auth.Prin
 	}
 	team := r.PathValue("slug")
 	var req struct {
-		Tools json.RawMessage `json:"tools"`
+		Tools             json.RawMessage `json:"tools"`
+		Prompts           json.RawMessage `json:"prompts"`
+		Resources         json.RawMessage `json:"resources"`
+		ResourceTemplates json.RawMessage `json:"resource_templates"`
 	}
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	var tools []string
-	switch raw := bytes.TrimSpace(req.Tools); {
-	case len(raw) == 0:
-		return errorf(http.StatusUnprocessableEntity, "tools must be null (all tools) or a list of tool names")
-	case string(raw) == "null":
-	default:
-		var list []string
-		if err := json.Unmarshal(raw, &list); err != nil {
-			return errorf(http.StatusUnprocessableEntity, "tools must be null (all tools) or a list of tool names")
-		}
-		tools = []string{}
-		for _, name := range list {
-			if name == "" || len(name) > 128 || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
-				return errorf(http.StatusUnprocessableEntity, "a tool name must be 1 to 128 characters without control characters")
-			}
-			if !slices.Contains(tools, name) {
-				tools = append(tools, name)
-			}
-		}
-		if len(tools) > store.MaxTeamTools {
-			return errorf(http.StatusUnprocessableEntity, "at most %d tools per team", store.MaxTeamTools)
-		}
-		sort.Strings(tools)
+	specs := []toolsetFieldSpec{
+		{jsonKey: "tools", kind: store.ItemKindTool, auditKind: "server.team_tools", maxLen: 128, raw: req.Tools},
+		{jsonKey: "prompts", kind: store.ItemKindPrompt, auditKind: "server.team_prompts", maxLen: 128, raw: req.Prompts},
+		{jsonKey: "resources", kind: store.ItemKindResource, auditKind: "server.team_resources", maxLen: 2048, raw: req.Resources},
+		{jsonKey: "resource_templates", kind: store.ItemKindResourceTemplate, auditKind: "server.team_templates", maxLen: 2048, raw: req.ResourceTemplates},
 	}
-	what := "all"
-	if tools != nil {
-		what = strconv.Itoa(len(tools))
+	updates := map[string][]string{}
+	resp := map[string]any{"server": s.Alias, "team": team}
+	var evs []store.AuditEvent
+	now := time.Now()
+	for _, sp := range specs {
+		present, list, err := parseToolsetField(sp.raw, sp.jsonKey, sp.maxLen)
+		if err != nil {
+			return err
+		}
+		if !present {
+			continue
+		}
+		updates[sp.kind] = list
+		resp[sp.jsonKey] = list
+		what := "all"
+		if list != nil {
+			what = strconv.Itoa(len(list))
+		}
+		evs = append(evs, store.AuditEvent{
+			ID: ids.New(), CallID: ids.New(), Time: now, Actor: p.Name, ActorID: p.ActorID(), Server: s.Alias,
+			Action: sp.auditKind + ":" + s.Alias + ":" + team + ":" + what, Decision: "allow", Outcome: "ok",
+		})
 	}
-	ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: time.Now(), Actor: p.Name, ActorID: p.ActorID(), Server: s.Alias,
-		Action: "server.team_tools:" + s.Alias + ":" + team + ":" + what, Decision: "allow", Outcome: "ok"}
-	if err := a.Store.SetTeamTools(r.Context(), p.OrgID, s.ID, team, tools, ev); err != nil {
+	if len(updates) == 0 {
+		return errorf(http.StatusUnprocessableEntity, "provide at least one of tools, prompts, resources, or resource_templates")
+	}
+	if err := a.Store.SetTeamToolsets(r.Context(), p.OrgID, s.ID, team, updates, evs...); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return errorf(http.StatusNotFound, "%q is not a team of %q", team, s.Alias)
 		}
 		return err
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": s.Alias, "team": team, "tools": tools})
+	writeJSON(w, http.StatusOK, resp)
 	return nil
 }
 

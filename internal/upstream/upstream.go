@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"privo.club/privo/internal/argcheck"
@@ -47,21 +48,23 @@ const (
 
 // Item kinds.
 const (
-	KindTool     = "tool"
-	KindPrompt   = "prompt"
-	KindResource = "resource"
+	KindTool             = "tool"
+	KindPrompt           = "prompt"
+	KindResource         = "resource"
+	KindResourceTemplate = "resource_template"
 )
 
-// Item is one tool, prompt or resource offered by an upstream server.
+// Item is one tool, prompt, resource or resource template offered by an upstream server.
 type Item struct {
 	ServerID string
 	Alias    string
 	Kind     string
-	Name     string // upstream name (for resources: the URI)
+	Name     string // upstream name (for resources: the URI; for templates: the URI template)
 	Hash     string
 	Tool     *mcp.Tool
 	Prompt   *mcp.Prompt
 	Resource *mcp.Resource
+	Template *mcp.ResourceTemplate
 }
 
 // ServerState is a snapshot of one server's connection.
@@ -648,6 +651,27 @@ func (m *Manager) load(ctx context.Context, e *entry, session *mcp.ClientSession
 		if err != nil {
 			return err
 		}
+		err = walk("resources/templates/list", m.opts.MaxPages, func(cursor string) ([]*mcp.ResourceTemplate, string, error) {
+			r, err := session.ListResourceTemplates(ctx, &mcp.ListResourceTemplatesParams{Cursor: cursor})
+			if err != nil {
+				if cursor == "" && isMethodNotFound(err) {
+					return nil, "", nil
+				}
+				return nil, "", err
+			}
+			if r == nil {
+				return nil, "", errEmptyReply
+			}
+			return r.ResourceTemplates, r.NextCursor, nil
+		}, func(rt *mcp.ResourceTemplate) error {
+			if rt == nil {
+				return errNullEntry("resources/templates/list")
+			}
+			return add(KindResourceTemplate, rt.URITemplate, rt, func(i *Item) { i.Template = rt })
+		})
+		if err != nil {
+			return err
+		}
 	}
 	pins := make([]store.Pin, 0, len(items))
 	keep := make([]store.PinKey, 0, len(items))
@@ -745,14 +769,21 @@ func errNullEntry(method string) error {
 	return fmt.Errorf("%s: server returned a null entry", method)
 }
 
+func isMethodNotFound(err error) bool {
+	var rpc *jsonrpc.Error
+	return errors.As(err, &rpc) && rpc.Code == jsonrpc.CodeMethodNotFound
+}
+
 func firstNonNil(it Item) any {
 	switch {
 	case it.Tool != nil:
 		return it.Tool
 	case it.Prompt != nil:
 		return it.Prompt
-	default:
+	case it.Resource != nil:
 		return it.Resource
+	default:
+		return it.Template
 	}
 }
 

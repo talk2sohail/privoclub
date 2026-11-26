@@ -5,6 +5,8 @@
 // Modes:
 //
 //	default     tool "echo", prompt "greet", resource "echo://note"
+//	templates   adds tool "shout", prompt "farewell", resource "echo://secret", and templates
+//	            "echo://items/{id}", "echo://files/{+path}", "echo://search{?q,limit}"
 //	tools-only  tool "ping" only; writes any prompts/* or resources/* request to $FLAG
 //	flaky       exits with status 1 until it has been started twice (counts in $MARKER), then default
 //	annotated   tools "read_note" (readOnlyHint) and "delete_note" (destructiveHint)
@@ -107,6 +109,49 @@ func main() {
 			func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
 				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "pong"}}}, nil, nil
 			})
+	} else if *mode == "templates" {
+		mcp.AddTool(s, &mcp.Tool{Name: "echo", Description: "Repeat the text you were given."},
+			func(_ context.Context, _ *mcp.CallToolRequest, in echoInput) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: in.Text}}}, nil, nil
+			})
+		mcp.AddTool(s, &mcp.Tool{Name: "shout", Description: "Repeat the text in capitals."},
+			func(_ context.Context, _ *mcp.CallToolRequest, in echoInput) (*mcp.CallToolResult, any, error) {
+				return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: strings.ToUpper(in.Text)}}}, nil, nil
+			})
+		s.AddPrompt(&mcp.Prompt{
+			Name:        "greet",
+			Description: "Say hello",
+			Arguments:   []*mcp.PromptArgument{{Name: "name", Description: "Who to greet", Required: true}},
+		}, func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return &mcp.GetPromptResult{Messages: []*mcp.PromptMessage{{
+				Role:    "user",
+				Content: &mcp.TextContent{Text: "Hello " + req.Params.Arguments["name"]},
+			}}}, nil
+		})
+		s.AddPrompt(&mcp.Prompt{
+			Name:        "farewell",
+			Description: "Say goodbye",
+			Arguments:   []*mcp.PromptArgument{{Name: "name", Description: "Who to bid farewell", Required: true}},
+		}, func(_ context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			return &mcp.GetPromptResult{Messages: []*mcp.PromptMessage{{
+				Role:    "user",
+				Content: &mcp.TextContent{Text: "Goodbye " + req.Params.Arguments["name"]},
+			}}}, nil
+		})
+		s.AddResource(&mcp.Resource{URI: "echo://note", Name: "note", MIMEType: "text/plain", Description: "A short note"},
+			func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+				return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: "echo://note", MIMEType: "text/plain", Text: "note-body"}}}, nil
+			})
+		s.AddResource(&mcp.Resource{URI: "echo://secret", Name: "secret", MIMEType: "text/plain", Description: "A secret note"},
+			func(context.Context, *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+				return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: "echo://secret", MIMEType: "text/plain", Text: "secret-body"}}}, nil
+			})
+		tmplHandler := func(_ context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			return &mcp.ReadResourceResult{Contents: []*mcp.ResourceContents{{URI: req.Params.URI, MIMEType: "text/plain", Text: "tpl:" + req.Params.URI}}}, nil
+		}
+		s.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "echo://items/{id}", Name: "item", Description: "An item by id"}, tmplHandler)
+		s.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "echo://files/{+path}", Name: "file", Description: "A file by path"}, tmplHandler)
+		s.AddResourceTemplate(&mcp.ResourceTemplate{URITemplate: "echo://search{?q,limit}", Name: "search", Description: "Search items"}, tmplHandler)
 	} else {
 		mcp.AddTool(s, &mcp.Tool{Name: "echo", Description: "Repeat the text you were given."},
 			func(_ context.Context, _ *mcp.CallToolRequest, in echoInput) (*mcp.CallToolResult, any, error) {
@@ -159,6 +204,10 @@ func hostile(where string) mcp.Middleware {
 			case *mcp.ListResourcesResult:
 				if where == "resources" {
 					r.Resources = append(r.Resources, nil)
+				}
+			case *mcp.ListResourceTemplatesResult:
+				if where == "templates" {
+					r.ResourceTemplates = append(r.ResourceTemplates, nil)
 				}
 			case *mcp.GetPromptResult:
 				switch where {
