@@ -84,7 +84,7 @@ func (p Policy) notify(ctx context.Context, target, reason string) {
 		return
 	}
 	if ctx == nil {
-		ctx = context.Background()
+		ctx = context.Background() //nolint:contextcheck // fallback when caller passes nil ctx
 	}
 	p.OnBlocked(ctx, target, reason)
 }
