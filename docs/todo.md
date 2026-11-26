@@ -2007,8 +2007,8 @@ task 4.
   in a basic or advanced page; Installation renamed Operations and Reference;
   the welcome page, Getting Started and Basic Features link only to the new
   pages; the `using/` pages leave the navigation (`not_in_nav`), unchanged
-- [ ] Retire `docs/site/using/` (#62, second step), once #66 and #67 have
-  merged (#42 merged on 2026-11-25): carry their `using/` edits over (#66, the breaker-state metric,
+- [ ] Retire `docs/site/using/` (#62, second step), once #42, #66 and #67
+  have merged: carry their `using/` edits over (#66, the breaker-state metric,
   to `advanced/observability.md`; #67, the grant token cache and the rules
   cache, to `advanced/upstream-auth.md` and `advanced/policy-engine.md`),
   point the `installation/` pages' links at the new pages, trim `installation/coolify.md`, delete `using/`,
