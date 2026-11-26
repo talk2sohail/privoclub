@@ -51,6 +51,34 @@ func (m *Manager) PerPerson(serverID string) bool {
 	return ok && e.srv.Config.PerPerson()
 }
 
+// Server returns a copy of the registered server configuration for serverID in
+// org when known to the manager.
+func (m *Manager) Server(org store.OrgID, serverID string) (store.Server, bool) {
+	m.mu.Lock()
+	e, ok := m.entries[serverID]
+	m.mu.Unlock()
+	if !ok || e.org != org {
+		return store.Server{}, false
+	}
+	return e.srv, true
+}
+
+// CallSecret returns the active access token or personal API key of userID for
+// serverID in org, for redacting echoes from that caller's own call output.
+// It reads only the caller's own grant and never falls back to another person.
+func (m *Manager) CallSecret(ctx context.Context, org store.OrgID, serverID, userID string) (string, error) {
+	if userID == "" || m.opts.Grants == nil {
+		return "", nil
+	}
+	m.mu.Lock()
+	e, ok := m.entries[serverID]
+	m.mu.Unlock()
+	if !ok || e.org != org || !e.srv.Config.PerPerson() {
+		return "", nil
+	}
+	return m.opts.Grants.AccessToken(ctx, org, e.srv, userID)
+}
+
 type poolKey struct{ serverID, userID string }
 
 type pooled struct {

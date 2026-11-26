@@ -114,6 +114,7 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("GET /api/v1/policies/export", wrap(auth.PermManagePolicy, a.exportPolicies))
 	mux.Handle("POST /api/v1/policies/import", wrap(auth.PermManagePolicy, a.importPolicies))
 	mux.Handle("POST /api/v1/servers/{alias}/policy:preset", wrap(auth.PermManagePolicy, a.applyPreset))
+	mux.Handle("GET /api/v1/settings/policy", wrap(auth.PermManagePolicy, a.getPolicySettings))
 	mux.Handle("PATCH /api/v1/settings/policy", wrap(auth.PermManagePolicy, a.patchPolicySettings))
 	mux.Handle("GET /api/v1/approvals", wrap(auth.PermDecide, a.listApprovals))
 	mux.Handle("GET /api/v1/approvals/{id}", wrap(auth.PermDecide, a.getApproval))
@@ -1127,8 +1128,15 @@ func (a *API) listPolicies(w http.ResponseWriter, r *http.Request, p auth.Princi
 		}
 		out = append(out, v)
 	}
-	def, _ := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
-	writeJSON(w, http.StatusOK, map[string]any{"policies": out, "default": def})
+	def, err := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
+	if err != nil {
+		return err
+	}
+	scanMode, err := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingResultScan, gateway.ResultScanFlag)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"policies": out, "default": def, "result_scan": scanMode})
 	return nil
 }
 
@@ -1220,21 +1228,59 @@ func (a *API) applyPreset(w http.ResponseWriter, r *http.Request, p auth.Princip
 	return nil
 }
 
+func (a *API) getPolicySettings(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	ctx := r.Context()
+	def, err := a.Store.Setting(ctx, p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
+	if err != nil {
+		return err
+	}
+	scanMode, err := a.Store.Setting(ctx, p.OrgID, gateway.SettingResultScan, gateway.ResultScanFlag)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"default": def, "result_scan": scanMode})
+	return nil
+}
+
 func (a *API) patchPolicySettings(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	var req struct {
-		Default string `json:"default"`
+		Default    *string `json:"default"`
+		ResultScan *string `json:"result_scan"`
 	}
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	if !policy.ValidAction(req.Default) {
+	if req.Default == nil && req.ResultScan == nil {
+		return errorf(http.StatusUnprocessableEntity, "nothing to change")
+	}
+	if req.Default != nil && !policy.ValidAction(*req.Default) {
 		return errorf(http.StatusUnprocessableEntity, "default must be allow, ask or deny")
 	}
-	if err := a.Store.SetSetting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, req.Default); err != nil {
+	if req.ResultScan != nil && *req.ResultScan != gateway.ResultScanFlag && *req.ResultScan != gateway.ResultScanBlock {
+		return errorf(http.StatusUnprocessableEntity, "result_scan must be flag or block")
+	}
+	ctx := r.Context()
+	if req.Default != nil {
+		if err := a.Store.SetSetting(ctx, p.OrgID, gateway.SettingPolicyDefault, *req.Default); err != nil {
+			return err
+		}
+		a.adminEvent(ctx, p, "policy.default="+*req.Default, "")
+	}
+	if req.ResultScan != nil {
+		if err := a.Store.SetSetting(ctx, p.OrgID, gateway.SettingResultScan, *req.ResultScan); err != nil {
+			return err
+		}
+		a.adminEvent(ctx, p, "policy.result_scan="+*req.ResultScan, "")
+	}
+	def, err := a.Store.Setting(ctx, p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
+	if err != nil {
 		return err
 	}
-	a.adminEvent(r.Context(), p, "policy.default="+req.Default, "")
-	writeJSON(w, http.StatusOK, map[string]any{"default": req.Default})
+	scanMode, err := a.Store.Setting(ctx, p.OrgID, gateway.SettingResultScan, gateway.ResultScanFlag)
+	if err != nil {
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"default": def, "result_scan": scanMode})
 	return nil
 }
 
