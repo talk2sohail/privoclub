@@ -4,7 +4,7 @@ VERSION := $(shell tr -d '[:space:]' < internal/buildinfo/VERSION)
 LDFLAGS := -s -w
 IMAGE   ?= privo:$(VERSION)
 
-.PHONY: all build test vet lint vuln acceptance image clean ui ui-test ui-check ui-audit docs docs-serve docs-requirements
+.PHONY: all build test vet lint vuln acceptance image clean ui ui-test ui-check ui-audit docs docs-serve docs-requirements e2e-install e2e-check e2e-doctor e2e-auth e2e-smoke e2e-release e2e-explore e2e-cleanup
 
 all: vet lint test build
 
@@ -76,6 +76,34 @@ docs-serve: $(DOCS_VENV)/.installed
 docs-requirements:
 	docker run --rm -v "$(CURDIR)/docs:/docs" -w /docs $(DOCS_PY_IMAGE) sh -c \
 	  'pip install --quiet --root-user-action=ignore pip-tools && pip-compile --quiet --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url --output-file requirements.txt requirements.in'
+
+# E2E AI client wrapper verification harness (e2e/). Targets deployed staging/prod Privo.
+TARGET  ?= staging
+PERSONA ?= owner
+
+e2e-install:
+	cd e2e && npm install && npx playwright install chromium
+
+e2e-check:
+	cd e2e && npm run typecheck && npm test
+
+e2e-doctor:
+	cd e2e && npm run probe -- doctor --target $(TARGET)
+
+e2e-auth:
+	cd e2e && npm run probe -- auth --target $(TARGET) --persona $(PERSONA)
+
+e2e-smoke:
+	cd e2e && npm run probe -- run --target $(TARGET) --suite smoke
+
+e2e-release:
+	cd e2e && npm run probe -- run --target $(TARGET) --suite release
+
+e2e-explore:
+	cd e2e && npm run probe -- run --target $(TARGET) --suite explore
+
+e2e-cleanup:
+	cd e2e && npm run probe -- cleanup --target $(TARGET)
 
 clean:
 	rm -rf bin build

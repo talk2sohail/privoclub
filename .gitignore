@@ -20,3 +20,8 @@ coverage.out
 
 # Documentation site build output and its Python environment (make docs)
 /build/
+
+# E2E AI client verification harness (e2e/)
+/e2e/node_modules/
+/e2e/.state/
+/e2e/reports/

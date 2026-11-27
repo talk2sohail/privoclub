@@ -1,0 +1,86 @@
+# Staging Privo deployment (Coolify "staging" project)
+name: staging
+url: https://staging.privo.club
+# Full release verification & exploratory testing allowed on staging
+allowMutations: true
+allowGlobalSettingsMutation: false
+oauthExpected: true
+dynamicRegistrationExpected: true
+
+# Environment variable names (never put secrets in this file)
+env:
+  ownerControlToken: PRIVO_STAGING_OWNER_TOKEN
+  memberGatewayToken: PRIVO_STAGING_MEMBER_TOKEN
+  memberPerson: PRIVO_STAGING_MEMBER_PERSON
+  ownerPerson: PRIVO_STAGING_OWNER_PERSON
+  githubPatOwner: PRIVO_TEST_GITHUB_PAT_OWNER
+  githubPatMember: PRIVO_TEST_GITHUB_PAT_MEMBER
+  context7ApiKey: PRIVO_TEST_CONTEXT7_API_KEY
+
+# Real upstream MCP servers (no toy/mock servers)
+upstreams:
+  noAuthPool:
+    - id: cloudflare-docs
+      shortCode: cf
+      name: Cloudflare Docs
+      url: https://docs.mcp.cloudflare.com/mcp
+      transport: http
+      sampleCall:
+        tool: search_cloudflare_documentation
+        args:
+          query: workers mcp
+        invalidArgs:
+          query: 42
+        conditionArg: query
+        conditionDenyValue: blocked-query
+        conditionAllowValue: workers mcp
+    - id: context7
+      shortCode: c7
+      name: Context7
+      url: https://mcp.context7.com/mcp
+      transport: http
+      sampleCall:
+        tool: resolve-library-id
+        args:
+          libraryName: react
+          query: hooks documentation
+        invalidArgs:
+          libraryName: 99999
+          query: hooks documentation
+        conditionArg: libraryName
+        conditionDenyValue: forbidden-lib
+        conditionAllowValue: react
+    - id: deepwiki
+      shortCode: dw
+      name: DeepWiki
+      url: https://mcp.deepwiki.com/mcp
+      transport: http
+      # Known safe read-only probe call + bad-arg probe for schema check (v0.20.0)
+      sampleCall:
+        tool: read_wiki_structure
+        args:
+          repoName: modelcontextprotocol/go-sdk
+        invalidArgs:
+          repoName: 12345
+        conditionArg: repoName
+        conditionDenyValue: facebook/react
+        conditionAllowValue: modelcontextprotocol/go-sdk
+
+  personalKey:
+    id: github-mcp
+    shortCode: gh
+    name: GitHub MCP
+    url: https://api.githubcopilot.com/mcp/
+    transport: http
+    header: Authorization
+    prefix: "Bearer "
+    help: "Create a fine-grained read-only GitHub PAT for staging verification."
+    helpUrl: "https://github.com/settings/tokens"
+    identityTool: get_me
+
+  promptsResources:
+    id: mcp-reference
+    shortCode: ref
+    name: Official MCP Reference Server
+    url: https://example-server.modelcontextprotocol.io/mcp
+    transport: http
