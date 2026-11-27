@@ -14,6 +14,7 @@ docs
 
 # Landing page (built separately from site/) and local backups
 site
+e2e
 web/node_modules
 _backup-*
 .env

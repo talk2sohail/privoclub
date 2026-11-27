@@ -1,0 +1,75 @@
+name: e2e-client-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Target Privo environment
+        type: choice
+        options: [staging, prod]
+        default: staging
+      suite:
+        description: Verification suite to run
+        type: choice
+        options: [smoke, release, explore]
+        default: release
+      clients:
+        description: Comma-separated clients (mcp-sdk,claude-code,codex,gemini,browser)
+        type: string
+        default: mcp-sdk,claude-code,codex,gemini
+  schedule:
+    # Nightly latest-client canary against staging (02:00 UTC)
+    - cron: "0 2 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: Install e2e harness dependencies
+        working-directory: e2e
+        run: npm install
+
+      - name: Typecheck and unit-test harness
+        working-directory: e2e
+        run: npm run typecheck && npm test
+
+      - name: Install latest AI client CLIs (Claude Code, Codex, Gemini)
+        run: |
+          npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli || true
+
+      - name: Run privo-probe
+        working-directory: e2e
+        env:
+          PRIVO_STAGING_URL: ${{ vars.PRIVO_STAGING_URL }}
+          PRIVO_STAGING_OWNER_TOKEN: ${{ secrets.PRIVO_STAGING_OWNER_TOKEN }}
+          PRIVO_STAGING_MEMBER_TOKEN: ${{ secrets.PRIVO_STAGING_MEMBER_TOKEN }}
+          PRIVO_STAGING_MEMBER_PERSON: ${{ vars.PRIVO_STAGING_MEMBER_PERSON }}
+          PRIVO_PROD_OWNER_TOKEN: ${{ secrets.PRIVO_PROD_OWNER_TOKEN }}
+          PRIVO_PROD_MEMBER_TOKEN: ${{ secrets.PRIVO_PROD_MEMBER_TOKEN }}
+          PRIVO_TEST_GITHUB_PAT_OWNER: ${{ secrets.PRIVO_TEST_GITHUB_PAT_OWNER }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          TARGET="${{ inputs.target || 'staging' }}"
+          SUITE="${{ inputs.suite || 'release' }}"
+          CLIENTS="${{ inputs.clients || 'mcp-sdk,claude-code,codex,gemini' }}"
+          npm run probe -- run --target "$TARGET" --suite "$SUITE" --clients "$CLIENTS"
+
+      - name: Upload release verification reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: privo-probe-reports-${{ inputs.target || 'staging' }}-${{ inputs.suite || 'release' }}
+          path: e2e/reports/
+          retention-days: 30
