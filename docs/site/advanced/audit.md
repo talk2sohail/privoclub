@@ -14,7 +14,14 @@ Tamper evidence, search, export, retention and erasure arrived in 0.16.0
 
 For each tool call: when, who called and from which client, the server and
 tool, the rule's decision, who approved it, the outcome and how long it took.
-For each admin change: who changed what, and when.
+`completion/complete` requests write the same intent and completion records
+and follow pin acceptance, team visibility, and policy rules (`deny` refuses
+and `ask` fails closed without opening an approval).
+For each admin change: who changed what, and when. Blocked SSRF and egress
+attempts write `egress.blocked:<reason>` as admin audit events alongside an
+upstream diagnostic, storing only the redacted `scheme://host` (or IP) and
+rate-limited to one audit row per minute for identical repeated blocks
+([ADR 0008](https://github.com/talk2sohail/privoclub/blob/main/docs/adr/0008-egress-and-ssrf.md)).
 
 By default the record holds **no** call arguments and no results. To keep
 them, set `record_arguments` or `record_results` with

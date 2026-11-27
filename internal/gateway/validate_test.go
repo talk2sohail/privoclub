@@ -75,6 +75,22 @@ func TestCheckToolResult(t *testing.T) {
 	if err := checkPrompt(&wire); !errors.Is(err, errNeedsInput) {
 		t.Errorf("a prompt that asks for input: err = %v, want errNeedsInput", err)
 	}
+	var compWire mcp.CompleteResult
+	if err := json.Unmarshal([]byte(`{"resultType":"input_required","completion":{"values":[]}}`), &compWire); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkComplete(&compWire); !errors.Is(err, errNeedsInput) {
+		t.Errorf("a completion that asks for input: err = %v, want errNeedsInput", err)
+	}
+	if err := checkComplete(nil); !errors.Is(err, errMalformedReply) {
+		t.Errorf("nil completion: err = %v, want malformed", err)
+	}
+	if err := checkComplete(&mcp.CompleteResult{}); !errors.Is(err, errMalformedReply) || !strings.Contains(err.Error(), "values") {
+		t.Errorf("missing values: err = %v, want malformed naming values", err)
+	}
+	if err := checkComplete(&mcp.CompleteResult{Completion: mcp.CompletionResultDetails{Values: []string{}}}); err != nil {
+		t.Errorf("empty completion values should pass: %v", err)
+	}
 }
 
 func TestRewriteReadRequiresContents(t *testing.T) {
@@ -129,13 +145,16 @@ func TestCleanForRelay(t *testing.T) {
 			return r.RequestState
 		case *mcp.ReadResourceResult:
 			return r.RequestState
+		case *mcp.CompleteResult:
+			return ""
 		}
 		return "?"
 	}
 	for name, res := range map[string]mcp.Result{
-		"tools/call":     &mcp.CallToolResult{Meta: meta(), RequestState: "S3CRET-STATE"},
-		"prompts/get":    &mcp.GetPromptResult{Meta: meta(), RequestState: "S3CRET-STATE"},
-		"resources/read": &mcp.ReadResourceResult{Meta: meta(), RequestState: "S3CRET-STATE"},
+		"tools/call":          &mcp.CallToolResult{Meta: meta(), RequestState: "S3CRET-STATE"},
+		"prompts/get":         &mcp.GetPromptResult{Meta: meta(), RequestState: "S3CRET-STATE"},
+		"resources/read":      &mcp.ReadResourceResult{Meta: meta(), RequestState: "S3CRET-STATE"},
+		"completion/complete": &mcp.CompleteResult{Meta: meta(), Completion: mcp.CompletionResultDetails{Values: []string{"a"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cleanForRelay(res)

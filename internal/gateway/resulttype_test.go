@@ -135,15 +135,19 @@ func TestWithResultTypeFailsClosed(t *testing.T) {
 	fromWire(t, &inputPrompt, `{"resultType":"input_required"}`)
 	var inputRead mcp.ReadResourceResult
 	fromWire(t, &inputRead, `{"resultType":"input_required"}`)
+	var inputComp mcp.CompleteResult
+	fromWire(t, &inputComp, `{"resultType":"input_required","completion":{"values":[]}}`)
 
 	for name, res := range map[string]mcp.Result{
-		"nil tool result":     (*mcp.CallToolResult)(nil),
-		"nil prompt result":   (*mcp.GetPromptResult)(nil),
-		"nil resource result": (*mcp.ReadResourceResult)(nil),
-		"nil result":          nil,
-		"tool asks for input": &input,
-		"prompt asks input":   &inputPrompt,
-		"resource asks input": &inputRead,
+		"nil tool result":       (*mcp.CallToolResult)(nil),
+		"nil prompt result":     (*mcp.GetPromptResult)(nil),
+		"nil resource result":   (*mcp.ReadResourceResult)(nil),
+		"nil complete result":   (*mcp.CompleteResult)(nil),
+		"nil result":            nil,
+		"tool asks for input":   &input,
+		"prompt asks input":     &inputPrompt,
+		"resource asks input":   &inputRead,
+		"completion asks input": &inputComp,
 	} {
 		if got, err := withResultType(req, res, nil); err == nil || got != nil {
 			t.Errorf("%s: got %v, %v; want an error and no result", name, got, err)

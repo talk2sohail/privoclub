@@ -97,9 +97,10 @@ func (g *Gateway) Handler() http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: "privo", Version: buildinfo.Version}, &mcp.ServerOptions{
 		Instructions: "Privo gateway. Tool and prompt names are <server>__<name>; resource URIs are privo://<server>/<id>.",
 		Capabilities: &mcp.ServerCapabilities{
-			Tools:     &mcp.ToolCapabilities{ListChanged: true},
-			Prompts:   &mcp.PromptCapabilities{ListChanged: true},
-			Resources: &mcp.ResourceCapabilities{ListChanged: true},
+			Tools:       &mcp.ToolCapabilities{ListChanged: true},
+			Prompts:     &mcp.PromptCapabilities{ListChanged: true},
+			Resources:   &mcp.ResourceCapabilities{ListChanged: true},
+			Completions: &mcp.CompletionCapabilities{},
 		},
 		Logger: g.Logger,
 	})
@@ -122,6 +123,7 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 		if p.OrgID == "" {
 			return next(ctx, method, req) // initialize, ping and similar
 		}
+		ctx = auth.WithPrincipal(ctx, p)
 		switch method {
 		case "tools/list":
 			return g.listTools(ctx, p)
@@ -152,13 +154,20 @@ func (g *Gateway) middleware(next mcp.MethodHandler) mcp.MethodHandler {
 			}
 			res, err := g.readResource(ctx, p, params)
 			return g.finish(req, res, err)
+		case "completion/complete":
+			params, _ := req.GetParams().(*mcp.CompleteParams)
+			if params == nil || params.Ref == nil {
+				return nil, invalidParams("invalid completion/complete params")
+			}
+			res, err := g.complete(ctx, p, params)
+			return g.finish(req, res, err)
 		}
 		return next(ctx, method, req)
 	}
 }
 
-// finish prepares the result of tools/call, prompts/get or resources/read for
-// the wire, or the error with a JSON-RPC code.
+// finish prepares the result of tools/call, prompts/get, resources/read or
+// completion/complete for the wire, or the error with a JSON-RPC code.
 func (g *Gateway) finish(req mcp.Request, res mcp.Result, err error) (mcp.Result, error) {
 	res, err = withResultType(req, res, err)
 	return res, g.rpcError(err)
@@ -618,6 +627,10 @@ func resultSize(v any) int64 {
 		for _, c := range r.Contents {
 			resource(c)
 		}
+	case *mcp.CompleteResult:
+		for _, s := range r.Completion.Values {
+			n += int64(len(s))
+		}
 	}
 	return n
 }
@@ -912,6 +925,74 @@ func (g *Gateway) readResource(ctx context.Context, p auth.Principal, params *mc
 		}
 		cleanForRelay(res)
 		res.Cacheable = readCache()
+		result = res
+		return "ok", res, nil
+	})
+	return result, err
+}
+
+func (g *Gateway) complete(ctx context.Context, p auth.Principal, params *mcp.CompleteParams) (mcp.Result, error) {
+	var it upstream.Item
+	var upstreamRef *mcp.CompleteReference
+	switch params.Ref.Type {
+	case "ref/prompt":
+		if params.Ref.URI != "" {
+			return nil, invalidParams("prompt completion ref must not carry a URI")
+		}
+		var ok bool
+		var err error
+		it, ok, err = g.find(ctx, p, upstream.KindPrompt, params.Ref.Name)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			go g.recordHidden(context.WithoutCancel(ctx), p, upstream.KindPrompt, "completion/complete", func(c upstream.Item) bool { return PublicName(c.Alias, c.Name) == params.Ref.Name })
+			return nil, invalidParams("prompt %q is not available", params.Ref.Name)
+		}
+		upstreamRef = &mcp.CompleteReference{Type: "ref/prompt", Name: it.Name}
+	case "ref/resource":
+		if params.Ref.Name != "" {
+			return nil, invalidParams("resource completion ref must not carry a name")
+		}
+		alias, up, ok := ParseResourceURI(params.Ref.URI)
+		if !ok {
+			return nil, invalidParams("resource %q is not a Privo resource URI", params.Ref.URI)
+		}
+		items, err := g.visible(ctx, p, upstream.KindResource)
+		if err != nil {
+			return nil, err
+		}
+		idx := slices.IndexFunc(items, func(c upstream.Item) bool { return c.Alias == alias && c.Name == up })
+		if idx < 0 {
+			go g.recordHidden(context.WithoutCancel(ctx), p, upstream.KindResource, "completion/complete", func(c upstream.Item) bool { return c.Alias == alias && c.Name == up })
+			return nil, invalidParams("resource %q is not available", params.Ref.URI)
+		}
+		it = items[idx]
+		upstreamRef = &mcp.CompleteReference{Type: "ref/resource", URI: up}
+	default:
+		return nil, invalidParams("unsupported completion reference type %q", params.Ref.Type)
+	}
+	rawArgs, err := json.Marshal(struct {
+		Argument mcp.CompleteParamsArgument `json:"argument"`
+		Context  *mcp.CompleteContext       `json:"context,omitempty"`
+	}{Argument: params.Argument, Context: params.Context})
+	if err != nil {
+		return nil, err
+	}
+	args, err := Canonical(rawArgs)
+	if err != nil {
+		return nil, invalidParams("invalid completion arguments: %v", err)
+	}
+	var result *mcp.CompleteResult
+	err = g.run(ctx, call{p: p, item: it, action: "completion/complete", args: args}, func(ctx context.Context, s *mcp.ClientSession) (string, any, error) {
+		res, err := s.Complete(ctx, &mcp.CompleteParams{Ref: upstreamRef, Argument: params.Argument, Context: params.Context})
+		if err != nil {
+			return "error", nil, err
+		}
+		if err = checkComplete(res); err != nil {
+			return "error", nil, err
+		}
+		cleanForRelay(res)
 		result = res
 		return "ok", res, nil
 	})

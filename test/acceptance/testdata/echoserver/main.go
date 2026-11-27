@@ -65,6 +65,27 @@ func main() {
 		// to add it for clients on 2026-07-28 (resulttype_test.go).
 		opts = &mcp.ServerOptions{SupportedProtocolVersions: []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}}
 	}
+	if *mode != "tools-only" && *mode != "annotated" && *mode != "outcomes" {
+		if opts == nil {
+			opts = &mcp.ServerOptions{}
+		}
+		opts.CompletionHandler = func(_ context.Context, req *mcp.CompleteRequest) (*mcp.CompleteResult, error) {
+			if req.Params != nil && req.Params.Ref != nil && req.Params.Ref.Type == "ref/resource" {
+				return &mcp.CompleteResult{
+					Completion: mcp.CompletionResultDetails{
+						Values: []string{"note-alpha", "note-beta"},
+						Total:  2,
+					},
+				}, nil
+			}
+			return &mcp.CompleteResult{
+				Completion: mcp.CompletionResultDetails{
+					Values: []string{"Ada", "Alan"},
+					Total:  2,
+				},
+			}, nil
+		}
+	}
 	s := mcp.NewServer(&mcp.Implementation{Name: "echo", Version: "0.0.1"}, opts)
 
 	if *mode == "annotated" {
@@ -178,6 +199,13 @@ func hostile(where string) mcp.Middleware {
 				}
 			case *mcp.CallToolResult:
 				if where == "poison" {
+					poison(r)
+				}
+			case *mcp.CompleteResult:
+				switch where {
+				case "values":
+					r.Completion.Values = nil
+				case "poison":
 					poison(r)
 				}
 			}

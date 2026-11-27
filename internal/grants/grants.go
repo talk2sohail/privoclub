@@ -183,7 +183,7 @@ func (s *Service) Reregister(ctx context.Context, org store.OrgID, srv store.Ser
 	if s.PublicURL == nil {
 		return errors.New("grants: registering needs the public URL")
 	}
-	reg, err := s.Auth.Register(ctx, srv.Config.OAuth.RegistrationEndpoint, s.PublicURL)
+	reg, err := s.Auth.Register(store.WithOrg(ctx, org), srv.Config.OAuth.RegistrationEndpoint, s.PublicURL)
 	if err != nil {
 		return err
 	}
@@ -422,7 +422,7 @@ func (s *Service) doRefresh(ctx context.Context, org store.OrgID, srv store.Serv
 	if err != nil {
 		return "", err
 	}
-	next, err := s.Auth.Refresh(ctx, e, tok.RefreshToken, now)
+	next, err := s.Auth.Refresh(store.WithOrg(ctx, org), e, tok.RefreshToken, now)
 	if errors.Is(err, upstreamauth.ErrInvalidGrant) {
 		ev := store.AuditEvent{ID: ids.New(), CallID: ids.New(), Time: now, Actor: "system", Server: srv.Alias,
 			Action: "upstream.grant_lost:" + srv.Alias, Decision: "allow", Outcome: "error"}
@@ -514,6 +514,7 @@ func (s *Service) forgetUnsaved(key string) {
 // at the provider once it is (F07 R-04). It holds a token in memory only
 // until it is sent.
 type Revocation struct {
+	org      store.OrgID
 	alias    string
 	endpoint upstreamauth.Endpoint
 	token    string
@@ -555,7 +556,7 @@ func (s *Service) Revocations(ctx context.Context, org store.OrgID, srv store.Se
 		if err != nil {
 			continue
 		}
-		r := Revocation{alias: srv.Alias, endpoint: e, token: tok.RefreshToken, hint: "refresh_token"}
+		r := Revocation{org: org, alias: srv.Alias, endpoint: e, token: tok.RefreshToken, hint: "refresh_token"}
 		if r.token == "" {
 			r.token, r.hint = tok.AccessToken, "access_token"
 		}
@@ -575,7 +576,7 @@ func (s *Service) Revoke(ctx context.Context, rs []Revocation) {
 	var wg sync.WaitGroup
 	for _, r := range rs {
 		wg.Go(func() {
-			if err := s.Auth.Revoke(rctx, r.endpoint, r.token, r.hint); err != nil {
+			if err := s.Auth.Revoke(store.WithOrg(rctx, r.org), r.endpoint, r.token, r.hint); err != nil {
 				s.logger().Warn("revoking an upstream grant at the provider failed", "server", r.alias)
 			}
 		})

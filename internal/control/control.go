@@ -173,6 +173,7 @@ func (a *API) run(perm auth.Permission, h handler, w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "your role cannot do this"})
 		return
 	}
+	r = r.WithContext(auth.WithPrincipal(r.Context(), p))
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	if err := h(w, r, p); err != nil {
 		var he *httpError
@@ -492,7 +493,7 @@ func (a *API) createServer(w http.ResponseWriter, r *http.Request, p auth.Princi
 		u, err := a.Egress.CheckURL(ctx, req.URL, nil)
 		if err != nil {
 			if errors.Is(err, egress.ErrBlocked) {
-				return errorf(http.StatusUnprocessableEntity, "egress policy refused %s: %v", req.URL, err)
+				return errorf(http.StatusUnprocessableEntity, "egress policy refused %s: %v", egress.RedactURL(req.URL), err)
 			}
 			return errorf(http.StatusUnprocessableEntity, "%v", err)
 		}

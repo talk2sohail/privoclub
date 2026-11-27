@@ -322,6 +322,7 @@ type document struct {
 }
 
 func (c *Clients) fetch(ctx context.Context, id string) (Client, time.Duration, error) {
+	ctx = store.WithOrg(ctx, c.Org)
 	ctx, cancel := context.WithTimeout(ctx, docTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, id, nil)

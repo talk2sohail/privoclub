@@ -95,7 +95,6 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 	if err != nil {
 		return err
 	}
-	policy := egress.Policy{Allow: allow}
 
 	st, err := store.Open(ctx, cfg.DataDir)
 	if err != nil {
@@ -158,6 +157,22 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 		defer func() { stopPrune(); <-pruneDone }() // before the store is closed
 	}
 
+	aw := audit.NewWriter(st, audit.Options{Logger: logger, OnLost: func(o store.OrgID, n int) { //nolint:contextcheck // the writer must outlive request contexts to flush on shutdown
+		metrics.AddAuditLost(n)
+		rec.Diagnose(o, store.Diagnostic{Level: store.LevelError, Category: store.CategoryAudit, Message: fmt.Sprintf("%d audit records could not be stored", n)})
+	}})
+	defer aw.Close()
+	// The tamper-evident chain (ADR 0006, 0028): seal new events every few
+	// seconds, signed with a key derived from the master key.
+	sealer := &audit.Sealer{Store: st, Keys: keys, Org: org.ID, Logger: logger}
+	sealCtx, stopSeal := context.WithCancel(ctx)
+	sealDone := make(chan struct{})
+	go func() { sealer.Run(sealCtx); close(sealDone) }()
+	defer func() { stopSeal(); <-sealDone }() // before the writer and the store close
+
+	egressRec := &egressRecorder{Audit: aw, Diagnostics: rec, Logger: logger, DefaultOrg: org.ID}
+	policy := egress.Policy{Allow: allow, OnBlocked: egressRec.Record}
+
 	var rn runner.Runner
 	if cfg.Runner == "local" {
 		logger.Warn("PRIVO_RUNNER=local runs stdio servers on this host without isolation; use only for development and tests")
@@ -169,11 +184,11 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 	var grantSvc *grants.Service
 	var grantSource upstream.GrantSource
 	if len(webCfg.Missing(cfg.PublicURL)) == 0 && cfg.PublicURL.Path == "" {
-		oauthClient = &upstreamauth.Client{HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1}), UserAgent: "privo/" + buildinfo.Version}
+		oauthClient = &upstreamauth.Client{HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1, OnBlocked: egressRec.Record}), UserAgent: "privo/" + buildinfo.Version}
 		grantSvc = &grants.Service{Store: st, Keys: kr, Auth: oauthClient, PublicURL: cfg.PublicURL, Logger: logger, Diagnostics: rec}
 		grantSource = grantSvc
 	}
-	mgr := upstream.New(upstream.Options{Store: st, Keys: kr, Runner: rn, HTTPClient: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true}),
+	mgr := upstream.New(upstream.Options{Store: st, Keys: kr, Runner: rn, HTTPClient: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, OnBlocked: egressRec.Record}),
 		RetryBase: cfg.RetryBase, RetryMax: cfg.RetryMax, RefreshGap: cfg.RefreshGap, MaxResponseBytes: cfg.MaxResponseBytes, Logger: logger,
 		Grants: grantSource, Diagnostics: rec})
 	defer mgr.Close()
@@ -189,18 +204,6 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 		defer func() { stopJob(); <-jobDone }() // before the store is closed
 		logger.Info("scheduled backups on", "every", cfg.BackupInterval.String(), "keep", cfg.BackupKeep)
 	}
-	aw := audit.NewWriter(st, audit.Options{Logger: logger, OnLost: func(o store.OrgID, n int) { //nolint:contextcheck // the writer must outlive request contexts to flush on shutdown
-		metrics.AddAuditLost(n)
-		rec.Diagnose(o, store.Diagnostic{Level: store.LevelError, Category: store.CategoryAudit, Message: fmt.Sprintf("%d audit records could not be stored", n)})
-	}})
-	defer aw.Close()
-	// The tamper-evident chain (ADR 0006, 0028): seal new events every few
-	// seconds, signed with a key derived from the master key.
-	sealer := &audit.Sealer{Store: st, Keys: keys, Org: org.ID, Logger: logger}
-	sealCtx, stopSeal := context.WithCancel(ctx)
-	sealDone := make(chan struct{})
-	go func() { sealer.Run(sealCtx); close(sealDone) }()
-	defer func() { stopSeal(); <-sealDone }() // before the writer and the store close
 	authn := auth.New(st)
 
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.ListenAddr)
@@ -234,7 +237,7 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 		// Client documents are public by definition: they are fetched with no
 		// private range allowed, whatever PRIVO_EGRESS_ALLOW_CIDRS lets the
 		// upstream connections reach (review of 2026-11-15, S-05).
-		clients := &oauthserver.Clients{Org: org.ID, Store: st, Policy: webCfg.OAuthClients, HTTP: oauthserver.NewDocumentClient(egress.Policy{})}
+		clients := &oauthserver.Clients{Org: org.ID, Store: st, Policy: webCfg.OAuthClients, HTTP: oauthserver.NewDocumentClient(egress.Policy{OnBlocked: egressRec.Record})}
 		authServer, err = oauthserver.New(ctx, oauthserver.Options{Org: org.ID, Store: st, Keys: kr, Audit: aw, Clients: clients,
 			Issuer: strings.TrimSuffix(cfg.PublicURL.String(), "/"), Registration: webCfg.OAuthRegistration,
 			TrustedProxies: cfg.TrustedProxies, Logger: logger})
@@ -430,7 +433,7 @@ func adminSite(webCfg config.Web, cfg config.Config, policy egress.Policy, st *s
 	}
 	if len(opts.Missing) == 0 {
 		opts.GitHub = &githubauth.Client{ClientID: webCfg.ClientID, ClientSecret: webCfg.ClientSecret.Reveal(), BaseURL: webCfg.BaseURL, APIURL: webCfg.APIURL, OrgIDs: webCfg.OrgIDs,
-			HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1})}
+			HTTP: egress.NewClient(egress.Options{Policy: policy, SameHostOnly: true, MaxRedirects: 1, OnBlocked: policy.OnBlocked})}
 	}
 	site := web.New(opts)
 	if len(opts.Missing) > 0 {

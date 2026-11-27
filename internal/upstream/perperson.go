@@ -157,6 +157,9 @@ func (m *Manager) PersonSession(ctx context.Context, org store.OrgID, serverID, 
 func (m *Manager) connectPerson(e *entry, userID string) (*pooled, error) {
 	srv := e.srv
 	org := e.org
+	if srv.OrgID == "" {
+		srv.OrgID = org
+	}
 	auth := bearer{
 		header: credentialHeader(srv),
 		key:    srv.Config.Auth == store.AuthKey,
@@ -178,7 +181,7 @@ func (m *Manager) connectPerson(e *entry, userID string) (*pooled, error) {
 	// from it, so the upstream would be offered the client's version instead
 	// of negotiating its own (found by the acceptance test: a 2026-07-28
 	// client against a stateful 2025-11-25 server).
-	runCtx, cancel := context.WithCancel(context.Background())
+	runCtx, cancel := context.WithCancel(store.WithOrg(context.Background(), org))
 	timer := time.AfterFunc(m.opts.ConnectTimeout, cancel)
 	session, err := client.Connect(runCtx, transport, nil) //nolint:contextcheck // a fresh context on purpose, see above
 	if !timer.Stop() || err != nil {

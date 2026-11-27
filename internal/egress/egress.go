@@ -35,6 +35,9 @@ func (e *BlockedError) Unwrap() error { return ErrBlocked }
 type Policy struct {
 	// Allow lists non-public prefixes an operator explicitly permits.
 	Allow []netip.Prefix
+	// OnBlocked, when set, is called on every refusal with a strictly redacted
+	// target (scheme://host or IP only) and the fixed refusal reason.
+	OnBlocked func(ctx context.Context, target, reason string)
 }
 
 // ParseAllowList parses a comma-separated list of CIDRs (PRIVO_EGRESS_ALLOW_CIDRS).
@@ -56,6 +59,10 @@ func ParseAllowList(s string) ([]netip.Prefix, error) {
 
 // Check reports whether ip may be dialled.
 func (p Policy) Check(ip netip.Addr) error {
+	return p.checkIP(context.Background(), "", ip)
+}
+
+func (p Policy) checkIP(ctx context.Context, target string, ip netip.Addr) error {
 	ip = ip.Unmap()
 	for _, pre := range p.Allow {
 		if pre.Contains(ip) {
@@ -63,9 +70,48 @@ func (p Policy) Check(ip netip.Addr) error {
 		}
 	}
 	if reason := nonPublic(ip); reason != "" {
+		if target == "" {
+			target = ip.String()
+		}
+		p.notify(ctx, target, reason)
 		return &BlockedError{Addr: ip.String(), Reason: reason}
 	}
 	return nil
+}
+
+func (p Policy) notify(ctx context.Context, target, reason string) {
+	if p.OnBlocked == nil {
+		return
+	}
+	p.OnBlocked(ctx, target, reason)
+}
+
+// RedactURL returns only scheme://host for raw, stripping userinfo, path,
+// query parameters, and fragments. Unparseable inputs yield "(invalid)".
+func RedactURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "(invalid)"
+	}
+	return redactTarget(u)
+}
+
+// redactTarget returns only scheme://host (never userinfo, path, query, or fragment).
+func redactTarget(u *url.URL) string {
+	if u == nil {
+		return "(invalid)"
+	}
+	scheme := strings.ToLower(u.Scheme)
+	switch {
+	case scheme != "" && u.Host != "":
+		return scheme + "://" + u.Host
+	case scheme != "":
+		return scheme + "://"
+	case u.Host != "":
+		return u.Host
+	default:
+		return "(invalid)"
+	}
 }
 
 var blockedPrefixes = []struct {
@@ -114,6 +160,7 @@ func nonPublic(ip netip.Addr) string {
 // Options configure a client.
 type Options struct {
 	Policy         Policy
+	OnBlocked      func(ctx context.Context, target, reason string)
 	Timeout        time.Duration // whole request; 0 means none (streams)
 	DialTimeout    time.Duration
 	MaxRedirects   int  // default 3
@@ -125,6 +172,9 @@ type Options struct {
 // and redirect. It never uses environment proxies: a proxy would hide the
 // real destination from the check.
 func NewClient(o Options) *http.Client {
+	if o.OnBlocked != nil {
+		o.Policy.OnBlocked = o.OnBlocked
+	}
 	if o.DialTimeout == 0 {
 		o.DialTimeout = 10 * time.Second
 	}
@@ -136,12 +186,14 @@ func NewClient(o Options) *http.Client {
 	}
 	dialer := &net.Dialer{
 		Timeout: o.DialTimeout,
-		Control: func(_, address string, _ syscall.RawConn) error {
+		ControlContext: func(ctx context.Context, _, address string, _ syscall.RawConn) error {
 			ap, err := netip.ParseAddrPort(address)
 			if err != nil {
-				return &BlockedError{Addr: address, Reason: "unparseable address"}
+				const reason = "unparseable address"
+				o.Policy.notify(ctx, "(unparseable)", reason)
+				return &BlockedError{Addr: address, Reason: reason}
 			}
-			return o.Policy.Check(ap.Addr())
+			return o.Policy.checkIP(ctx, "", ap.Addr())
 		},
 	}
 	transport := &http.Transport{
@@ -161,13 +213,19 @@ func NewClient(o Options) *http.Client {
 				return fmt.Errorf("egress: more than %d redirects", o.MaxRedirects)
 			}
 			if o.SameHostOnly && req.URL.Host != via[0].URL.Host {
-				return &BlockedError{Addr: req.URL.Host, Reason: "cross-host redirect"}
+				const reason = "cross-host redirect"
+				o.Policy.notify(req.Context(), redactTarget(req.URL), reason)
+				return &BlockedError{Addr: req.URL.Host, Reason: reason}
 			}
 			if req.URL.Scheme != "https" && req.URL.Scheme != "http" {
-				return &BlockedError{Addr: req.URL.Host, Reason: "unsupported scheme"}
+				const reason = "unsupported scheme"
+				o.Policy.notify(req.Context(), redactTarget(req.URL), reason)
+				return &BlockedError{Addr: req.URL.Host, Reason: reason}
 			}
 			if via[len(via)-1].URL.Scheme == "https" && req.URL.Scheme != "https" {
-				return &BlockedError{Addr: req.URL.Host, Reason: "redirect downgrades https to http"}
+				const reason = "redirect downgrades https to http"
+				o.Policy.notify(req.Context(), redactTarget(req.URL), reason)
+				return &BlockedError{Addr: req.URL.Host, Reason: reason}
 			}
 			return nil
 		},
@@ -180,20 +238,28 @@ func NewClient(o Options) *http.Client {
 func (p Policy) CheckURL(ctx context.Context, raw string, resolver *net.Resolver) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
-		return nil, fmt.Errorf("egress: invalid URL: %w", err)
+		if inner := errors.Unwrap(err); inner != nil {
+			return nil, fmt.Errorf("egress: invalid URL: %w", inner)
+		}
+		return nil, fmt.Errorf("egress: invalid URL")
 	}
+	target := redactTarget(u)
 	if u.Scheme != "https" && u.Scheme != "http" {
-		return nil, &BlockedError{Addr: raw, Reason: "scheme must be http or https"}
+		const reason = "scheme must be http or https"
+		p.notify(ctx, target, reason)
+		return nil, &BlockedError{Addr: target, Reason: reason}
 	}
 	if u.User != nil {
-		return nil, &BlockedError{Addr: u.Host, Reason: "credentials in URL"}
+		const reason = "credentials in URL"
+		p.notify(ctx, target, reason)
+		return nil, &BlockedError{Addr: u.Host, Reason: reason}
 	}
 	host := u.Hostname()
 	if host == "" {
 		return nil, fmt.Errorf("egress: URL has no host")
 	}
 	if ip, err := netip.ParseAddr(host); err == nil {
-		return u, p.Check(ip)
+		return u, p.checkIP(ctx, target, ip)
 	}
 	if resolver == nil {
 		resolver = net.DefaultResolver
@@ -203,7 +269,7 @@ func (p Policy) CheckURL(ctx context.Context, raw string, resolver *net.Resolver
 		return nil, fmt.Errorf("egress: resolving %s: %w", host, err)
 	}
 	for _, a := range addrs {
-		if err := p.Check(a); err != nil {
+		if err := p.checkIP(ctx, target, a); err != nil {
 			return nil, err
 		}
 	}

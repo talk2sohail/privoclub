@@ -57,6 +57,8 @@ func withResultType(req mcp.Request, res mcp.Result, err error) (mcp.Result, err
 		empty, needsInput = r == nil, r != nil && r.NeedsInput()
 	case *mcp.ReadResourceResult:
 		empty, needsInput = r == nil, r != nil && r.NeedsInput()
+	case *mcp.CompleteResult:
+		empty, needsInput = r == nil, r != nil && r.ResultType == "input_required"
 	default:
 		empty = res == nil
 	}
