@@ -1,27 +1,16 @@
-import { existsSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runProcess } from "./claude-code.js";
 import { detectBinary, type ClientAvailability, type ClientConfigOpts, type ClientPromptResult, type McpClientAdapter } from "./types.js";
 
-function hasGeminiLocalAuth(): boolean {
-  const settingsPath = path.join(os.homedir(), ".gemini", "settings.json");
-  if (!existsSync(settingsPath)) return false;
-  try {
-    const data = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
-    const security = data.security as Record<string, unknown> | undefined;
-    const auth = security?.auth as Record<string, unknown> | undefined;
-    return Boolean(auth?.selectedType || data.selectedAuthType);
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Wrapper around the real Gemini CLI (`gemini`).
  * Writes an isolated workspace `.gemini/settings.json` configuring `mcpServers.privo`
  * over Streamable HTTP so the developer's `~/.gemini/settings.json` stays untouched.
+ *
+ * Requires an explicit API/Vertex credential (GEMINI_API_KEY, GOOGLE_API_KEY,
+ * or GOOGLE_GENAI_USE_VERTEXAI); individual OAuth login is deprecated in favor of `agy`.
  */
 export class GeminiCliAdapter implements McpClientAdapter {
   readonly id = "gemini" as const;
@@ -33,25 +22,21 @@ export class GeminiCliAdapter implements McpClientAdapter {
 
   async checkAvailability(): Promise<ClientAvailability> {
     const bin = await detectBinary("gemini", ["--version"]);
-    const hasEnv = Boolean(
+    const hasApiAuth = Boolean(
       process.env.GEMINI_API_KEY ||
         process.env.GOOGLE_API_KEY ||
-        process.env.GOOGLE_GENAI_USE_VERTEXAI ||
-        process.env.GOOGLE_GENAI_USE_GCA,
+        process.env.GOOGLE_GENAI_USE_VERTEXAI,
     );
-    const hasLocal = hasGeminiLocalAuth();
     return {
       id: this.id,
       name: this.name,
       installed: bin.installed,
       version: bin.version,
-      authReady: bin.installed && (hasEnv || hasLocal),
+      authReady: bin.installed && hasApiAuth,
       note: bin.installed
-        ? hasEnv
+        ? hasApiAuth
           ? "API key / Vertex auth configured"
-          : hasLocal
-            ? "Using ~/.gemini/settings.json auth"
-            : "Set GEMINI_API_KEY or run `gemini` once to authenticate"
+          : "Set GEMINI_API_KEY (or use `agy` for Google Antigravity account)"
         : "Install with: npm i -g @google/gemini-cli",
     };
   }
@@ -107,7 +92,10 @@ export class GeminiCliAdapter implements McpClientAdapter {
     const { exitCode, stdout, stderr, timedOut } = await runProcess("gemini", args, {
       cwd: this.tempDir,
       timeoutMs,
-      env: process.env,
+      env: {
+        ...process.env,
+        GEMINI_CLI_TRUST_WORKSPACE: "true",
+      },
     });
 
     let outputText = stdout;

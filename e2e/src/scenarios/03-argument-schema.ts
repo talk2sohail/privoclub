@@ -112,11 +112,33 @@ export const scenario03ArgumentSchema: Scenario = {
         const prompt =
           `First call "${fullToolName}" with exact arguments ${JSON.stringify(primary.spec.sampleCall.invalidArgs)}. ` +
           `If the gateway refuses because of the input schema, correct the arguments to ${JSON.stringify(primary.spec.sampleCall.args)} and retry.`;
-        await client.runPrompt(prompt, { timeoutMs: 90_000 });
+        const res = await client.runPrompt(prompt, { timeoutMs: 90_000 });
 
         const calls = ctx.proxy
           .recordsSince(mark)
           .filter((r) => r.rpcMethod === "tools/call" && r.toolName === fullToolName);
+
+        if (!res.ok && calls.length === 0) {
+          results.push(
+            makeCell(this, client.id, {
+              status: "FAIL",
+              durationMs: Date.now() - start,
+              summary: `${client.name} exited before calling MCP: ${res.error ?? res.exitCode}`,
+              violations: ctx.proxy.violationsSince(mark),
+              findings: [
+                {
+                  scenarioId: this.id,
+                  clientId: client.id,
+                  category: "P0_BLOCKER",
+                  summary: `${client.name} failed before MCP tool invocation`,
+                  detail: res.error || res.rawStderr.slice(0, 500),
+                },
+              ],
+            }),
+          );
+          continue;
+        }
+
         const sawRefusal = calls.some((c) => c.isToolError && (c.toolResultPreview || "").toLowerCase().includes("schema"));
         const sawSuccess = calls.some((c) => c.isToolError !== true && c.httpStatus === 200);
 
