@@ -198,13 +198,14 @@ func CallerRoles(p auth.Principal, acc store.Access) []string {
 	return p.Roles
 }
 
-// visible returns the reviewed items of kind on the servers p reaches,
-// sorted by public name.
-func (g *Gateway) visible(ctx context.Context, p auth.Principal, kind string) ([]upstream.Item, error) {
+// allowedItems returns the reviewed items of kind that p's teams and team
+// toolsets grant, sorted by public name (before applying any personal tool
+// toggles the member set themselves).
+func (g *Gateway) allowedItems(ctx context.Context, p auth.Principal, kind string) ([]upstream.Item, store.Access, error) {
 	org := p.OrgID
 	acc, err := g.access(ctx, p)
 	if err != nil {
-		return nil, err
+		return nil, store.Access{}, err
 	}
 	items := g.Upstream.Items(org)
 	statuses := map[string]map[store.PinKey]string{}
@@ -222,7 +223,7 @@ func (g *Gateway) visible(ctx context.Context, p auth.Principal, kind string) ([
 		if !ok {
 			var err error
 			if st, err = g.Store.PinStatuses(ctx, org, it.ServerID); err != nil {
-				return nil, err
+				return nil, store.Access{}, err
 			}
 			statuses[it.ServerID] = st
 		}
@@ -233,7 +234,43 @@ func (g *Gateway) visible(ctx context.Context, p auth.Principal, kind string) ([
 	sort.Slice(out, func(i, j int) bool {
 		return PublicName(out[i].Alias, out[i].Name) < PublicName(out[j].Alias, out[j].Name)
 	})
-	return dropCollisions(out, g.Logger), nil
+	return dropCollisions(out, g.Logger), acc, nil
+}
+
+// visible returns the reviewed items of kind on the servers p reaches,
+// excluding any tools the member themselves turned off (ADR 0026 amendment).
+func (g *Gateway) visible(ctx context.Context, p auth.Principal, kind string) ([]upstream.Item, error) {
+	items, acc, err := g.allowedItems(ctx, p, kind)
+	if err != nil {
+		return nil, err
+	}
+	if kind != upstream.KindTool || len(acc.DisabledTools) == 0 {
+		return items, nil
+	}
+	out := make([]upstream.Item, 0, len(items))
+	for _, it := range items {
+		if acc.DisabledByUser(it.ServerID, it.Name) {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+// findTool locates a tool among those p's teams and pins allow, and reports
+// whether the member themselves turned it off. Admin-hidden tools always
+// return ok=false so they stay indistinguishable from unknown names.
+func (g *Gateway) findTool(ctx context.Context, p auth.Principal, public string) (upstream.Item, bool, bool, error) {
+	items, acc, err := g.allowedItems(ctx, p, upstream.KindTool)
+	if err != nil {
+		return upstream.Item{}, false, false, err
+	}
+	for _, it := range items {
+		if PublicName(it.Alias, it.Name) == public {
+			return it, true, acc.DisabledByUser(it.ServerID, it.Name), nil
+		}
+	}
+	return upstream.Item{}, false, false, nil
 }
 
 func (g *Gateway) find(ctx context.Context, p auth.Principal, kind, public string) (upstream.Item, bool, error) {
@@ -797,14 +834,29 @@ func notFound(kind, name string) *mcp.CallToolResult {
 	}}}
 }
 
+func (g *Gateway) disabledByUserMsg(alias, tool string) string {
+	if g.BaseURL == "" {
+		return fmt.Sprintf("You turned off %q on %q in Privo. Enable it on your Start page to let your AI client use it.", tool, alias)
+	}
+	link := strings.TrimSuffix(g.BaseURL, "/") + "/admin/start"
+	return fmt.Sprintf("You turned off %q on %q in Privo. Enable it on your Start page (%s) to let your AI client use it.", tool, alias, link)
+}
+
 func (g *Gateway) callTool(ctx context.Context, p auth.Principal, params *mcp.CallToolParamsRaw) (mcp.Result, error) {
-	it, ok, err := g.find(ctx, p, upstream.KindTool, params.Name)
+	it, ok, disabledByUser, err := g.findTool(ctx, p, params.Name)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		go g.recordHidden(context.WithoutCancel(ctx), p, upstream.KindTool, "tools/call", func(it upstream.Item) bool { return PublicName(it.Alias, it.Name) == params.Name })
 		return notFound("Tool", params.Name), nil
+	}
+	if disabledByUser {
+		callID := ids.New()
+		g.recordRefusal(ctx, call{p: p, item: it, action: "tools/call"}, callID, "refused:disabled_by_user", store.OutcomeRefused)
+		g.Telemetry.Call(p.OrgID, store.CallStat{ID: callID, Time: time.Now(), UserID: p.UserID, TokenID: p.TokenID, Client: p.Client,
+			Server: it.Alias, Method: "tools/call", Item: it.Name, Outcome: store.OutcomeRefused, ErrorClass: "disabled_by_user"})
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: g.disabledByUserMsg(it.Alias, it.Name)}}}, nil
 	}
 	var result *mcp.CallToolResult
 	args, err := Canonical(params.Arguments)

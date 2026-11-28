@@ -2,18 +2,19 @@
 // set up their AI client. Members land here.
 
 import { useState } from "preact/hooks";
-import { api } from "../api";
+import { api, seg } from "../api";
 import type { PageProps } from "../app";
 import { invalidate, useData } from "../data";
 import { Link } from "../router";
 import { ClientSetup } from "../setup";
-import type { MyApproval, MyTools, Token } from "../types";
-import { Copy, Empty, ErrorLine, Loading, Status, formValues, useAction, when } from "../ui";
+import type { MyApproval, MyServer, MyTools, Token } from "../types";
+import { Copy, Empty, ErrorLine, Loading, Status, firstLine, formValues, useAction, when } from "../ui";
 
 export function Start({ session }: PageProps) {
   const tools = useData<MyTools>("/v1/me/tools");
   const mine = useData<{ tokens: Token[] }>("/v1/me/tokens");
   const [created, setCreated] = useState<Token | null>(null);
+  const [openServer, setOpenServer] = useState<string>("");
   const [busy, run] = useAction();
   const data = tools.data;
   const perPerson = (s: { auth?: string }) => s.auth === "oauth" || s.auth === "key";
@@ -72,32 +73,68 @@ export function Start({ session }: PageProps) {
                 </tr>
               </thead>
               <tbody>
-                {data.servers.map((s) => (
-                  <tr key={s.alias}>
-                    <td>
-                      <strong>{s.name}</strong> <small class="meta">{s.alias}__…</small>
-                      {s.description && (
-                        <>
-                          <br />
-                          <small class="meta">{s.description}</small>
-                        </>
+                {data.servers.map((s) => {
+                  const list = s.tool_list ?? [];
+                  const total = s.total_tools ?? s.tools;
+                  const muted = Math.max(0, total - s.tools);
+                  const expanded = openServer === s.alias;
+                  return (
+                    <>
+                      <tr key={s.alias}>
+                        <td>
+                          <strong>{s.name}</strong> <small class="meta">{s.alias}__…</small>
+                          {s.description && (
+                            <>
+                              <br />
+                              <small class="meta">{s.description}</small>
+                            </>
+                          )}
+                        </td>
+                        <td>
+                          {muted > 0 ? (
+                            <>
+                              {s.tools} of {total} <small class="meta">({muted} off)</small>
+                            </>
+                          ) : (
+                            s.tools
+                          )}
+                          {list.length > 0 && (
+                            <>
+                              {" "}
+                              <button
+                                type="button"
+                                class="link small"
+                                aria-expanded={expanded}
+                                onClick={() => setOpenServer(expanded ? "" : s.alias)}
+                              >
+                                {expanded ? "Hide tools" : "Tools"}
+                              </button>
+                            </>
+                          )}
+                        </td>
+                        <td>
+                          <Status value={s.status} />
+                        </td>
+                        <td>
+                          {!perPerson(s) && <span class="meta">not needed</span>}
+                          {perPerson(s) && s.connected && <span>{s.auth === "key" ? "key saved" : "connected"}</span>}
+                          {perPerson(s) && !s.connected && s.connect_url && (
+                            <a class="badge" href={s.connect_url}>
+                              {s.auth === "key" ? "Enter your key" : "Connect"}
+                            </a>
+                          )}
+                        </td>
+                      </tr>
+                      {expanded && list.length > 0 && (
+                        <tr key={s.alias + ":tools"} class="member-tools-row">
+                          <td colSpan={4}>
+                            <MemberServerTools key={s.alias + ":" + s.tools + ":" + total} server={s} />
+                          </td>
+                        </tr>
                       )}
-                    </td>
-                    <td>{s.tools}</td>
-                    <td>
-                      <Status value={s.status} />
-                    </td>
-                    <td>
-                      {!perPerson(s) && <span class="meta">not needed</span>}
-                      {perPerson(s) && s.connected && <span>{s.auth === "key" ? "key saved" : "connected"}</span>}
-                      {perPerson(s) && !s.connected && s.connect_url && (
-                        <a class="badge" href={s.connect_url}>
-                          {s.auth === "key" ? "Enter your key" : "Connect"}
-                        </a>
-                      )}
-                    </td>
-                  </tr>
-                ))}
+                    </>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -146,6 +183,95 @@ export function Start({ session }: PageProps) {
         {!created?.token && <p class="meta">Create a token above and it is filled in for you.</p>}
       </section>
     </>
+  );
+}
+
+// MemberServerTools lets a member inspect the tools their teams grant on a
+// server and turn off ones they do not want in their AI client's context
+// (ADR 0026 amendment). Turning tools off affects only this member.
+function MemberServerTools({ server }: { server: MyServer }) {
+  const list = server.tool_list ?? [];
+  const initialDisabled = list
+    .filter((t) => !t.enabled)
+    .map((t) => t.name)
+    .sort();
+  const [disabled, setDisabled] = useState<string[]>(initialDisabled);
+  const [filter, setFilter] = useState("");
+  const [busy, run] = useAction();
+
+  const disabledSet = new Set(disabled);
+  const changed = disabled.join("\0") !== initialDisabled.join("\0");
+  const q = filter.trim().toLowerCase();
+  const shown = q
+    ? list.filter((t) => t.name.toLowerCase().includes(q) || (t.description ?? "").toLowerCase().includes(q))
+    : list;
+
+  const toggle = (name: string, enabled: boolean) => {
+    const next = new Set(disabledSet);
+    if (enabled) next.delete(name);
+    else next.add(name);
+    setDisabled([...next].sort());
+  };
+
+  const save = () =>
+    void run(async () => {
+      await api("PATCH", "/v1/me/servers/" + seg(server.alias) + "/tools", { disabled });
+      invalidate("/v1/me/tools");
+    }, "Saved. The change applies to the next request of your AI clients.");
+
+  return (
+    <div class="member-tools">
+      <p class="meta">
+        Turn off tools you do not need right now to save context in your AI client. Turning a tool off affects only your own calls; if an AI client tries to call one you turned off, Privo reminds you to turn it back on here.
+      </p>
+      {list.length > 10 && (
+        <p class="row">
+          <input
+            type="search"
+            value={filter}
+            placeholder="Filter tools…"
+            aria-label={"Filter tools of " + server.alias}
+            onInput={(e) => setFilter((e.currentTarget as HTMLInputElement).value)}
+          />
+        </p>
+      )}
+      <ul class="member-tools-list">
+        {shown.map((t) => {
+          const on = !disabledSet.has(t.name);
+          const desc = firstLine(t.description);
+          return (
+            <li key={t.name}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={(e) => toggle(t.name, (e.currentTarget as HTMLInputElement).checked)}
+                />{" "}
+                <code>{t.name}</code>
+                {desc && <small class="meta"> — {desc}</small>}
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      {shown.length === 0 && <p class="meta">No tools match “{filter}”.</p>}
+      <div class="row">
+        <button type="button" class="link small" disabled={busy || disabled.length === 0} onClick={() => setDisabled([])}>
+          Enable all
+        </button>
+        <button
+          type="button"
+          class="link small"
+          disabled={busy || disabled.length === list.length}
+          onClick={() => setDisabled(list.map((t) => t.name).sort())}
+        >
+          Disable all
+        </button>
+        <button type="button" class="primary small" disabled={busy || !changed} onClick={save}>
+          Save
+        </button>
+      </div>
+    </div>
   );
 }
 

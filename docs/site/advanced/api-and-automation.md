@@ -193,7 +193,8 @@ admin or member):
 
 | Call | What it does |
 | --- | --- |
-| `GET /api/v1/me/tools` | Your servers and tools |
+| `GET /api/v1/me/tools` | Your servers and tools (with each tool's enabled state) |
+| `PATCH /api/v1/me/servers/<alias>/tools` | Turn tools off or back on for yourself: `{"disabled": [...]}` |
 | `GET`, `POST /api/v1/me/tokens`, `DELETE /api/v1/me/tokens/<id>` | Your AI clients' tokens |
 | `GET /api/v1/me/approvals`, `POST /api/v1/me/approvals/<id>/withdraw` | Your waiting calls; withdraw one |
 | `GET /api/v1/me/clients`, `DELETE /api/v1/me/clients/<id>` | AI clients you let in; take access away |

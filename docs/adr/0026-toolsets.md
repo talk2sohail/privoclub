@@ -61,3 +61,30 @@ rather than a third object to name and grant.
   Toolsets decide visibility; rules decide what a visible call may do.
 - The start page and the context-cost report (F17) count what each person
   actually sees.
+
+## Amendment 1 (2026-11-28): Member tool list and personal toggles
+
+Point 7 stays true for **access**: only admins grant tools, and only through
+teams. Within what their teams already grant, a signed-in member may now see
+their own tool list on **Start** and turn off tools they do not want in their
+AI client's context.
+
+1. **Opt-out denylist (`user_disabled_tools`).** Table `user_disabled_tools`
+   (`org_id`, `user_id`, `server_id`, `name`) stores the tools a member turned
+   off for themselves. Rows cascade-delete when the user or server is deleted.
+   Effective tools are `(accepted pins) ∩ (team toolsets) − (user disabled)`.
+2. **Strictly narrowing.** Turning a tool on or off only ever narrows what the
+   member's teams and pins already allow. Unbound script tokens (`UserID == ""`)
+   have no personal toggles.
+3. **Explicit reminder without probing.** `tools/list` omits tools the member
+   turned off. On `tools/call`, the gateway checks org, team, team-toolset and
+   pin access **first** (still answering like an unknown name when an admin
+   hid or blocked the tool); only when the member is allowed to see the tool
+   and turned it off themselves does Privo return a tool error naming the tool,
+   the server and the Start page link, audited as `refused:disabled_by_user`
+   before argument checking, policy evaluation or approvals.
+4. **Endpoints.** `GET /api/v1/me/tools` includes each reachable server's
+   enabled count (`tools`), granted count (`total_tools`) and `tool_list`
+   (`name`, `description`, `enabled`). `PATCH /api/v1/me/servers/{alias}/tools`
+   replaces the member's disabled list (`{"disabled": [...]}`) and writes
+   audit event `me.tools:<alias>:disabled=<n>` (or `all`).

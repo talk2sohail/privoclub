@@ -1102,3 +1102,50 @@ describe("everyone's connections (F07 A)", () => {
     expect(srv.calls.some((c) => c.url.startsWith("/admin/api/v1/connections"))).toBe(false);
   });
 });
+
+describe("member tool list and personal toggles on Start (ADR 0026 amendment)", () => {
+  it("expands a server's tools, saves personal toggles, and re-enables all", async () => {
+    at("/admin/start");
+    const srv = await start(session("member"), {
+      "GET /admin/api/v1/me/tools": {
+        teams: [{ slug: "everyone", name: "Everyone" }],
+        servers: [
+          {
+            alias: "github",
+            name: "GitHub",
+            status: "up",
+            tools: 1,
+            total_tools: 2,
+            tool_list: [
+              { name: "get_me", description: "Read profile.\nMore details.", enabled: true },
+              { name: "create_issue", description: "Open an issue.", enabled: false },
+            ],
+          },
+        ],
+      },
+      "GET /admin/api/v1/me/tokens": { tokens: [] },
+      "GET /admin/api/v1/me/approvals": { approvals: [] },
+      "PATCH /admin/api/v1/me/servers/github/tools": { server: "github", disabled: ["get_me"] },
+    });
+
+    await screen.findByText(/1 of 2/);
+    fireEvent.click(screen.getByRole("button", { name: "Tools" }));
+    const getMe = screen.getByLabelText(/get_me/) as HTMLInputElement;
+    const createIssue = screen.getByLabelText(/create_issue/) as HTMLInputElement;
+    expect(getMe.checked).toBe(true);
+    expect(createIssue.checked).toBe(false);
+    expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+
+    fireEvent.click(getMe);
+    fireEvent.click(createIssue);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]!.url).toBe("/admin/api/v1/me/servers/github/tools");
+    expect(srv.writes()[0]!.body).toEqual({ disabled: ["get_me"] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Enable all" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(srv.writes()).toHaveLength(2));
+    expect(srv.writes()[1]!.body).toEqual({ disabled: [] });
+  });
+});

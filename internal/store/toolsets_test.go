@@ -153,3 +153,67 @@ func TestTeamToolsAreIsolatedPerOrg(t *testing.T) {
 		t.Fatalf("another org sees %v", tt)
 	}
 }
+
+func TestUserDisabledToolsNarrowOnly(t *testing.T) {
+	ctx := context.Background()
+	s, org := toolsetsOrg(t)
+	if err := s.SetTeamTools(ctx, org, "gh", "designers", []string{"search_code", "get_file"}, adminEv("narrow")); err != nil {
+		t.Fatal(err)
+	}
+	// Dee disables get_file for herself.
+	if err := s.SetUserDisabledTools(ctx, org, "u-dee", "gh", []string{"get_file"}, adminEv("mute")); err != nil {
+		t.Fatal(err)
+	}
+	dee := seen(t, s, org, "u-dee")
+	if !dee.SeesTool("gh", "get_file") || !dee.DisabledByUser("gh", "get_file") {
+		t.Fatalf("expected get_file allowed by team and disabled by user: %+v", dee)
+	}
+	if dee.DisabledByUser("gh", "search_code") {
+		t.Fatalf("search_code should remain enabled: %+v", dee)
+	}
+	// Team restrictions still apply: delete_repo is not seen regardless of user toggles.
+	if dee.SeesTool("gh", "delete_repo") {
+		t.Fatalf("user toggle must never widen team toolset: %+v", dee)
+	}
+	// Re-enabling all clears the personal denylist.
+	if err := s.SetUserDisabledTools(ctx, org, "u-dee", "gh", nil, adminEv("unmute")); err != nil {
+		t.Fatal(err)
+	}
+	if a := seen(t, s, org, "u-dee"); a.DisabledByUser("gh", "get_file") {
+		t.Fatalf("clearing disabled tools left get_file disabled: %+v", a)
+	}
+}
+
+func TestUserDisabledToolsAreIsolatedPerUserAndOrg(t *testing.T) {
+	ctx := context.Background()
+	s, org := toolsetsOrg(t)
+	other, _ := s.EnsureOrg(ctx, "other", "Other")
+	if err := s.SetUserDisabledTools(ctx, other.ID, "u-dee", "gh", []string{"search_code"}, adminEv("x")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross-org SetUserDisabledTools = %v, want ErrNotFound", err)
+	}
+	if err := s.SetUserDisabledTools(ctx, org, "u-dee", "gh", []string{"search_code"}, adminEv("mute")); err != nil {
+		t.Fatal(err)
+	}
+	if dev := seen(t, s, org, "u-dev"); dev.DisabledByUser("gh", "search_code") {
+		t.Fatalf("dee's mute leaked to dev: %+v", dev)
+	}
+	if unbound := seen(t, s, org, ""); unbound.DisabledByUser("gh", "search_code") {
+		t.Fatalf("dee's mute leaked to unbound caller: %+v", unbound)
+	}
+}
+
+func TestUserDisabledToolsDeletedWithServer(t *testing.T) {
+	ctx := context.Background()
+	s, org := toolsetsOrg(t)
+	if err := s.SetUserDisabledTools(ctx, org, "u-dee", "gh", []string{"search_code"}, adminEv("mute")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteServer(ctx, org, "gh"); err != nil {
+		t.Fatal(err)
+	}
+	// Re-creating a server with the same id must not inherit old muted entries.
+	addServer(t, s, org, "gh", "github", []string{"designers"})
+	if a := seen(t, s, org, "u-dee"); a.DisabledByUser("gh", "search_code") {
+		t.Fatalf("deleted server's disabled tools survived cascade: %+v", a)
+	}
+}

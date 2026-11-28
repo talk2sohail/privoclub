@@ -319,7 +319,10 @@ type Access struct {
 	// Tools holds, for a server whose every reaching team is narrowed, the
 	// tool names the caller sees (ADR 0026). A server not in it shows all.
 	Tools map[string]map[string]bool
-	Teams []string
+	// DisabledTools holds, per reached server, upstream tool names the member
+	// themselves turned off (ADR 0026 amendment). It narrows visibility only.
+	DisabledTools map[string]map[string]bool
+	Teams         []string
 	// Roles are the member's current roles, read with their access (ADR
 	// 0021); nil for a caller who is no member or a removed one.
 	Roles []string
@@ -328,13 +331,20 @@ type Access struct {
 // Reaches reports whether the caller may use the server.
 func (a Access) Reaches(serverID string) bool { return a.Servers[serverID] }
 
-// SeesTool reports whether the caller sees a tool of a server they reach.
+// SeesTool reports whether the caller's teams grant a tool of a server they
+// reach (ignoring any personal toggles the member set themselves).
 func (a Access) SeesTool(serverID, name string) bool {
 	if !a.Reaches(serverID) {
 		return false
 	}
 	set, narrowed := a.Tools[serverID]
 	return !narrowed || set[name]
+}
+
+// DisabledByUser reports whether the member turned this tool off themselves.
+// Callers must check SeesTool first so admin-hidden tools are never revealed.
+func (a Access) DisabledByUser(serverID, name string) bool {
+	return a.DisabledTools[serverID][name]
 }
 
 // AccessFor returns what a caller reaches. userID is the caller's member, or
@@ -417,8 +427,67 @@ func (s *Store) AccessFor(ctx context.Context, org OrgID, userID string) (Access
 			return Access{}, err
 		}
 	}
+	if userID != "" && len(a.Servers) > 0 {
+		drows, err := s.r.QueryContext(ctx, `SELECT server_id, name FROM user_disabled_tools WHERE org_id = ? AND user_id = ?`, org, userID)
+		if err != nil {
+			return Access{}, err
+		}
+		defer func() { _ = drows.Close() }()
+		for drows.Next() {
+			var id, name string
+			if err := drows.Scan(&id, &name); err != nil {
+				return Access{}, err
+			}
+			if !a.Servers[id] {
+				continue
+			}
+			if a.DisabledTools == nil {
+				a.DisabledTools = map[string]map[string]bool{}
+			}
+			if a.DisabledTools[id] == nil {
+				a.DisabledTools[id] = map[string]bool{}
+			}
+			a.DisabledTools[id][name] = true
+		}
+		if err := drows.Err(); err != nil {
+			return Access{}, err
+		}
+	}
 	sort.Strings(a.Teams)
 	return a, nil
+}
+
+// SetUserDisabledTools replaces the tools of serverID that userID has turned
+// off for themselves (ADR 0026 amendment). An empty slice re-enables all tools
+// their teams allow. It writes ev with the change.
+func (s *Store) SetUserDisabledTools(ctx context.Context, org OrgID, userID, serverID string, disabled []string, ev AuditEvent) error {
+	if len(disabled) > MaxTeamTools {
+		return errors.New("store: too many tools")
+	}
+	ev.Phase = "admin"
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		var one int
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE org_id = ? AND id = ? AND disabled_at IS NULL`, org, userID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT 1 FROM servers WHERE org_id = ? AND id = ?`, org, serverID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM user_disabled_tools WHERE org_id = ? AND user_id = ? AND server_id = ?`, org, userID, serverID); err != nil {
+			return err
+		}
+		for _, name := range disabled {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO user_disabled_tools (org_id, user_id, server_id, name) VALUES (?, ?, ?, ?)`,
+				org, userID, serverID, name); err != nil {
+				return err
+			}
+		}
+		return insertAudit(ctx, tx, org, []AuditEvent{ev})
+	})
 }
 
 // MaxTeamTools bounds one team's list of tools on a server.
