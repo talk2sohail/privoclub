@@ -56,3 +56,7 @@ table.list tr.level-warn td:nth-child(2) { font-weight: 600; }
 .findings li { margin: 4px 0; }
 .findings li.warn strong { color: var(--danger); }
 .findings .excerpt { display: block; margin-top: 2px; padding: 4px 8px; background: var(--code-bg); border-radius: 4px; white-space: pre-wrap; word-break: break-word; }
+.member-tools-row td { background: var(--code-bg); }
+.member-tools p.meta { margin: 0 0 8px; }
+.member-tools-list { list-style: none; padding: 0; margin: 0 0 10px; display: grid; gap: 4px; max-height: 18rem; overflow: auto; }
+.member-tools-list label { display: block; font-weight: 400; cursor: pointer; }

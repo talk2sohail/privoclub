@@ -159,12 +159,20 @@ export type Catalog = {
   oauth_available: boolean;
 };
 
+export type MyTool = {
+  name: string;
+  description?: string;
+  enabled: boolean;
+};
+
 export type MyServer = {
   alias: string;
   name: string;
   description?: string;
   status: string;
   tools: number;
+  total_tools?: number;
+  tool_list?: MyTool[];
   auth?: string;
   connected?: boolean;
   connect_url?: string;

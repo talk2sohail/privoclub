@@ -775,6 +775,21 @@ Tasks and the tests that name them:
 - [x] Security review 2026-11-20 (`docs/reviews/2026-11-20-f08-toolsets-security-review.md`): no findings at 0.8 or above. Acted on: the server list counts for members only the tools they see; a grant needs the requester to still see the tool; the server page says prompts and resources are not narrowed
 - [ ] Later: prompts and resources (a `kind` column); scope keys on pins (F11)
 
+### Member tool list and personal toggles (spec 2026-11-28, ADR 0026 amendment 1)
+
+Goal: let each signed-in member see the exact tools their teams grant on Start
+and turn off tools they do not need right now to save AI client context, while
+keeping admin pins and team toolsets strictly fail-closed and reminding the
+member if an AI client calls a tool they turned off.
+
+Tasks and tests:
+- [x] Migration `00018_user_disabled_tools.sql`, `Access.DisabledByUser`, `SetUserDisabledTools` (`TestUserDisabledToolsNarrowOnly`, `TestUserDisabledToolsAreIsolatedPerUserAndOrg`, `TestUserDisabledToolsDeletedWithServer`)
+- [x] Gateway: omit self-disabled tools from `tools/list`; on `tools/call`, check org/team/toolset/pin first, then refuse self-disabled calls clearly with Start link and audit `refused:disabled_by_user` before argcheck/policy/approvals (`TestDisabledByUserMessage`)
+- [x] Control API: extend `GET /api/v1/me/tools` with `total_tools` and `tool_list`; add `PATCH /api/v1/me/servers/{alias}/tools` (`TestPatchMyServerToolsValidationAndTeamIsolation`)
+- [x] Admin app: expandable tool list, search filter (>10 tools), Enable all / Disable all, Save on Start (`pages.test.tsx`)
+- [x] Acceptance: `TestMemberCanToggleOwnToolsAndGetsClearRefusalWhenMuted`
+- [x] Docs: ADR 0026 amendment 1, `docs/site/advanced/toolsets.md`, `docs/site/basics/admin-site.md`, `docs/site/advanced/api-and-automation.md`
+
 ### Next slice (spec 2026-11-21): prompts and resources
 
 Goal: a toolset can leave out a server's prompts and resources too, not

@@ -150,3 +150,100 @@ func TestCallsOutsideTheTeamsAreAudited(t *testing.T) {
 		t.Fatalf("%d records of an unknown name", n)
 	}
 }
+
+// ADR 0026 amendment: a member sees their granted tools on Start, can turn
+// individual tools off for themselves, gets an explicit reminder on call (with
+// no approval created), and admin restrictions still override silently.
+func TestMemberCanToggleOwnToolsAndGetsClearRefusalWhenMuted(t *testing.T) {
+	gh := newAcceptanceGitHub(t)
+	g := webGateway(t, gh)
+	boss := ownerOf(t, g, gh)
+	if code, out := boss.app(http.MethodPost, "/v1/teams", map[string]any{"name": "Designers"}, nil); code != http.StatusCreated {
+		t.Fatalf("team: %d %v", code, out)
+	}
+	addReviewed(t, g, boss, map[string]any{"alias": "kit", "transport": "http", "url": twoToolServer(t).URL + "/mcp", "teams": []string{"designers"}})
+	ada, adaToken := join(t, g, gh, boss, "ada", 2)
+	_, bobToken := join(t, g, gh, boss, "bob", 3)
+	for _, person := range []string{"ada", "bob"} {
+		if code, out := boss.app(http.MethodPost, "/v1/teams/designers/members", map[string]any{"person": person}, nil); code != http.StatusOK {
+			t.Fatalf("add %s: %d %v", person, code, out)
+		}
+	}
+	adaClient, bobClient := g.connect(adaToken), g.connect(bobToken)
+	g.eventually("ada sees both tools", 6*time.Second, func() bool {
+		return slices.Equal(toolList(t, adaClient), []string{"kit__echo", "kit__shout"})
+	})
+
+	// Start lists both tools with enabled=true for ada.
+	_, mine := ada.app(http.MethodGet, "/v1/me/tools", nil, nil)
+	var sawToolList int
+	for _, s := range list(mine, "servers") {
+		if s["alias"] == "kit" {
+			if s["tools"] != float64(2) || s["total_tools"] != float64(2) {
+				t.Fatalf("before toggle: %v", s)
+			}
+			sawToolList = len(list(s, "tool_list"))
+		}
+	}
+	if sawToolList != 2 {
+		t.Fatalf("expected 2 tools in tool_list, got %d", sawToolList)
+	}
+
+	// Ada turns off shout for herself.
+	if code, out := ada.app(http.MethodPatch, "/v1/me/servers/kit/tools", map[string]any{"disabled": []string{"shout"}}, nil); code != http.StatusOK {
+		t.Fatalf("disable shout: %d %v", code, out)
+	}
+	g.eventually("ada's tools/list omits shout", 6*time.Second, func() bool {
+		return slices.Equal(toolList(t, adaClient), []string{"kit__echo"})
+	})
+	// Bob is unaffected.
+	if got := toolList(t, bobClient); !slices.Equal(got, []string{"kit__echo", "kit__shout"}) {
+		t.Fatalf("bob affected by ada's toggle: %v", got)
+	}
+	// Start shows 1 of 2 for ada, with shout marked enabled=false.
+	_, mine = ada.app(http.MethodGet, "/v1/me/tools", nil, nil)
+	for _, s := range list(mine, "servers") {
+		if s["alias"] == "kit" && (s["tools"] != float64(1) || s["total_tools"] != float64(2)) {
+			t.Fatalf("after toggle: %v", s)
+		}
+	}
+
+	// Put an ask rule on kit/*: calling the self-disabled tool must refuse
+	// explicitly BEFORE creating an approval request.
+	if code, out := boss.app(http.MethodPost, "/v1/policies", map[string]any{"server": "kit", "tool": "*", "action": "ask"}, nil); code != http.StatusCreated {
+		t.Fatalf("ask rule: %d %v", code, out)
+	}
+	muted, isErr := call(t, adaClient, "kit__shout", map[string]any{"text": "hi"})
+	if !isErr || !strings.Contains(muted, "You turned off") || !strings.Contains(muted, `"shout"`) || !strings.Contains(muted, "/admin/start") {
+		t.Fatalf("self-disabled call = %q (err=%v)", muted, isErr)
+	}
+	if _, pending := boss.app(http.MethodGet, "/v1/approvals?status=pending", nil, nil); len(list(pending, "approvals")) != 0 {
+		t.Fatalf("self-disabled call created an approval: %v", pending)
+	}
+	g.eventually("self-disabled refusal audited", 6*time.Second, func() bool {
+		_, evs := boss.app(http.MethodGet, "/v1/audit/events?limit=50&decision=refused:disabled_by_user", nil, nil)
+		return len(list(evs, "events")) == 1
+	})
+
+	// Admin hides shout from designers: now ada gets "not available" (same as
+	// an unknown name) — never revealing that the tool still exists.
+	if code, out := boss.app(http.MethodPatch, "/v1/servers/kit/teams/designers", map[string]any{"tools": []string{"echo"}}, nil); code != http.StatusOK {
+		t.Fatalf("narrow team: %d %v", code, out)
+	}
+	unknown, _ := call(t, adaClient, "kit__nope", map[string]any{"text": "x"})
+	adminHidden, isErr := call(t, adaClient, "kit__shout", map[string]any{"text": "x"})
+	if !isErr || strings.ReplaceAll(adminHidden, "kit__shout", "X") != strings.ReplaceAll(unknown, "kit__nope", "X") {
+		t.Fatalf("admin-hidden after self-disable = %q, unknown = %q", adminHidden, unknown)
+	}
+
+	// Admin restores all tools and ada re-enables all: shout returns.
+	if code, out := boss.app(http.MethodPatch, "/v1/servers/kit/teams/designers", map[string]any{"tools": nil}, nil); code != http.StatusOK {
+		t.Fatalf("restore team: %d %v", code, out)
+	}
+	if code, out := ada.app(http.MethodPatch, "/v1/me/servers/kit/tools", map[string]any{"disabled": []string{}}, nil); code != http.StatusOK {
+		t.Fatalf("re-enable all: %d %v", code, out)
+	}
+	g.eventually("ada sees both tools again", 6*time.Second, func() bool {
+		return slices.Equal(toolList(t, adaClient), []string{"kit__echo", "kit__shout"})
+	})
+}

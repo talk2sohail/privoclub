@@ -54,9 +54,10 @@ The menu shows only the pages your roles allow.
 **Start** is each person's own corner. It shows:
 
 1. **Your tools**: the servers your teams reach, how many tools each offers,
-   whether it is up, and whether it needs your own account. **Connect** (or
-   **Enter your key**) appears where it does: see
-   [Connecting your accounts](connections.md).
+   whether it is up, and whether it needs your own account. Choose **Tools**
+   next to a server to inspect the tools available to you and turn off ones
+   you do not need in your AI client's context. **Connect** (or **Enter your
+   key**) appears where it does: see [Connecting your accounts](connections.md).
 2. **A token for your AI client**: name it and choose **Create token**. See
    [Connecting AI clients](tokens.md).
 3. **Add Privo to your AI client**: the line or file for Claude Code, Cursor,

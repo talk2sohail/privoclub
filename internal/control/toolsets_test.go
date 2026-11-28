@@ -60,3 +60,44 @@ func TestTeamToolsAPI(t *testing.T) {
 		}
 	}
 }
+
+// ADR 0026 amendment: a signed-in member can toggle tools of a server they
+// reach off or back on, never probing servers outside their teams.
+func TestPatchMyServerToolsValidationAndTeamIsolation(t *testing.T) {
+	e := newSessionEnv(t)
+	ctx := context.Background()
+	_, admin := e.user(t, "adam", store.RoleAdmin)
+	_, mia := e.user(t, "mia", store.RoleMember)
+	e.call(t, admin, http.MethodPost, "/api/v1/teams", map[string]any{"slug": "designers", "name": "Designers"}, http.StatusCreated)
+	e.seedServer(t, "github", nil)
+	e.seedServer(t, "secret", []string{"designers"})
+
+	path := "/api/v1/me/servers/github/tools"
+	// Deduplicates and sorts disabled tool names.
+	res := e.call(t, mia, http.MethodPatch, path, map[string]any{"disabled": []string{"write", "read", "write"}}, http.StatusOK)
+	if got := res["disabled"].([]any); len(got) != 2 || got[0] != "read" || got[1] != "write" {
+		t.Fatalf("patch = %v", res)
+	}
+	// Empty list re-enables all tools.
+	if res := e.call(t, mia, http.MethodPatch, path, map[string]any{"disabled": []string{}}, http.StatusOK); len(res["disabled"].([]any)) != 0 {
+		t.Fatalf("re-enable all = %v", res)
+	}
+	// Server outside member's teams answers 404, identical to an unknown alias.
+	e.call(t, mia, http.MethodPatch, "/api/v1/me/servers/secret/tools", map[string]any{"disabled": []string{"x"}}, http.StatusNotFound)
+	e.call(t, mia, http.MethodPatch, "/api/v1/me/servers/nope/tools", map[string]any{"disabled": []string{"x"}}, http.StatusNotFound)
+	// Validation errors.
+	for _, bad := range []map[string]any{{}, {"disabled": nil}, {"disabled": []string{""}}, {"disabled": []string{"bad\nname"}}} {
+		e.call(t, mia, http.MethodPatch, path, bad, http.StatusUnprocessableEntity)
+	}
+	e.aw.Close()
+	evs, _ := e.st.RecentAdminEvents(ctx, e.org, 30)
+	var actions []string
+	for _, ev := range evs {
+		actions = append(actions, ev.Action)
+	}
+	for _, want := range []string{"me.tools:github:disabled=2", "me.tools:github:all"} {
+		if !slices.Contains(actions, want) {
+			t.Errorf("audit lacks %s: %q", want, actions)
+		}
+	}
+}

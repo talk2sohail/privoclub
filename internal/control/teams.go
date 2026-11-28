@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -32,6 +34,7 @@ func (a *API) registerTeams(mux *http.ServeMux, wrap func(auth.Permission, handl
 	mux.Handle("DELETE /api/v1/teams/{slug}/servers/{alias}", wrap(auth.PermManageServers, a.removeTeamServer))
 	mux.Handle("GET /api/v1/catalog", wrap(auth.PermManageServers, a.listCatalog))
 	mux.Handle("GET /api/v1/me/tools", wrap(auth.PermUseGateway, a.myTools))
+	mux.Handle("PATCH /api/v1/me/servers/{alias}/tools", wrap(auth.PermUseGateway, a.patchMyServerTools))
 }
 
 // event is an admin audit record for p; the store writes it with the change.
@@ -447,12 +450,20 @@ func (a *API) listCatalog(w http.ResponseWriter, r *http.Request, p auth.Princip
 
 // ---- one's own tools
 
-type myServerView struct {
-	Alias       string `json:"alias"`
+type myToolView struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
-	Status      string `json:"status"`
-	Tools       int    `json:"tools"`
+	Enabled     bool   `json:"enabled"`
+}
+
+type myServerView struct {
+	Alias       string       `json:"alias"`
+	Name        string       `json:"name"`
+	Description string       `json:"description,omitempty"`
+	Status      string       `json:"status"`
+	Tools       int          `json:"tools"`
+	TotalTools  int          `json:"total_tools"`
+	ToolList    []myToolView `json:"tool_list,omitempty"`
 	// OAuth: each person connects their own account; Connected says whether
 	// this person did.
 	Auth       string `json:"auth,omitempty"`
@@ -533,9 +544,19 @@ func (a *API) myTools(w http.ResponseWriter, r *http.Request, p auth.Principal) 
 			}
 			for _, it := range st.Items {
 				if it.Kind == upstream.KindTool && acc.SeesTool(s.ID, it.Name) && pins[store.PinKey{Kind: it.Kind, Name: it.Name, Hash: it.Hash}] == store.PinAccepted {
-					v.Tools++
+					v.TotalTools++
+					enabled := !acc.DisabledByUser(s.ID, it.Name)
+					if enabled {
+						v.Tools++
+					}
+					desc := ""
+					if it.Tool != nil {
+						desc = it.Tool.Description
+					}
+					v.ToolList = append(v.ToolList, myToolView{Name: it.Name, Description: desc, Enabled: enabled})
 				}
 			}
+			sort.Slice(v.ToolList, func(i, j int) bool { return v.ToolList[i].Name < v.ToolList[j].Name })
 		}
 		if s.Config.PerPerson() {
 			v.Auth, v.Connected, v.ConnectURL = s.Config.Auth, connected[s.ID], a.connectURL(s.Alias)
@@ -543,5 +564,70 @@ func (a *API) myTools(w http.ResponseWriter, r *http.Request, p auth.Principal) 
 		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"teams": myTeams, "servers": out})
+	return nil
+}
+
+// patchMyServerTools lets a signed-in member toggle tools of a server they
+// reach off or back on for themselves (ADR 0026 amendment). It narrows only:
+// servers outside the member's teams answer 404, and disabled names never
+// expose tools that pins or team toolsets hide.
+func (a *API) patchMyServerTools(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
+	ctx := r.Context()
+	uid, err := a.userOf(ctx, p)
+	if err != nil {
+		return err
+	}
+	if uid == "" {
+		return errorf(http.StatusForbidden, "only a signed-in member can change their own tool list")
+	}
+	alias := r.PathValue("alias")
+	s, err := a.Store.ServerByAlias(ctx, p.OrgID, alias)
+	if errors.Is(err, store.ErrNotFound) {
+		return errorf(http.StatusNotFound, "no server named %q", alias)
+	}
+	if err != nil {
+		return err
+	}
+	acc, err := gateway.Access(ctx, a.Store, p)
+	if err != nil {
+		return err
+	}
+	if !s.Enabled || !acc.Reaches(s.ID) {
+		return errorf(http.StatusNotFound, "no server named %q", alias)
+	}
+	var req struct {
+		Disabled *[]string `json:"disabled"`
+	}
+	if err := decode(r, &req); err != nil {
+		return err
+	}
+	if req.Disabled == nil {
+		return errorf(http.StatusUnprocessableEntity, "disabled must be a list of tool names (empty to enable all)")
+	}
+	disabled := []string{}
+	for _, name := range *req.Disabled {
+		if name == "" || len(name) > 128 || strings.ContainsFunc(name, func(r rune) bool { return r < 0x20 || r == 0x7f }) {
+			return errorf(http.StatusUnprocessableEntity, "a tool name must be 1 to 128 characters without control characters")
+		}
+		if !slices.Contains(disabled, name) {
+			disabled = append(disabled, name)
+		}
+	}
+	if len(disabled) > store.MaxTeamTools {
+		return errorf(http.StatusUnprocessableEntity, "at most %d disabled tools per server", store.MaxTeamTools)
+	}
+	sort.Strings(disabled)
+	what := "all"
+	if len(disabled) > 0 {
+		what = "disabled=" + strconv.Itoa(len(disabled))
+	}
+	ev := event(p, "me.tools:"+s.Alias+":"+what, s.Alias)
+	if err := a.Store.SetUserDisabledTools(ctx, p.OrgID, uid, s.ID, disabled, ev); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return errorf(http.StatusNotFound, "no server named %q", alias)
+		}
+		return err
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"server": s.Alias, "disabled": disabled})
 	return nil
 }
