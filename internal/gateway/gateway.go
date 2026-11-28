@@ -55,11 +55,15 @@ const (
 // SettingPolicyDefault is the org default action when no rule matches.
 const SettingPolicyDefault = "policy.default"
 
+// SettingPolicyFlowWindow is the per-org cross-server flow window (ADR 0032).
+const SettingPolicyFlowWindow = "policy.flow_window"
+
 // Store is the store subset the gateway uses.
 type Store interface {
 	PinStatuses(ctx context.Context, org store.OrgID, serverID string) (map[store.PinKey]string, error)
 	Setting(ctx context.Context, org store.OrgID, key, def string) (string, error)
 	ListPolicies(ctx context.Context, org store.OrgID) ([]store.Policy, error)
+	OrgFlowTags(ctx context.Context, org store.OrgID) ([]store.FlowTag, error)
 	UserByID(ctx context.Context, org store.OrgID, id string) (store.User, error)
 	AccessFor(ctx context.Context, org store.OrgID, userID string) (store.Access, error)
 }
@@ -85,11 +89,27 @@ type Gateway struct {
 	CallTimeout time.Duration
 	// Telemetry records how each call went (ADR 0024); nil records nothing.
 	Telemetry *telemetry.Recorder
+	// Flow tracks recent untrusted_source reads per caller (ADR 0032);
+	// lazily initialized when nil.
+	Flow *policy.FlowTracker
+
+	flowOnce    sync.Once
+	flowDefault *policy.FlowTracker
 
 	hiddenMu sync.Mutex
 	hidden   map[string]time.Time // last record of a hidden call, per caller, server and reason
 
 	args argcheck.Checker // compiled input schemas of the tools called
+}
+
+func (g *Gateway) flowTracker() *policy.FlowTracker {
+	if g.Flow != nil {
+		return g.Flow
+	}
+	g.flowOnce.Do(func() {
+		g.flowDefault = policy.NewFlowTracker()
+	})
+	return g.flowDefault
 }
 
 // Handler returns the authenticated MCP HTTP handler.
@@ -330,6 +350,53 @@ type decision struct {
 	approvalID string // set when an approval was consumed
 	approvedBy string
 	waited     time.Duration // held for a person's decision (ADR 0024, review T-10)
+	isSource   bool          // true when the item carries untrusted_source (ADR 0032)
+}
+
+func flowCallerKey(p auth.Principal) string {
+	if p.UserID != "" {
+		return "user:" + p.UserID
+	}
+	if p.TokenID != "" {
+		return "token:" + p.TokenID
+	}
+	return ""
+}
+
+func itemFlowTags(tags []store.FlowTag, serverID, itemName string) (isSource, isSink bool) {
+	for _, t := range tags {
+		if t.ServerID != serverID {
+			continue
+		}
+		if t.ToolName != "" && t.ToolName != itemName {
+			continue
+		}
+		switch t.Tag {
+		case store.FlowTagUntrustedSource:
+			isSource = true
+		case store.FlowTagEgressSink:
+			isSink = true
+		}
+	}
+	return isSource, isSink
+}
+
+func (g *Gateway) flowWindow(ctx context.Context, org store.OrgID) (time.Duration, error) {
+	raw, err := g.Store.Setting(ctx, org, SettingPolicyFlowWindow, "")
+	if err != nil {
+		return 0, err
+	}
+	if raw == "" {
+		return policy.DefaultFlowWindow, nil
+	}
+	d, err := policy.ParseFlowWindow(raw)
+	if err != nil {
+		if g.Logger != nil {
+			g.Logger.Warn("invalid policy.flow_window setting; using default", "org", org, "err", err)
+		}
+		return policy.DefaultFlowWindow, nil
+	}
+	return d, nil
 }
 
 func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (decision, error) {
@@ -345,6 +412,10 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	if err != nil {
 		return decision{}, err
 	}
+	tags, err := g.Store.OrgFlowTags(ctx, c.p.OrgID)
+	if err != nil {
+		return decision{}, err
+	}
 	var ann *mcp.ToolAnnotations
 	if c.item.Tool != nil {
 		ann = c.item.Tool.Annotations
@@ -353,9 +424,26 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	// server-wide deny or a default deny covers everything the server offers.
 	dec := policy.Evaluate(rules, policy.Request{Roles: CallerRoles(c.p, acc), TokenID: c.p.TokenID, UserID: c.p.UserID, Teams: acc.Teams, Server: c.item.Alias, Tool: c.item.Name,
 		PinHash: c.item.Hash, Annotations: ann, Args: c.args}, def, time.Now())
+	isSource, isSink := itemFlowTags(tags, c.item.ServerID, c.item.Name)
+	if isSink && dec.Action == store.ActionAllow {
+		win, err := g.flowWindow(ctx, c.p.OrgID)
+		if err != nil {
+			return decision{}, err
+		}
+		callerKey := flowCallerKey(c.p)
+		tainted, source, age := true, "unidentified caller", time.Duration(0)
+		if callerKey != "" {
+			tainted, source, age = g.flowTracker().CheckSink(string(c.p.OrgID), callerKey, c.p.Client, win, time.Now())
+		}
+		if tainted {
+			dec.Action = store.ActionAsk
+			dec.RuleID = ""
+			dec.Reason = fmt.Sprintf("cross-server flow: read from %s %s ago", source, age.Round(time.Second))
+		}
+	}
 	switch dec.Action {
 	case store.ActionAllow:
-		return decision{label: store.ActionAllow}, nil
+		return decision{label: store.ActionAllow, isSource: isSource}, nil
 	case store.ActionDeny:
 		g.recordRefusal(ctx, c, callID, store.ActionDeny, "denied:"+dec.Reason)
 		// The model gets no rule details: they would help it probe the policy.
@@ -383,7 +471,7 @@ func (g *Gateway) decide(ctx context.Context, c call, digest, callID string) (de
 	}
 	switch out.Result {
 	case approval.Approved:
-		return decision{label: "approved:" + out.ID, approvalID: out.ID, approvedBy: out.DecidedBy, waited: time.Since(gated)}, nil
+		return decision{label: "approved:" + out.ID, approvalID: out.ID, approvedBy: out.DecidedBy, waited: time.Since(gated), isSource: isSource}, nil
 	case approval.Withdrawn:
 		g.recordRefusal(ctx, c, callID, store.ActionAsk, "withdrawn_by_requester")
 		return decision{}, &refusal{msg: "This request was withdrawn in Privo. Call again to ask for approval anew."}
@@ -513,6 +601,11 @@ func (g *Gateway) run(ctx context.Context, c call, do func(context.Context, *mcp
 	session, err := g.session(ctx, c)
 	st.ConnectUS = time.Since(connecting).Microseconds()
 	if err == nil {
+		if dec.isSource && (c.action == "tools/call" || c.action == "resources/read") {
+			if callerKey := flowCallerKey(c.p); callerKey != "" {
+				g.flowTracker().RecordSource(string(c.p.OrgID), callerKey, c.p.Client, c.item.Alias, c.item.Name, time.Now())
+			}
+		}
 		calling := time.Now()
 		outcome, result, err = g.callUpstream(ctx, c, session, do)
 		st.UpstreamUS = time.Since(calling).Microseconds()

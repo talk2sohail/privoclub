@@ -28,6 +28,7 @@ import (
 	"privo.club/privo/internal/health"
 	"privo.club/privo/internal/keyring"
 	"privo.club/privo/internal/oauthserver"
+	flowpolicy "privo.club/privo/internal/policy"
 	"privo.club/privo/internal/runner"
 	"privo.club/privo/internal/server"
 	"privo.club/privo/internal/store"
@@ -219,7 +220,7 @@ func runGateway(ctx context.Context, cfg config.Config, webCfg config.Web, bs bo
 	prm := base + "/.well-known/oauth-protected-resource/mcp"
 	approvals := &approval.Service{Store: st, Keys: kr, Hold: cfg.ApprovalHold}
 	gw := &gateway.Gateway{Store: st, Upstream: mgr, Keys: kr, Audit: aw, Auth: authn, Approval: approvals, Logger: logger,
-		ResourceMetadataURL: prm, BaseURL: base, CallTimeout: cfg.CallTimeout, Telemetry: rec}
+		ResourceMetadataURL: prm, BaseURL: base, CallTimeout: cfg.CallTimeout, Telemetry: rec, Flow: flowpolicy.NewFlowTracker()}
 	api := &control.API{Store: st, Keys: kr, AuditKeys: keys, Auth: authn, Upstream: mgr, Audit: aw, Approval: approvals, Egress: policy, Logger: logger,
 		TokenTTL: cfg.TokenTTL, OAuth: oauthClient, Grants: grantSvc, Telemetry: rec, TelemetryRetentionDays: cfg.TelemetryRetentionDays}
 	if grantSvc != nil {

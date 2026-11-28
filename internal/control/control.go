@@ -105,6 +105,8 @@ func (a *API) register(mux *http.ServeMux, wrap func(auth.Permission, handler) h
 	mux.Handle("POST /api/v1/servers/{alias}/pins:accept", wrap(auth.PermManageServers, a.acceptPins))
 	mux.Handle("POST /api/v1/servers/{alias}/pins:block", wrap(auth.PermManageServers, a.blockPins))
 	mux.Handle("PATCH /api/v1/servers/{alias}/teams/{slug}", wrap(auth.PermManageServers, a.patchTeamTools))
+	mux.Handle("GET /api/v1/servers/{alias}/flow-tags", wrap(auth.PermReadServers, a.getFlowTags))
+	mux.Handle("PUT /api/v1/servers/{alias}/flow-tags", wrap(auth.PermManagePolicy, a.putFlowTags))
 	mux.Handle("GET /api/v1/tokens", wrap(auth.PermManageTokens, a.listTokens))
 	mux.Handle("POST /api/v1/tokens", wrap(auth.PermManageTokens, a.createToken))
 	mux.Handle("DELETE /api/v1/tokens/{id}", wrap(auth.PermManageTokens, a.revokeToken))
@@ -1128,7 +1130,8 @@ func (a *API) listPolicies(w http.ResponseWriter, r *http.Request, p auth.Princi
 		out = append(out, v)
 	}
 	def, _ := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
-	writeJSON(w, http.StatusOK, map[string]any{"policies": out, "default": def})
+	fw, _ := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingPolicyFlowWindow, policy.DefaultFlowWindow.String())
+	writeJSON(w, http.StatusOK, map[string]any{"policies": out, "default": def, "flow_window": fw})
 	return nil
 }
 
@@ -1222,19 +1225,37 @@ func (a *API) applyPreset(w http.ResponseWriter, r *http.Request, p auth.Princip
 
 func (a *API) patchPolicySettings(w http.ResponseWriter, r *http.Request, p auth.Principal) error {
 	var req struct {
-		Default string `json:"default"`
+		Default    *string `json:"default"`
+		FlowWindow *string `json:"flow_window"`
 	}
 	if err := decode(r, &req); err != nil {
 		return err
 	}
-	if !policy.ValidAction(req.Default) {
-		return errorf(http.StatusUnprocessableEntity, "default must be allow, ask or deny")
+	if req.Default == nil && req.FlowWindow == nil {
+		return errorf(http.StatusUnprocessableEntity, "nothing to change")
 	}
-	if err := a.Store.SetSetting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, req.Default); err != nil {
-		return err
+	if req.Default != nil {
+		if !policy.ValidAction(*req.Default) {
+			return errorf(http.StatusUnprocessableEntity, "default must be allow, ask or deny")
+		}
+		if err := a.Store.SetSetting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, *req.Default); err != nil {
+			return err
+		}
+		a.adminEvent(r.Context(), p, "policy.default="+*req.Default, "")
 	}
-	a.adminEvent(r.Context(), p, "policy.default="+req.Default, "")
-	writeJSON(w, http.StatusOK, map[string]any{"default": req.Default})
+	if req.FlowWindow != nil {
+		d, err := policy.ParseFlowWindow(*req.FlowWindow)
+		if err != nil {
+			return errorf(http.StatusUnprocessableEntity, "%v", err)
+		}
+		if err := a.Store.SetSetting(r.Context(), p.OrgID, gateway.SettingPolicyFlowWindow, d.String()); err != nil {
+			return err
+		}
+		a.adminEvent(r.Context(), p, "policy.flow_window="+d.String(), "")
+	}
+	def, _ := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingPolicyDefault, store.ActionAllow)
+	fw, _ := a.Store.Setting(r.Context(), p.OrgID, gateway.SettingPolicyFlowWindow, policy.DefaultFlowWindow.String())
+	writeJSON(w, http.StatusOK, map[string]any{"default": def, "flow_window": fw})
 	return nil
 }
 
@@ -1452,6 +1473,9 @@ func (a *API) planGrant(ctx context.Context, p auth.Principal, ap store.Approval
 	dec := policy.Evaluate(rules, policy.Request{Roles: gateway.CallerRoles(requester, acc), TokenID: tok.ID, UserID: tok.UserID, Teams: acc.Teams,
 		Server: ap.ServerAlias, Tool: ap.Tool, PinHash: ap.PinHash, Annotations: def.Annotations, Args: args}, dflt, now)
 	if dec.Action != store.ActionAsk {
+		if strings.HasPrefix(ap.Reason, "cross-server flow:") {
+			return refuse("This call asked because of a cross-server flow, so allowing it for longer cannot skip future checks.")
+		}
 		return refuse("The rules changed while this request waited: this call would now be " + map[string]string{store.ActionAllow: "allowed", store.ActionDeny: "denied"}[dec.Action] + ".")
 	}
 	// The grant covers asks up to the rank of the one that asks now; the

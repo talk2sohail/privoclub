@@ -1102,3 +1102,57 @@ describe("everyone's connections (F07 A)", () => {
     expect(srv.calls.some((c) => c.url.startsWith("/admin/api/v1/connections"))).toBe(false);
   });
 });
+
+describe("cross-server flow tags", () => {
+  it("shows server and tool checkboxes and saves updated tags", async () => {
+    at("/admin/servers/crm");
+    const pins = [
+      { kind: "tool", name: "read_lead", hash: "h1", status: "accepted", definition: { description: "Reads" }, findings: [] },
+      { kind: "tool", name: "send_email", hash: "h2", status: "accepted", definition: { description: "Sends" }, findings: [] },
+    ];
+    let savedTags = [
+      { tool_name: "", tag: "untrusted_source" },
+      { tool_name: "old_tool", tag: "egress_sink" },
+      { tool_name: evil, tag: "untrusted_source" },
+    ];
+    const srv = await start(session("owner"), {
+      "GET /admin/api/v1/servers": { servers: [{ alias: "crm", status: "up", target: "https://crm.example/mcp", transport: "http", enabled: true, items: { tool: 2 }, pending_review: 0, teams: ["everyone"] }] },
+      "GET /admin/api/v1/servers/crm/pins": { pins },
+      "GET /admin/api/v1/teams": teamsAnswer,
+      "GET /admin/api/v1/servers/crm/flow-tags": () => [200, { server: "crm", tags: savedTags }],
+      "PUT /admin/api/v1/servers/crm/flow-tags": (body: unknown) => {
+        savedTags = (body as { tags: typeof savedTags }).tags;
+        return [200, { server: "crm", tags: savedTags }];
+      },
+    });
+    await screen.findByText("Cross-server data flow");
+    expect(document.querySelector("img")).toBeNull();
+    expect((window as unknown as { pwned?: number }).pwned).toBeUndefined();
+    const wholeSrc = (await screen.findByLabelText("Whole server: Untrusted source")) as HTMLInputElement;
+    expect(wholeSrc.checked).toBe(true);
+    const oldSink = screen.getByLabelText("old_tool: Egress sink") as HTMLInputElement;
+    expect(oldSink.checked).toBe(true);
+    expect(screen.getAllByText("not offered now").length).toBeGreaterThanOrEqual(1);
+
+    const save = screen.getByRole("button", { name: "Save flow tags" }) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+
+    fireEvent.click(oldSink);
+    fireEvent.click(screen.getByLabelText(evil + ": Untrusted source"));
+    fireEvent.click(screen.getByLabelText("send_email: Egress sink"));
+    expect(save.disabled).toBe(false);
+    fireEvent.click(save);
+
+    await waitFor(() => expect(srv.writes()).toHaveLength(1));
+    expect(srv.writes()[0]).toMatchObject({
+      method: "PUT",
+      url: "/admin/api/v1/servers/crm/flow-tags",
+      body: {
+        tags: [
+          { tool_name: "", tag: "untrusted_source" },
+          { tool_name: "send_email", tag: "egress_sink" },
+        ],
+      },
+    });
+  });
+});

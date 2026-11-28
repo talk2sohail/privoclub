@@ -59,6 +59,14 @@ export type Policy = {
 
 export type Condition = { arg: string; op: string; value?: unknown };
 
+export type FlowTagName = "untrusted_source" | "egress_sink";
+
+export type FlowTag = {
+  tool_name: string; // "" means server-wide
+  tag: FlowTagName;
+  updated_at?: string;
+};
+
 export type Member = {
   person: string;
   name: string;

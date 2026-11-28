@@ -224,6 +224,7 @@ func (s *Store) DeleteServer(ctx context.Context, org OrgID, id string) error {
 			`DELETE FROM upstream_grants WHERE org_id = ? AND server_id = ?`,
 			`DELETE FROM pins WHERE org_id = ? AND server_id = ?`,
 			`DELETE FROM server_teams WHERE org_id = ? AND server_id = ?`,
+			`DELETE FROM flow_tags WHERE org_id = ? AND server_id = ?`,
 		} {
 			if _, err := tx.ExecContext(ctx, q, org, id); err != nil {
 				return err
